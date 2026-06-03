@@ -1,22 +1,7 @@
 use eframe::egui;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// Github 测试弹窗状态
-struct GithubTestPopupState {
-    show: bool,
-    results: Vec<crate::core::network::GithubMultiTestItem>,
-}
-
-static GITHUB_TEST_POPUP_STATE: Lazy<Mutex<GithubTestPopupState>> = Lazy::new(|| {
-    Mutex::new(GithubTestPopupState {
-        show: false,
-        results: Vec::new(),
-    })
-});
 
 #[derive(PartialEq, Default)]
 pub enum SettingsTab {
@@ -86,12 +71,12 @@ pub enum ProxyType {
     Custom,
 }
 
-/// 当前激活的 SillyTavern 实例（持久化到 settings.json）
+/// 当前激活的 SillyTavern 实例
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct CurrentInstance {
     #[serde(rename = "type")]
-    pub instance_type: String,  // "builtin" 或 "local"
-    pub path: Option<String>,   // builtin 时为 null, local 时为实际路径
+    pub instance_type: String,
+    pub path: Option<String>,
     pub version: String,
 }
 
@@ -131,7 +116,7 @@ pub struct SettingsState {
     #[serde(default)]
     pub sillytavern: Option<CurrentInstance>,
 
-    // Node.js 运行时版本（不持久化，每帧从 MyApp 写入）
+    // Node.js 运行时版本（不持久化）
     #[serde(skip)]
     pub nodejs_version: String,
 }
@@ -165,16 +150,14 @@ impl Default for SettingsState {
 
 impl SettingsState {
     fn config_path() -> PathBuf {
-        // 回退到程序运行目录 (或开发时的项目根目录)
         let mut current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        current_exe.pop(); // 去除执行文件名
+        current_exe.pop();
 
         let path_str = current_exe.to_string_lossy();
         let mut root = if path_str.contains("target\\debug") || path_str.contains("target\\release") {
-            // 回退到项目根目录
             let mut p = current_exe.clone();
-            p.pop(); // pop debug/release
-            p.pop(); // pop target
+            p.pop();
+            p.pop();
             p
         } else {
             current_exe
@@ -194,8 +177,6 @@ impl SettingsState {
                 }
             }
         }
-        
-        // 如果文件不存在或解析失败，生成默认配置并保存（自动创建目录和文件）
         let default_state = Self::default();
         default_state.save();
         default_state
@@ -222,11 +203,7 @@ fn setting_section(
 ) {
     ui.add_space(10.0);
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(icon)
-                .size(18.0)
-                .color(ui.visuals().text_color()),
-        );
+        ui.label(egui::RichText::new(icon).size(18.0).color(ui.visuals().text_color()));
         ui.heading(egui::RichText::new(title).strong());
     });
     ui.add_space(5.0);
@@ -248,15 +225,13 @@ fn setting_row(
     add_content: impl FnOnce(&mut egui::Ui),
 ) {
     ui.horizontal(|ui| {
-        // Icon
         ui.add_sized(
             [30.0, 30.0],
             egui::Label::new(egui::RichText::new(icon).size(20.0)),
         );
 
-        // Title and Description
         ui.vertical(|ui| {
-            ui.add_space(2.0); // Adjust vertical alignment
+            ui.add_space(2.0);
             ui.label(egui::RichText::new(title).size(14.0).strong());
             if !description.is_empty() {
                 ui.label(
@@ -267,7 +242,6 @@ fn setting_row(
             }
         });
 
-        // Fill available space to push controls to the right
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             add_content(ui);
         });
@@ -278,13 +252,6 @@ pub fn render(
     ui: &mut egui::Ui,
     tab: &mut SettingsTab,
     state: &mut SettingsState,
-    git_info: &Option<(String, String)>,
-    nodejs_info: &Option<(String, String)>,
-    npm_info: &Option<(String, String)>,
-    pm2_info: &Option<(String, String)>,
-    github_node_state: &crate::core::settings::github_proxy::NodeLoadState,
-    on_refresh_nodes: &mut bool,
-    on_install_pm2: &mut bool,
 ) {
     ui.horizontal(|ui| {
         ui.selectable_value(tab, SettingsTab::General, lang::t("general_settings", &state.language));
@@ -319,16 +286,8 @@ pub fn render(
                                         .show_ui(ui, |ui| {
                                             let text_zh = lang::t("zh_cn", &state.language);
                                             let text_en = lang::t("en_us", &state.language);
-                                            ui.selectable_value(
-                                                &mut state.language,
-                                                Language::Chinese,
-                                                text_zh,
-                                            );
-                                            ui.selectable_value(
-                                                &mut state.language,
-                                                Language::English,
-                                                text_en,
-                                            );
+                                            ui.selectable_value(&mut state.language, Language::Chinese, text_zh);
+                                            ui.selectable_value(&mut state.language, Language::English, text_en);
                                         });
                                 },
                             );
@@ -345,16 +304,8 @@ pub fn render(
                                             Theme::Dark => lang::t("dark_theme", &state.language),
                                         })
                                         .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut state.theme,
-                                                Theme::Light,
-                                                lang::t("light_theme", &state.language),
-                                            );
-                                            ui.selectable_value(
-                                                &mut state.theme,
-                                                Theme::Dark,
-                                                lang::t("dark_theme", &state.language),
-                                            );
+                                            ui.selectable_value(&mut state.theme, Theme::Light, lang::t("light_theme", &state.language));
+                                            ui.selectable_value(&mut state.theme, Theme::Dark, lang::t("dark_theme", &state.language));
                                         });
                                 },
                             );
@@ -373,7 +324,6 @@ pub fn render(
 
                     // 基本设置
                     setting_section(ui, egui_phosphor::regular::SLIDERS, lang::t("basic_settings", &state.language), |ui| {
-                        // --- 自启动相关 ---
                         setting_row(
                             ui,
                             egui_phosphor::regular::POWER,
@@ -405,7 +355,6 @@ pub fn render(
                         );
                         ui.add_space(10.0);
 
-                        // --- 系统资源 ---
                         setting_row(
                             ui,
                             egui_phosphor::regular::CPU,
@@ -419,27 +368,14 @@ pub fn render(
                                         CpuCores::All => lang::t("all_cores", &state.language),
                                     })
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut state.cpu_cores,
-                                            CpuCores::Auto,
-                                            lang::t("auto", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut state.cpu_cores,
-                                            CpuCores::Half,
-                                            lang::t("half_cores", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut state.cpu_cores,
-                                            CpuCores::All,
-                                            lang::t("all_cores", &state.language),
-                                        );
+                                        ui.selectable_value(&mut state.cpu_cores, CpuCores::Auto, lang::t("auto", &state.language));
+                                        ui.selectable_value(&mut state.cpu_cores, CpuCores::Half, lang::t("half_cores", &state.language));
+                                        ui.selectable_value(&mut state.cpu_cores, CpuCores::All, lang::t("all_cores", &state.language));
                                     });
                             },
                         );
                         ui.add_space(10.0);
 
-                        // --- 后台运行 ---
                         setting_row(
                             ui,
                             egui_phosphor::regular::ARROW_ARC_LEFT,
@@ -451,7 +387,6 @@ pub fn render(
                         );
                         ui.add_space(10.0);
 
-                        // --- 酒馆启动模式 ---
                         setting_row(
                             ui,
                             egui_phosphor::regular::PLAY_CIRCLE,
@@ -472,7 +407,6 @@ pub fn render(
                         );
                         ui.add_space(10.0);
 
-                        // --- 酒馆数据模式 ---
                         let data_mode_desc = match state.data_mode {
                             TavernDataMode::Global => lang::t("data_mode_global_desc", &state.language),
                             TavernDataMode::Current => lang::t("data_mode_current_desc", &state.language),
@@ -497,101 +431,43 @@ pub fn render(
 
                     // Git 设置
                     setting_section(ui, egui_phosphor::regular::GIT_BRANCH, lang::t("git_settings", &state.language), |ui| {
-                        let unknown = lang::t("unknown", &state.language);
-                        let (git_ver, git_path) = git_info.as_ref().map(|(v, p)| (v.as_str(), p.as_str())).unwrap_or((unknown, unknown));
-                        let git_info_desc = lang::t("git_env_info_desc", &state.language)
-                            .replace("{version}", git_ver)
-                            .replace("{path}", git_path);
-                            
                         setting_row(
                             ui,
-                            egui_phosphor::regular::INFO,
-                            lang::t("git_env_info", &state.language),
-                            &git_info_desc,
-                            |_| {},
+                            egui_phosphor::regular::WRENCH,
+                            lang::t("git_env_source", &state.language),
+                            lang::t("git_env_source_desc", &state.language),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("git_env_combo")
+                                    .selected_text(match state.git_env {
+                                        EnvSource::System => lang::t("system_env", &state.language),
+                                        EnvSource::Builtin => lang::t("builtin_env", &state.language),
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut state.git_env, EnvSource::System, lang::t("system_env", &state.language));
+                                        ui.selectable_value(&mut state.git_env, EnvSource::Builtin, lang::t("builtin_env", &state.language));
+                                    });
+                            },
                         );
-                        ui.add_space(10.0);
-                        setting_row(
-                                ui,
-                                egui_phosphor::regular::WRENCH,
-                                lang::t("git_env_source", &state.language),
-                                lang::t("git_env_source_desc", &state.language),
-                                |ui| {
-                                    egui::ComboBox::from_id_salt("git_env_combo")
-                                        .selected_text(match state.git_env {
-                                            EnvSource::System => lang::t("system_env", &state.language),
-                                            EnvSource::Builtin => lang::t("builtin_env", &state.language),
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut state.git_env,
-                                                EnvSource::System,
-                                                lang::t("system_env", &state.language),
-                                            );
-                                            ui.selectable_value(
-                                                &mut state.git_env,
-                                                EnvSource::Builtin,
-                                                lang::t("builtin_env", &state.language),
-                                            );
-                                        });
-                                },
-                            );
                     });
 
                     // NodeJs 设置
                     setting_section(ui, egui_phosphor::regular::TERMINAL, lang::t("nodejs_settings", &state.language), |ui| {
-                        let unknown = lang::t("unknown", &state.language);
-                        let (node_ver, node_path) = nodejs_info.as_ref().map(|(v, p)| (v.as_str(), p.as_str())).unwrap_or((unknown, unknown));
-                        let node_info_desc = lang::t("nodejs_env_info_desc", &state.language)
-                            .replace("{version}", node_ver)
-                            .replace("{path}", node_path);
-                            
                         setting_row(
                             ui,
-                            egui_phosphor::regular::INFO,
-                            lang::t("nodejs_env_info", &state.language),
-                            &node_info_desc,
-                            |_| {},
-                        );
-                        ui.add_space(10.0);
-                        setting_row(
-                                ui,
-                                egui_phosphor::regular::WRENCH,
-                                lang::t("nodejs_env_source", &state.language),
-                                lang::t("nodejs_env_source_desc", &state.language),
-                                |ui| {
-                                    egui::ComboBox::from_id_salt("nodejs_env_combo")
-                                        .selected_text(match state.nodejs_env {
-                                            EnvSource::System => lang::t("system_env", &state.language),
-                                            EnvSource::Builtin => lang::t("builtin_env", &state.language),
-                                        })
-                                        .show_ui(ui, |ui| {
-                                            ui.selectable_value(
-                                                &mut state.nodejs_env,
-                                                EnvSource::System,
-                                                lang::t("system_env", &state.language),
-                                            );
-                                            ui.selectable_value(
-                                                &mut state.nodejs_env,
-                                                EnvSource::Builtin,
-                                                lang::t("builtin_env", &state.language),
-                                            );
-                                        });
-                                },
-                            );
-                        ui.add_space(10.0);
-                        
-                        let (npm_ver, npm_path) = npm_info.as_ref().map(|(v, p)| (v.as_str(), p.as_str())).unwrap_or((unknown, unknown));
-                        let npm_info_desc = lang::t("npm_env_info_desc", &state.language)
-                            .replace("{version}", npm_ver)
-                            .replace("{path}", npm_path);
-                            
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::INFO,
-                            lang::t("npm_env_info", &state.language),
-                            &npm_info_desc,
-                            |_| {},
+                            egui_phosphor::regular::WRENCH,
+                            lang::t("nodejs_env_source", &state.language),
+                            lang::t("nodejs_env_source_desc", &state.language),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("nodejs_env_combo")
+                                    .selected_text(match state.nodejs_env {
+                                        EnvSource::System => lang::t("system_env", &state.language),
+                                        EnvSource::Builtin => lang::t("builtin_env", &state.language),
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut state.nodejs_env, EnvSource::System, lang::t("system_env", &state.language));
+                                        ui.selectable_value(&mut state.nodejs_env, EnvSource::Builtin, lang::t("builtin_env", &state.language));
+                                    });
+                            },
                         );
                         ui.add_space(10.0);
                         setting_row(
@@ -607,304 +483,55 @@ pub fn render(
                                         NpmRegistry::Tencent => lang::t("tencent_registry", &state.language),
                                     })
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut state.npm_registry,
-                                            NpmRegistry::Official,
-                                            lang::t("official_registry", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut state.npm_registry,
-                                            NpmRegistry::Taobao,
-                                            lang::t("taobao_registry", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut state.npm_registry,
-                                            NpmRegistry::Tencent,
-                                            lang::t("tencent_registry", &state.language),
-                                        );
+                                        ui.selectable_value(&mut state.npm_registry, NpmRegistry::Official, lang::t("official_registry", &state.language));
+                                        ui.selectable_value(&mut state.npm_registry, NpmRegistry::Taobao, lang::t("taobao_registry", &state.language));
+                                        ui.selectable_value(&mut state.npm_registry, NpmRegistry::Tencent, lang::t("tencent_registry", &state.language));
                                     });
-                            },
-                        );
-                        ui.add_space(10.0);
-
-                        // PM2 环境信息
-                        let (pm2_ver, pm2_path) = pm2_info.as_ref()
-                            .map(|(v, p)| (v.as_str(), p.as_str()))
-                            .unwrap_or(("", ""));
-                        let pm2_installed = !pm2_ver.is_empty();
-                        let pm2_info_desc = if pm2_installed {
-                            lang::t("pm2_env_info_desc", &state.language)
-                                .replace("{version}", pm2_ver)
-                                .replace("{path}", pm2_path)
-                        } else {
-                            lang::t("pm2_not_installed", &state.language).to_string()
-                        };
-
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::CLOUD,
-                            lang::t("pm2_env_info", &state.language),
-                            &pm2_info_desc,
-                            |ui| {
-                                if !pm2_installed {
-                                    if ui
-                                        .add_sized(
-                                            [80.0, 26.0],
-                                            egui::Button::new(
-                                                egui::RichText::new(lang::t("install", &state.language)).size(12.0),
-                                            ),
-                                        )
-                                        .clicked()
-                                    {
-                                        *on_install_pm2 = true;
-                                    }
-                                }
                             },
                         );
                     });
 
                     // Github 设置
-                    setting_section(
-                        ui,
-                        egui_phosphor::regular::GITHUB_LOGO,
-                        lang::t("github_settings", &state.language),
-                        |ui| {
-                            setting_row(
-                                ui,
-                                egui_phosphor::regular::POWER,
-                                lang::t("github_proxy", &state.language),
-                                lang::t("github_proxy_desc", &state.language),
-                                |ui| {
-                                    let mut enabled = state.github_proxy_enabled;
-                                    if ui.add(crate::ui::switch::toggle(&mut enabled)).changed() {
-                                        state.github_proxy_enabled = enabled;
-                                        if enabled {
-                                            state.proxy_type = ProxyType::None;
-                                        }
-                                    }
-                                },
-                            );
-                            ui.add_space(10.0);
-
-                            // 节点列表标题行（带刷新按钮）
-                            ui.horizontal(|ui| {
-                                ui.add_sized(
-                                    [30.0, 30.0],
-                                    egui::Label::new(egui::RichText::new(egui_phosphor::regular::LIST).size(20.0)),
-                                );
-                                ui.vertical(|ui| {
-                                    ui.add_space(2.0);
-                                    ui.label(egui::RichText::new(lang::t("github_nodes", &state.language)).size(14.0).strong());
-                                    ui.label(
-                                        egui::RichText::new(lang::t("github_nodes_desc", &state.language))
-                                            .color(egui::Color32::GRAY)
-                                            .size(12.0),
-                                    );
-                                });
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    let is_loading = matches!(github_node_state, crate::core::settings::github_proxy::NodeLoadState::Loading);
-                                    ui.add_enabled_ui(!is_loading, |ui| {
-                                        if ui.button(lang::t("refresh_nodes", &state.language)).clicked() {
-                                            *on_refresh_nodes = true;
-                                        }
-                                    });
-                                    if is_loading {
-                                        ui.spinner();
-                                    }
-                                });
-                            });
-
-                            ui.add_space(8.0);
-
-                            if !state.github_proxy_enabled {
-                                ui.label(
-                                    egui::RichText::new(lang::t("enable_proxy_first", &state.language))
-                                        .color(egui::Color32::GRAY),
-                                );
-                            } else {
-                                match github_node_state {
-                                    crate::core::settings::github_proxy::NodeLoadState::Idle => {
-                                        ui.label(
-                                            egui::RichText::new(lang::t("click_refresh_to_load", &state.language))
-                                                .color(egui::Color32::GRAY),
-                                        );
-                                    }
-                                    crate::core::settings::github_proxy::NodeLoadState::Loading => {
-                                        ui.horizontal(|ui| {
-                                            ui.spinner();
-                                            ui.label(lang::t("loading_nodes", &state.language));
-                                        });
-                                    }
-                                    crate::core::settings::github_proxy::NodeLoadState::Error(e) => {
-                                        ui.label(
-                                            egui::RichText::new(format!("{} {e}", lang::t("fetch_error", &state.language)))
-                                                .color(egui::Color32::RED),
-                                        );
-                                    }
-                                    crate::core::settings::github_proxy::NodeLoadState::Done(entries) => {
-                                        // 按实测延迟排序（测试中排最后，超时排中间，有值按延迟升序）
-                                        let mut sorted_entries = entries.clone();
-                                        sorted_entries.sort_by(|a, b| {
-                                            let a_ms = *a.measured_ms.lock().unwrap();
-                                            let b_ms = *b.measured_ms.lock().unwrap();
-                                            match (a_ms, b_ms) {
-                                                (None, None) => std::cmp::Ordering::Equal,
-                                                (None, _) => std::cmp::Ordering::Greater,
-                                                (_, None) => std::cmp::Ordering::Less,
-                                                (Some(None), Some(None)) => std::cmp::Ordering::Equal,
-                                                (Some(None), Some(Some(_))) => std::cmp::Ordering::Greater,
-                                                (Some(Some(_)), Some(None)) => std::cmp::Ordering::Less,
-                                                (Some(Some(a)), Some(Some(b))) => a.cmp(&b),
-                                            }
-                                        });
-
-                                        // 节点表格 — 9 列，支持横向滚动
-                                        let avail_w = ui.available_width();
-                                        let select_w: f32 = 50.0;
-                                        let url_w: f32 = 260.0;
-                                        let server_w: f32 = 120.0;
-                                        let ip_w: f32 = 130.0;
-                                        let loc_w: f32 = 90.0;
-                                        let api_latency_w: f32 = 90.0;
-                                        let latency_w: f32 = 90.0;
-                                        let speed_w: f32 = 90.0;
-                                        let tag_w: f32 = 100.0;
-                                        let spacing: f32 = 16.0;
-                                        let total_fixed: f32 = select_w + server_w + ip_w + loc_w + api_latency_w + latency_w + speed_w + tag_w + spacing * 8.0;
-                                        let url_calc: f32 = (avail_w - total_fixed).max(url_w);
-
-                                        egui::ScrollArea::new(egui::Vec2b::TRUE)
-                                            .id_salt("github_nodes_scroll")
-                                            .max_height(400.0)
-                                            .min_scrolled_height(400.0)
-                                            .show(ui, |ui| {
-                                                egui::Grid::new("github_nodes_grid")
-                                                    .striped(true)
-                                                    .num_columns(9)
-                                                    .spacing(egui::vec2(spacing, 6.0))
-                                                    .show(ui, |ui| {
-                                                        // 表头
-                                                        ui.allocate_ui_with_layout(egui::vec2(select_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong(lang::t("col_select", &state.language)); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(url_calc, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| { ui.strong(lang::t("col_url", &state.language)); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(server_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong("Server"); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(ip_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong("IP"); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(loc_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong(lang::t("col_location", &state.language)); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(api_latency_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong("接口延迟"); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(latency_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong(lang::t("col_latency", &state.language)); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(speed_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong(lang::t("col_speed", &state.language)); });
-                                                        ui.allocate_ui_with_layout(egui::vec2(tag_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| { ui.strong("Tag"); });
-                                                        ui.end_row();
-
-                                                        for entry in sorted_entries.iter() {
-                                                            let is_selected = state.github_proxy_url == entry.url;
-
-                                                            // 选择列
-                                                            ui.allocate_ui_with_layout(egui::vec2(select_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                let mut sel = is_selected;
-                                                                if ui.radio(sel, "").clicked() { sel = true; }
-                                                                if sel && !is_selected { state.github_proxy_url = entry.url.clone(); }
-                                                            });
-                                                            // URL
-                                                            let url_display = entry.url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-                                                            ui.allocate_ui_with_layout(egui::vec2(url_calc, 28.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(url_display).size(13.0).color(ui.visuals().text_color())).on_hover_text(entry.url.clone());
-                                                            });
-                                                            // Server
-                                                            ui.allocate_ui_with_layout(egui::vec2(server_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(&entry.server).size(13.0));
-                                                            });
-                                                            // IP
-                                                            ui.allocate_ui_with_layout(egui::vec2(ip_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(&entry.ip).size(13.0));
-                                                            });
-                                                            // 地区
-                                                            let loc = if entry.location.is_empty() { "-".to_string() } else { entry.location.clone() };
-                                                            ui.allocate_ui_with_layout(egui::vec2(loc_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(&loc).size(13.0));
-                                                            });
-                                                            // 接口延迟
-                                                            ui.allocate_ui_with_layout(egui::vec2(api_latency_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(format!("{} ms", entry.api_latency)).size(13.0).color(egui::Color32::from_rgb(140, 140, 140)));
-                                                            });
-                                                            // 实测延迟
-                                                            let latency_text = {
-                                                                let guard = entry.measured_ms.lock().unwrap();
-                                                                match &*guard {
-                                                                    None => lang::t("testing", &state.language).to_string(),
-                                                                    Some(None) => lang::t("timeout", &state.language).to_string(),
-                                                                    Some(Some(ms)) => format!("{ms} ms"),
-                                                                }
-                                                            };
-                                                            let latency_color = {
-                                                                let guard = entry.measured_ms.lock().unwrap();
-                                                                match &*guard {
-                                                                    Some(Some(ms)) if *ms < 200 => egui::Color32::from_rgb(80, 200, 100),
-                                                                    Some(Some(ms)) if *ms < 500 => egui::Color32::from_rgb(230, 180, 60),
-                                                                    Some(Some(_)) => egui::Color32::from_rgb(220, 80, 60),
-                                                                    _ => egui::Color32::GRAY,
-                                                                }
-                                                            };
-                                                            ui.allocate_ui_with_layout(egui::vec2(latency_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(&latency_text).size(13.0).color(latency_color));
-                                                            });
-                                                            // 速度
-                                                            let speed_str = if entry.speed >= 1000.0 {
-                                                                format!("{:.1} MB/s", entry.speed / 1024.0)
-                                                            } else {
-                                                                format!("{:.1} KB/s", entry.speed)
-                                                            };
-                                                            ui.allocate_ui_with_layout(egui::vec2(speed_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                ui.label(egui::RichText::new(&speed_str).size(13.0));
-                                                            });
-                                                            // Tag
-                                                            ui.allocate_ui_with_layout(egui::vec2(tag_w, 28.0), egui::Layout::top_down(egui::Align::Center), |ui| {
-                                                                let tag_display = if entry.tag.is_empty() { "-".to_string() } else { entry.tag.clone() };
-                                                                ui.label(egui::RichText::new(&tag_display).size(13.0));
-                                                            });
-                                                            ui.end_row();
-                                                        }
-                                                    });
-                                            });
-
-                                        // 当前选中节点提示
-                                        if !state.github_proxy_url.is_empty() {
-                                            ui.add_space(6.0);
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new(lang::t("selected_node", &state.language))
-                                                        .size(12.0)
-                                                        .color(egui::Color32::GRAY),
-                                                );
-                                                ui.label(
-                                                    egui::RichText::new(&state.github_proxy_url)
-                                                        .size(12.0)
-                                                        .color(egui::Color32::from_rgb(100, 160, 240)),
-                                                );
-                                            });
-                                        }
+                    setting_section(ui, egui_phosphor::regular::GITHUB_LOGO, lang::t("github_settings", &state.language), |ui| {
+                        setting_row(
+                            ui,
+                            egui_phosphor::regular::POWER,
+                            lang::t("github_proxy", &state.language),
+                            lang::t("github_proxy_desc", &state.language),
+                            |ui| {
+                                let mut enabled = state.github_proxy_enabled;
+                                if ui.add(crate::ui::switch::toggle(&mut enabled)).changed() {
+                                    state.github_proxy_enabled = enabled;
+                                    if enabled {
+                                        state.proxy_type = ProxyType::None;
                                     }
                                 }
-                            }
-                        },
-                    );
+                            },
+                        );
+                        if state.github_proxy_enabled {
+                            ui.add_space(10.0);
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::LINK,
+                                lang::t("github_proxy_url", &state.language),
+                                "",
+                                |ui| {
+                                    ui.add_sized(
+                                        [250.0, 24.0],
+                                        egui::TextEdit::singleline(&mut state.github_proxy_url),
+                                    );
+                                },
+                            );
+                        }
+                    });
 
                     // 网络设置
                     setting_section(ui, egui_phosphor::regular::WIFI_HIGH, lang::t("network_settings", &state.language), |ui| {
-                        let mut proxy_desc = lang::t("proxy_settings_desc", &state.language).to_string();
-                        if state.proxy_type == ProxyType::System {
-                            if let Some((_, enabled)) = crate::core::network::read_windows_system_proxy() {
-                                let status_text = if enabled { lang::t("on", &state.language) } else { lang::t("off", &state.language) };
-                                proxy_desc = format!("{} ({} {})", proxy_desc, lang::t("system_proxy_status", &state.language), status_text);
-                            } else {
-                                proxy_desc = format!("{} ({} {})", proxy_desc, lang::t("system_proxy_status", &state.language), lang::t("unknown", &state.language));
-                            }
-                        }
-
                         setting_row(
                             ui,
                             egui_phosphor::regular::SHIELD,
                             lang::t("proxy_settings", &state.language),
-                            &proxy_desc,
+                            lang::t("proxy_settings_desc", &state.language),
                             |ui| {
                                 let mut pt = state.proxy_type.clone();
                                 egui::ComboBox::from_id_salt("proxy_type_combo")
@@ -914,21 +541,9 @@ pub fn render(
                                         ProxyType::Custom => lang::t("custom_proxy", &state.language),
                                     })
                                     .show_ui(ui, |ui| {
-                                        ui.selectable_value(
-                                            &mut pt,
-                                            ProxyType::None,
-                                            lang::t("off", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut pt,
-                                            ProxyType::System,
-                                            lang::t("follow_system", &state.language),
-                                        );
-                                        ui.selectable_value(
-                                            &mut pt,
-                                            ProxyType::Custom,
-                                            lang::t("custom_proxy", &state.language),
-                                        );
+                                        ui.selectable_value(&mut pt, ProxyType::None, lang::t("off", &state.language));
+                                        ui.selectable_value(&mut pt, ProxyType::System, lang::t("follow_system", &state.language));
+                                        ui.selectable_value(&mut pt, ProxyType::Custom, lang::t("custom_proxy", &state.language));
                                     });
 
                                 if pt != state.proxy_type {
@@ -952,52 +567,6 @@ pub fn render(
                                 },
                             );
                         }
-
-                        ui.add_space(10.0);
-                            setting_row(
-                                ui,
-                                egui_phosphor::regular::PLUG,
-                                lang::t("github_test", &state.language),
-                                lang::t("github_test_desc", &state.language),
-                                |ui| {
-                                    if ui.button(lang::t("start_test", &state.language)).clicked() {
-                                          let mut popup_state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
-                                          popup_state.show = true;
-                                          popup_state.results.clear();
-                                          
-                                          // 启动测试
-                                          let has_proxy = state.proxy_type != ProxyType::None;
-                                          let has_accelerate = state.github_proxy_enabled;
-                                          
-                                          let (proxy_mode, proxy_host, accelerate_url) = match (has_proxy, has_accelerate) {
-                                              (true, true) => {
-                                                  let p_mode = match state.proxy_type {
-                                                      ProxyType::System => "system",
-                                                      ProxyType::Custom => "custom",
-                                                      ProxyType::None => "none",
-                                                  };
-                                                  (p_mode, state.custom_proxy.clone(), Some(state.github_proxy_url.clone()))
-                                              },
-                                              (true, false) => {
-                                                  let p_mode = match state.proxy_type {
-                                                      ProxyType::System => "system",
-                                                      ProxyType::Custom => "custom",
-                                                      ProxyType::None => "none",
-                                                  };
-                                                  (p_mode, state.custom_proxy.clone(), None)
-                                              },
-                                              (false, true) => {
-                                                  ("none", String::new(), Some(state.github_proxy_url.clone()))
-                                              },
-                                              (false, false) => {
-                                                  ("none", String::new(), None)
-                                              },
-                                          };
-                                          
-                                          crate::core::network::start_github_multi_test(proxy_mode, &proxy_host, 0, accelerate_url, true);
-                                      }
-                                },
-                            );
                     });
 
                     ui.add_space(20.0);
@@ -1005,39 +574,33 @@ pub fn render(
         }
         SettingsTab::About => {
             ui.vertical_centered(|ui| {
-                // 上部分：软件关于信息
                 ui.heading(lang::t("about_title", &state.language));
                 ui.label(lang::t("about_version", &state.language));
                 ui.label(lang::t("about_desc", &state.language));
-                
+
                 ui.add_space(20.0);
                 ui.separator();
                 ui.add_space(10.0);
-                
-                // 下部分：开发信息与技术栈表格
+
                 ui.heading(lang::t("tech_stack", &state.language));
                 ui.add_space(10.0);
-                
-                // 居中表格：利用 Layout 强制水平居中，并添加垂直滚动条
+
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            // 设定固定列宽，确保文字不错位
                             egui::Grid::new("tech_stack_grid")
                                 .striped(true)
-                                .num_columns(4) // 修改为4列
-                                .min_col_width(100.0) // 进一步调小以适应4列
-                                .spacing(egui::vec2(30.0, 15.0)) // 调整间距
+                                .num_columns(4)
+                                .min_col_width(100.0)
+                                .spacing(egui::vec2(30.0, 15.0))
                                 .show(ui, |ui| {
-                                    // 表头
                                     ui.vertical_centered(|ui| ui.strong(lang::t("tech_col_1", &state.language)));
                                     ui.vertical_centered(|ui| ui.strong(lang::t("tech_col_2", &state.language)));
                                     ui.vertical_centered(|ui| ui.strong(lang::t("tech_col_3", &state.language)));
                                     ui.vertical_centered(|ui| ui.strong(lang::t("tech_col_4", &state.language)));
                                     ui.end_row();
 
-                                    // 资源
                                     ui.vertical_centered(|ui| ui.label("MiSans"));
                                     ui.vertical_centered(|ui| ui.label("2022"));
                                     ui.vertical_centered(|ui| {
@@ -1045,8 +608,7 @@ pub fn render(
                                     });
                                     ui.vertical_centered(|ui| ui.label(lang::t("mi_font", &state.language)));
                                     ui.end_row();
-                                    
-                                    // 数据行
+
                                     ui.vertical_centered(|ui| ui.label("Rust"));
                                     ui.vertical_centered(|ui| ui.label("2024"));
                                     ui.vertical_centered(|ui| {
@@ -1054,7 +616,7 @@ pub fn render(
                                     });
                                     ui.vertical_centered(|ui| ui.label(lang::t("rust_desc", &state.language)));
                                     ui.end_row();
-                                    
+
                                     ui.vertical_centered(|ui| ui.label("egui"));
                                     ui.vertical_centered(|ui| ui.label("0.33"));
                                     ui.vertical_centered(|ui| {
@@ -1062,7 +624,7 @@ pub fn render(
                                     });
                                     ui.vertical_centered(|ui| ui.label(lang::t("egui_desc", &state.language)));
                                     ui.end_row();
-                                    
+
                                     ui.vertical_centered(|ui| ui.label("eframe"));
                                     ui.vertical_centered(|ui| ui.label("0.33"));
                                     ui.vertical_centered(|ui| {
@@ -1070,7 +632,7 @@ pub fn render(
                                     });
                                     ui.vertical_centered(|ui| ui.label(lang::t("eframe_desc", &state.language)));
                                     ui.end_row();
-                                    
+
                                     ui.vertical_centered(|ui| ui.label("egui_phosphor"));
                                     ui.vertical_centered(|ui| ui.label("0.11"));
                                     ui.vertical_centered(|ui| {
@@ -1084,185 +646,4 @@ pub fn render(
             });
         }
     }
-    // === Github 测试弹窗 ===
-    {
-        // 获取弹窗状态（不持有锁）
-        let (show, results) = {
-            let state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
-            (state.show, state.results.clone())
-        };
-        
-        if show {
-            let mut open = true;
-            let mut results = results;
-            
-            egui::Window::new(lang::t("github_test", &state.language))
-                .open(&mut open)
-                .resizable(true)
-                .default_width(400.0)
-                .show(ui.ctx(), |ui| {
-                    // 检查测试是否正在进行
-                    let testing = crate::core::network::is_github_multi_test_in_progress();
-                    
-                    let has_proxy = state.proxy_type != ProxyType::None;
-                    let has_accelerate = state.github_proxy_enabled;
-                    
-                    let mode_text = match (has_proxy, has_accelerate) {
-                        (false, false) => lang::t("direct_mode", &state.language),
-                        (true, false) => lang::t("proxy_only_mode", &state.language),
-                        (false, true) => lang::t("accelerate_only_mode", &state.language),
-                        (true, true) => lang::t("proxy_and_accelerate_mode", &state.language),
-                    };
-                    
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(lang::t("test_mode", &state.language)).strong());
-                        ui.label(mode_text);
-                        
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if testing {
-                                ui.spinner();
-                                ui.label(lang::t("testing", &state.language));
-                            } else {
-                                if ui.button(lang::t("start_test", &state.language)).clicked() {
-                                      results.clear();
-                                      let mut popup_state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
-                                      popup_state.show = true;
-                                      popup_state.results.clear();
-                                      
-                                      // 启动测试
-                                      let has_proxy = state.proxy_type != ProxyType::None;
-                                      let has_accelerate = state.github_proxy_enabled;
-                                      
-                                      let (proxy_mode, proxy_host, accelerate_url) = match (has_proxy, has_accelerate) {
-                                          (true, true) => {
-                                              let p_mode = match state.proxy_type {
-                                                  ProxyType::System => "system",
-                                                  ProxyType::Custom => "custom",
-                                                  ProxyType::None => "none",
-                                              };
-                                              (p_mode, state.custom_proxy.clone(), Some(state.github_proxy_url.clone()))
-                                          },
-                                          (true, false) => {
-                                              let p_mode = match state.proxy_type {
-                                                  ProxyType::System => "system",
-                                                  ProxyType::Custom => "custom",
-                                                  ProxyType::None => "none",
-                                              };
-                                              (p_mode, state.custom_proxy.clone(), None)
-                                          },
-                                          (false, true) => {
-                                              ("none", String::new(), Some(state.github_proxy_url.clone()))
-                                          },
-                                          (false, false) => {
-                                              ("none", String::new(), None)
-                                          },
-                                      };
-                                      
-                                      crate::core::network::start_github_multi_test(proxy_mode, &proxy_host, 0, accelerate_url, true);
-                                 }
-                            }
-                        });
-                    });
-                    
-                    ui.separator();
-                    
-                    if testing || !results.is_empty() {
-                         ui.heading(lang::t("test_results", &state.language));
-                         ui.add_space(5.0);
-                         
-                         egui::ScrollArea::vertical()
-                             .max_height(300.0)
-                             .show(ui, |ui| {
-                                 if testing && results.is_empty() {
-                                     let expected_tests = ["文件访问", "仓库访问", "首页访问", "API 访问", "下载速度"];
-                                     for name in expected_tests {
-                                         ui.horizontal(|ui| {
-                                             ui.label(name);
-                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                 ui.spinner();
-                                                 ui.label(egui::RichText::new(lang::t("testing", &state.language)).color(egui::Color32::GRAY));
-                                             });
-                                         });
-                                         ui.separator();
-                                     }
-                                 } else {
-                                     for item in &results {
-                                         ui.horizontal(|ui| {
-                                             ui.label(&item.name);
-                                             
-                                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                 if let Some(warn) = &item.warning {
-                                                     // 异常/警告：图标在右边，文字在左边（由于是 right_to_left，先添加图标）
-                                                     ui.label(egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE).color(egui::Color32::YELLOW))
-                                                         .on_hover_text(warn);
-                                                     
-                                                     let short_msg = if warn.contains("速度") {
-                                                         // 如果是速度测试，尝试提取括号里的具体速度（例如 "8.50 MB/s"）
-                                                         if let Some(start) = warn.find('(') {
-                                                             if let Some(end) = warn.find(')') {
-                                                                 &warn[start+1..end]
-                                                             } else { "异常" }
-                                                         } else { "异常" }
-                                                     } else {
-                                                         "异常"
-                                                     };
-                                                     ui.label(egui::RichText::new(short_msg).color(egui::Color32::GRAY));
-                                                     
-                                                 } else if item.success {
-                                                // 成功：图标在右边，文字（如果有延迟）在左边
-                                                let mut hover_text = lang::t("connectivity_available", &state.language).to_string();
-                                                if let Some(latency) = item.latency_ms {
-                                                    hover_text.push_str(&format!("\n{} ms", latency));
-                                                }
-                                                ui.label(egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE).color(egui::Color32::GREEN))
-                                                    .on_hover_text(hover_text);
-                                                    
-                                                if let Some(latency) = item.latency_ms {
-                                                    // 延迟如果太长，可以只显示数字
-                                                    ui.label(egui::RichText::new(format!("{}ms", latency)).color(egui::Color32::GRAY));
-                                                } else {
-                                                    ui.label(egui::RichText::new(lang::t("success", &state.language)).color(egui::Color32::GRAY));
-                                                }
-                                            } else {
-                                                // 失败：图标在右边，简短文字在左边
-                                                let err_text = item.error.as_deref().unwrap_or(lang::t("connectivity_unavailable", &state.language));
-                                                ui.label(egui::RichText::new(egui_phosphor::regular::X_CIRCLE).color(egui::Color32::RED))
-                                                    .on_hover_text(err_text);
-                                                    
-                                                let short_err = if err_text.contains("超时") || err_text.contains("timeout") {
-                                                    "超时"
-                                                } else if err_text.contains("HTTP") {
-                                                    "拒绝"
-                                                } else {
-                                                    "失败"
-                                                };
-                                                ui.label(egui::RichText::new(short_err).color(egui::Color32::GRAY));
-                                             }
-                                         });
-                                     });
-                                     ui.separator();
-                                 }
-                             }
-                         });
-                     }
-                 });
-            
-            // 检查测试是否完成（不持有锁时调用）
-            if let Some(test_results) = crate::core::network::get_github_multi_test_result() {
-                results = test_results;
-            }
-            
-            // 保存状态
-            let mut popup_state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
-            
-            if !open && popup_state.show {
-                crate::core::network::cancel_github_multi_test();
-                results.clear();
-            }
-            
-            popup_state.show = open;
-            popup_state.results = results;
-        }
-    }
-
 }
