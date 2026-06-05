@@ -398,12 +398,17 @@ impl eframe::App for MyApp {
                         .sillytavern
                         .as_ref()
                         .map(|inst| inst.version.as_str());
+                    let start_mode_label = match self.settings_state.start_mode {
+                        pages::settings::StartMode::Normal => lang::t("normal_mode", &self.settings_state.language),
+                        pages::settings::StartMode::Desktop => lang::t("desktop_mode", &self.settings_state.language),
+                    };
                     pages::home::render(
                         ui,
                         &mut self.current_page,
                         &mut self.console_state,
                         &self.settings_state.language,
                         version,
+                        start_mode_label,
                     );
                 }
                 Page::TavernConfig => {

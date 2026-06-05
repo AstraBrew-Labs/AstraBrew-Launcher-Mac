@@ -9,12 +9,14 @@ use egui::{Color32, CornerRadius, Frame, Margin, RichText, Stroke, Vec2};
 /// - console_state: 用于触发启动/停止
 /// - lang: 语言
 /// - version_info: 当前版本字符串（可选）
+/// - start_mode_label: 当前启动模式的翻译文本
 pub fn render(
     ui: &mut egui::Ui,
     current_page: &mut Page,
     console_state: &mut ConsoleState,
     lang: &Language,
     version_info: Option<&str>,
+    start_mode_label: &str,
 ) {
     let available = ui.available_size();
     let visuals = ui.style().visuals.clone();
@@ -268,7 +270,7 @@ pub fn render(
                             accent_purple,
                             egui_phosphor::regular::GEAR,
                             lang::t("home_card_mode", lang),
-                            lang::t("normal_mode", lang),
+                            start_mode_label,
                         );
 
                         ui.add_space(12.0);

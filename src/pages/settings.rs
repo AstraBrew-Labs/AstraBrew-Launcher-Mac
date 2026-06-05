@@ -39,8 +39,13 @@ pub enum StartMode {
     #[default]
     Normal,
     Desktop,
+}
+
+#[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
+pub enum ServerServiceMode {
+    #[default]
     Lan,
-    Public,
+    Internet,
 }
 
 #[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
@@ -99,6 +104,8 @@ pub struct SettingsState {
     // 基本设置
     pub cpu_cores: CpuCores,
     pub start_mode: StartMode,
+    pub server_mode_enabled: bool,
+    pub server_service_mode: ServerServiceMode,
     pub data_mode: TavernDataMode,
     pub auto_start: bool,
     pub auto_minimize: bool,
@@ -139,6 +146,8 @@ impl Default for SettingsState {
             window_position: None,
             cpu_cores: CpuCores::default(),
             start_mode: StartMode::default(),
+            server_mode_enabled: false,
+            server_service_mode: ServerServiceMode::default(),
             data_mode: TavernDataMode::default(),
             auto_start: false,
             auto_minimize: false,
@@ -524,25 +533,84 @@ pub fn render(
                         );
                         ui.add_space(10.0);
 
+                        let mode_desc = if state.server_mode_enabled {
+                            lang::t("server_mode_enabled_desc", &state.language)
+                        } else {
+                            match state.start_mode {
+                                StartMode::Normal => lang::t("normal_mode_desc", &state.language),
+                                StartMode::Desktop => lang::t("desktop_mode_desc", &state.language),
+                            }
+                        };
                         setting_row(
                             ui,
                             egui_phosphor::regular::PLAY_CIRCLE,
                             lang::t("start_mode", &state.language),
-                            lang::t("start_mode_desc", &state.language),
+                            mode_desc,
                             |ui| {
-                                crate::ui::segmented::segmented_control(
-                                    ui,
-                                    &mut state.start_mode,
-                                    &[
-                                        (StartMode::Normal, lang::t("normal_mode", &state.language)),
-                                        (StartMode::Desktop, lang::t("desktop_mode", &state.language)),
-                                        (StartMode::Lan, lang::t("lan_mode", &state.language)),
-                                        (StartMode::Public, lang::t("public_mode", &state.language)),
-                                    ],
-                                );
+                                if state.server_mode_enabled {
+                                    ui.add_enabled_ui(false, |ui| {
+                                        crate::ui::segmented::segmented_control(
+                                            ui,
+                                            &mut state.start_mode,
+                                            &[
+                                                (StartMode::Normal, lang::t("server_start_mode", &state.language)),
+                                            ],
+                                        );
+                                    });
+                                } else {
+                                    crate::ui::segmented::segmented_control(
+                                        ui,
+                                        &mut state.start_mode,
+                                        &[
+                                            (StartMode::Normal, lang::t("normal_mode", &state.language)),
+                                            (StartMode::Desktop, lang::t("desktop_mode", &state.language)),
+                                        ],
+                                    );
+                                }
                             },
                         );
                         ui.add_space(10.0);
+
+                        // 启用服务器模式
+                        setting_row(
+                            ui,
+                            egui_phosphor::regular::HARD_DRIVES,
+                            lang::t("server_mode_enabled", &state.language),
+                            lang::t("server_mode_enabled_desc", &state.language),
+                            |ui| {
+                                ui.add(crate::ui::switch::toggle(&mut state.server_mode_enabled));
+                            },
+                        );
+
+                        // 服务器模式开启时：强制锁定启动模式为正常模式
+                        if state.server_mode_enabled && state.start_mode != StartMode::Normal {
+                            state.start_mode = StartMode::Normal;
+                        }
+
+                        // 酒馆服务模式（仅服务器模式开启时显示）
+                        if state.server_mode_enabled {
+                            ui.add_space(10.0);
+                            let svc_desc = match state.server_service_mode {
+                                ServerServiceMode::Lan => lang::t("server_mode_lan_desc", &state.language),
+                                ServerServiceMode::Internet => lang::t("server_mode_internet_desc", &state.language),
+                            };
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::GLOBE,
+                                lang::t("server_service_mode", &state.language),
+                                svc_desc,
+                                |ui| {
+                                    crate::ui::segmented::segmented_control(
+                                        ui,
+                                        &mut state.server_service_mode,
+                                        &[
+                                            (ServerServiceMode::Lan, lang::t("server_mode_lan", &state.language)),
+                                            (ServerServiceMode::Internet, lang::t("server_mode_internet", &state.language)),
+                                        ],
+                                    );
+                                },
+                            );
+                        }
 
                         let data_mode_desc = match state.data_mode {
                             TavernDataMode::Global => lang::t("data_mode_global_desc", &state.language),
