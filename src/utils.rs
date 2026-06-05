@@ -1,21 +1,22 @@
-//! 工具函数模块 — macOS 路径管理
-//!
-//! 所有数据统一存储在 macOS 标准路径：
+//! 工具函数模块 — macOS 标准路径管理
 //!
 //! ```text
-//! ~/Library/Application Support/AstraBrew Launcher/    ← 应用根目录
-//! ├── sillytavern/          ← 酒馆核心文件
-//! │   ├── config.yaml       ← 酒馆配置文件
-//! │   └── default/
-//! │       └── config.yaml   ← 酒馆配置模板
-//! ├── data/                 ← 数据目录
+//! ~/Library/Application Support/AstraBrew Launcher/    ← 根目录 (root)
+//! ├── data/                    ← 用户数据目录
+//! │   ├── sillytavern/        ← 全局统一酒馆数据目录
+//! │   ├── config.yaml         ← 全局统一酒馆配置文件
 //! │   └── local_instances.json
-//! ├── settings.json         ← 启动器配置文件
-//! ├── logs/                 ← 日志目录
-//! └── temp/                 ← 临时目录
+//! ├── sillytavern/            ← 酒馆核心文件目录 (ST installation)
+//! └── settings.json           ← 启动器配置文件
+//!
+//! ~/Library/Logs/AstraBrew Launcher/      ← 日志目录 (logs)
+//!
+//! ~/Library/Caches/AstraBrew Launcher/    ← 缓存目录 (caches)
+//!
+//! /tmp/AstraBrew Launcher/                ← 临时目录 (temp)
 //! ```
 //!
-//! 开发调试时如需使用项目本地 `data/` 目录，设置环境变量 `ASTRA_DEV=1`。
+//! 开发调试时设置 `ASTRA_DEV=1`，所有路径切换为项目本地 `data/` 子目录。
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -24,20 +25,19 @@ use std::sync::OnceLock;
 // AppPaths — 全局路径管理器
 // ============================================================================
 
-/// 应用所有标准路径的集中管理器
-///
-/// 根目录: `~/Library/Application Support/AstraBrew Launcher/`
-/// 设置 `ASTRA_DEV=1` 后切换为项目本地 `data/`
+/// 应用所有标准 macOS 路径的集中管理器
 #[derive(Debug, Clone)]
 pub struct AppPaths {
-    /// 应用根目录
+    /// `~/Library/Application Support/AstraBrew Launcher/`
     pub root: PathBuf,
-    /// 数据子目录: `root/data/`
-    pub data: PathBuf,
-    /// 日志子目录: `root/logs/`
+    /// `~/Library/Logs/AstraBrew Launcher/`
     pub logs: PathBuf,
-    /// 临时子目录: `root/temp/`
+    /// `~/Library/Caches/AstraBrew Launcher/`
+    pub caches: PathBuf,
+    /// `/tmp/AstraBrew Launcher/`
     pub temp: PathBuf,
+    /// `root/data/`
+    pub data: PathBuf,
 }
 
 /// 全局单例
@@ -46,7 +46,6 @@ static PATHS: OnceLock<AppPaths> = OnceLock::new();
 /// 获取全局 AppPaths 实例
 ///
 /// 首次调用时自动初始化并创建所有必要目录。
-/// 后续调用返回同一实例的引用。
 pub fn app_paths() -> &'static AppPaths {
     PATHS.get_or_init(|| {
         let paths = AppPaths::init();
@@ -59,75 +58,97 @@ impl AppPaths {
     // -- 初始化 --
 
     fn init() -> Self {
-        let root = if Self::is_dev_mode() {
-            Self::dev_root()
-        } else {
-            Self::prod_root()
-        };
+        let dev = Self::is_dev_mode();
 
-        Self {
-            data: root.join("data"),
-            logs: root.join("logs"),
-            temp: root.join("temp"),
-            root,
+        if dev {
+            let base = Self::dev_root();
+            Self {
+                root: base.clone(),
+                data: base.join("data"),
+                logs: base.join("logs"),
+                caches: base.join("caches"),
+                temp: base.join("temp"),
+            }
+        } else {
+            Self {
+                root: Self::prod_root(),
+                data: Self::prod_root().join("data"),
+                logs: Self::logs_root(),
+                caches: Self::cache_root(),
+                temp: Self::temp_root(),
+            }
         }
     }
 
-    /// 判断是否开发模式
-    ///
-    /// 仅通过环境变量 `ASTRA_DEV=1` 激活。
-    /// 未设置时始终使用 macOS 标准路径。
     fn is_dev_mode() -> bool {
         std::env::var("ASTRA_DEV").as_deref() == Ok("1")
     }
 
-    /// 开发模式根目录 → 项目 `data/`
-    ///
-    /// 从可执行文件路径推导项目根目录：
-    /// `.../project/target/debug/astrabrew-launcher-mac` → `.../project/data/`
-    /// `.../project/target/release/astrabrew-launcher-mac` → `.../project/data/`
+    /// 开发模式根目录 → 项目 `data/`，所有路径归一到此
     fn dev_root() -> PathBuf {
         let mut exe = std::env::current_exe().unwrap_or_default();
-        exe.pop(); // executable name
-        exe.pop(); // debug or release
+        exe.pop(); // exe name
+        exe.pop(); // debug/release
         exe.pop(); // target
         exe.join("data")
     }
 
-    /// 生产模式根目录 → `~/Library/Application Support/AstraBrew Launcher/`
+    // -- 生产模式 macOS 标准路径 --
+
     fn prod_root() -> PathBuf {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        PathBuf::from(home)
-            .join("Library")
-            .join("Application Support")
-            .join("AstraBrew Launcher")
+        Self::home().join("Library").join("Application Support").join("AstraBrew Launcher")
+    }
+
+    fn logs_root() -> PathBuf {
+        Self::home().join("Library").join("Logs").join("AstraBrew Launcher")
+    }
+
+    fn cache_root() -> PathBuf {
+        Self::home().join("Library").join("Caches").join("AstraBrew Launcher")
+    }
+
+    fn temp_root() -> PathBuf {
+        PathBuf::from("/tmp").join("AstraBrew Launcher")
+    }
+
+    fn home() -> PathBuf {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
     }
 
     /// 创建所有必要的目录
     fn ensure_dirs(&self) {
-        for dir in [&self.root, &self.data, &self.logs, &self.temp] {
+        for dir in [&self.root, &self.logs, &self.caches, &self.temp, &self.data] {
             let _ = std::fs::create_dir_all(dir);
         }
-        // 同时确保 sillytavern 子目录存在
-        let st = self.sillytavern_dir();
-        let _ = std::fs::create_dir_all(&st);
+        // 确保子目录
+        for sub in [
+            self.sillytavern_dir(),
+            self.data.join("sillytavern"),
+        ] {
+            let _ = std::fs::create_dir_all(&sub);
+        }
     }
 
     // -- 便捷路径方法 --
 
-    /// 酒馆实例根目录: `root/sillytavern/`
+    /// 酒馆核心文件目录: `root/sillytavern/`
     pub fn sillytavern_dir(&self) -> PathBuf {
         self.root.join("sillytavern")
     }
 
-    /// 酒馆配置文件: `root/sillytavern/config.yaml`
+    /// 内置酒馆配置文件: `root/sillytavern/config.yaml`
     pub fn tavern_config_file(&self) -> PathBuf {
         self.sillytavern_dir().join("config.yaml")
     }
 
-    /// 酒馆配置模板: `root/sillytavern/default/config.yaml`
+    /// 全局酒馆配置文件: `root/data/config.yaml`
+    pub fn global_tavern_config_file(&self) -> PathBuf {
+        self.data.join("config.yaml")
+    }
+
+    /// 酒馆配置模板: `root/data/sillytavern/config.yaml`
     pub fn tavern_template_file(&self) -> PathBuf {
-        self.sillytavern_dir().join("default").join("config.yaml")
+        self.data.join("sillytavern").join("config.yaml")
     }
 
     /// 启动器配置文件: `root/settings.json`

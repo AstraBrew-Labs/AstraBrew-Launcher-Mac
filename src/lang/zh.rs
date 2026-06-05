@@ -85,7 +85,6 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         
         // 环境依赖
         "env_dependencies" => "环境依赖",
-        "homebrew_env_source" => "Homebrew",
         "homebrew_purpose" => "MacOS下的环境安装工具（必装）",
         "update_btn" => "更新",
         "version_too_low" => "版本过低",
@@ -107,12 +106,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
 
         // Git Settings
         "git_settings" => "Git 设置",
-        "git_env_source" => "Git",
         "git_purpose" => "用于管理酒馆与下载酒馆（必装）",
         
         // NodeJs Settings
         "nodejs_settings" => "NodeJs 设置",
-        "nodejs_env_source" => "NodeJs",
         "nodejs_purpose" => "用于运行酒馆（必装）",
         "npm_env_info" => "NPM 环境信息",
         "npm_env_info_desc" => "查看当前使用的 NPM 版本和路径\n版本：{version}\n路径：{path}",

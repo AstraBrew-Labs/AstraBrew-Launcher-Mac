@@ -864,8 +864,7 @@ impl TavernConfig {
                 paths.tavern_config_file()
             }
             ConfigMode::Global => {
-                // 全局模式：data/sillytavern/config.yaml
-                paths.data.join("sillytavern").join("config.yaml")
+                paths.global_tavern_config_file()
             }
         }
     }

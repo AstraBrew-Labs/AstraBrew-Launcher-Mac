@@ -1,6 +1,7 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::sync::{LazyLock, Mutex};
 
 use crate::utils;
 
@@ -50,13 +51,6 @@ pub enum TavernDataMode {
 }
 
 #[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
-pub enum EnvSource {
-    System,
-    #[default]
-    Builtin,
-}
-
-#[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
 pub enum NpmRegistry {
     Official,
     #[default]
@@ -71,6 +65,19 @@ pub enum ProxyType {
     System,
     Custom,
 }
+
+/// Github 测试弹窗状态
+struct GithubTestPopupState {
+    show: bool,
+    results: Vec<crate::core::network::GithubMultiTestItem>,
+}
+
+static GITHUB_TEST_POPUP_STATE: LazyLock<Mutex<GithubTestPopupState>> = LazyLock::new(|| {
+    Mutex::new(GithubTestPopupState {
+        show: false,
+        results: Vec::new(),
+    })
+});
 
 /// 当前激活的 SillyTavern 实例
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
@@ -98,14 +105,6 @@ pub struct SettingsState {
     pub auto_start_tavern: bool,
     pub allow_tavern_background: bool,
 
-    // Homebrew 设置
-    pub homebrew_env: EnvSource,
-
-    // Git 设置
-    pub git_env: EnvSource,
-
-    // NodeJs 设置
-    pub nodejs_env: EnvSource,
     pub npm_registry: NpmRegistry,
 
     // Github 设置
@@ -145,12 +144,9 @@ impl Default for SettingsState {
             auto_minimize: false,
             auto_start_tavern: false,
             allow_tavern_background: false,
-            homebrew_env: EnvSource::default(),
-            git_env: EnvSource::default(),
-            nodejs_env: EnvSource::default(),
             npm_registry: NpmRegistry::default(),
             github_proxy_enabled: false,
-            github_proxy_url: String::new(),
+            github_proxy_url: "https://ghfast.top/".to_string(),
             proxy_type: ProxyType::default(),
             custom_proxy: String::new(),
             sillytavern: None,
@@ -391,6 +387,8 @@ pub fn render(
     homebrew_update: &mut BrewTaskState,
     git_install: &mut BrewTaskState,
     nodejs_install: &mut BrewTaskState,
+    github_node_state: &crate::core::settings::github_proxy::NodeLoadState,
+    on_refresh_nodes: &mut bool,
 ) {
     ui.horizontal(|ui| {
         ui.selectable_value(tab, SettingsTab::General, lang::t("general_settings", &state.language));
@@ -582,7 +580,7 @@ pub fn render(
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::BEER_BOTTLE,
-                                lang::t("homebrew_env_source", &state.language),
+                                "Homebrew",
                                 lang::t("homebrew_purpose", &state.language),
                                 |ui| {
                                     match hv {
@@ -610,7 +608,7 @@ pub fn render(
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::GIT_BRANCH,
-                                lang::t("git_env_source", &state.language),
+                                "Git",
                                 lang::t("git_purpose", &state.language),
                                 |ui| {
                                     match gv {
@@ -640,9 +638,9 @@ pub fn render(
                                 crate::core::settings::env_detect::is_nodejs_outdated(v)
                             });
                             let title = if nv_outdated {
-                                format!("{}  ⚠ {}", lang::t("nodejs_env_source", &state.language), lang::t("version_too_low", &state.language))
+                                format!("Node.js  ⚠ {}", lang::t("version_too_low", &state.language))
                             } else {
-                                lang::t("nodejs_env_source", &state.language).to_string()
+                                "Node.js".to_string()
                             };
                             setting_row(
                                 ui,
@@ -738,82 +736,583 @@ pub fn render(
                     }
 
                     // Github 设置
-                    setting_section(ui, egui_phosphor::regular::GITHUB_LOGO, lang::t("github_settings", &state.language), |ui| {
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::POWER,
-                            lang::t("github_proxy", &state.language),
-                            lang::t("github_proxy_desc", &state.language),
-                            |ui| {
-                                let mut enabled = state.github_proxy_enabled;
-                                if ui.add(crate::ui::switch::toggle(&mut enabled)).changed() {
-                                    state.github_proxy_enabled = enabled;
-                                    if enabled {
-                                        state.proxy_type = ProxyType::None;
-                                    }
-                                }
-                            },
-                        );
-                        if state.github_proxy_enabled {
-                            ui.add_space(10.0);
+                    setting_section(
+                        ui,
+                        egui_phosphor::regular::GITHUB_LOGO,
+                        lang::t("github_settings", &state.language),
+                        |ui| {
                             setting_row(
                                 ui,
-                                egui_phosphor::regular::LINK,
-                                lang::t("github_proxy_url", &state.language),
-                                "",
+                                egui_phosphor::regular::POWER,
+                                lang::t("github_proxy", &state.language),
+                                lang::t("github_proxy_desc", &state.language),
                                 |ui| {
-                                    ui.add_sized(
-                                        [250.0, 24.0],
-                                        egui::TextEdit::singleline(&mut state.github_proxy_url),
-                                    );
+                                    let mut enabled = state.github_proxy_enabled;
+                                    if ui.add(crate::ui::switch::toggle(&mut enabled)).changed() {
+                                        state.github_proxy_enabled = enabled;
+                                        if enabled {
+                                            state.proxy_type = ProxyType::None;
+                                        }
+                                    }
                                 },
                             );
-                        }
-                    });
+                            ui.add_space(10.0);
+
+                            // 节点列表标题行（带刷新按钮）
+                            ui.horizontal(|ui| {
+                                ui.add_sized(
+                                    [30.0, 30.0],
+                                    egui::Label::new(
+                                        egui::RichText::new(egui_phosphor::regular::LIST)
+                                            .size(20.0),
+                                    ),
+                                );
+                                ui.vertical(|ui| {
+                                    ui.add_space(2.0);
+                                    ui.label(
+                                        egui::RichText::new(lang::t("github_nodes", &state.language))
+                                            .size(14.0)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(lang::t("github_nodes_desc", &state.language))
+                                            .color(egui::Color32::GRAY)
+                                            .size(12.0),
+                                    );
+                                });
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        let is_loading = matches!(
+                                            github_node_state,
+                                            crate::core::settings::github_proxy::NodeLoadState::Loading
+                                        );
+                                        ui.add_enabled_ui(!is_loading, |ui| {
+                                            if ui
+                                                .button(lang::t("refresh_nodes", &state.language))
+                                                .clicked()
+                                            {
+                                                *on_refresh_nodes = true;
+                                            }
+                                        });
+                                        if is_loading {
+                                            ui.spinner();
+                                        }
+                                    },
+                                );
+                            });
+
+                            ui.add_space(8.0);
+
+                            if !state.github_proxy_enabled {
+                                ui.label(
+                                    egui::RichText::new(lang::t("enable_proxy_first", &state.language))
+                                        .color(egui::Color32::GRAY),
+                                );
+                            } else {
+                                match github_node_state {
+                                    crate::core::settings::github_proxy::NodeLoadState::Idle => {
+                                        ui.label(
+                                            egui::RichText::new(lang::t("click_refresh_to_load", &state.language))
+                                                .color(egui::Color32::GRAY),
+                                        );
+                                    }
+                                    crate::core::settings::github_proxy::NodeLoadState::Loading => {
+                                        ui.horizontal(|ui| {
+                                            ui.spinner();
+                                            ui.label(lang::t("loading_nodes", &state.language));
+                                        });
+                                    }
+                                    crate::core::settings::github_proxy::NodeLoadState::Error(e) => {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{} {e}",
+                                                lang::t("fetch_error", &state.language)
+                                            ))
+                                            .color(egui::Color32::RED),
+                                        );
+                                    }
+                                    crate::core::settings::github_proxy::NodeLoadState::Done(entries)
+                                    | crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(entries, _) => {
+                                        // 提取警告信息
+                                        let node_warning = match github_node_state {
+                                            crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(_, w) => Some(w.as_str()),
+                                            _ => None,
+                                        };
+
+                                        // 显示降级警告
+                                        if let Some(w) = node_warning {
+                                            ui.label(
+                                                egui::RichText::new(format!("⚠ {w}"))
+                                                    .size(12.0)
+                                                    .color(egui::Color32::from_rgb(230, 180, 60)),
+                                            );
+                                            ui.add_space(6.0);
+                                        }
+
+                                        // 按实测延迟排序
+                                        let mut sorted_entries = entries.clone();
+                                        sorted_entries.sort_by(|a, b| {
+                                            let a_ms = *a.measured_ms.lock().unwrap();
+                                            let b_ms = *b.measured_ms.lock().unwrap();
+                                            match (a_ms, b_ms) {
+                                                (None, None) => std::cmp::Ordering::Equal,
+                                                (None, _) => std::cmp::Ordering::Greater,
+                                                (_, None) => std::cmp::Ordering::Less,
+                                                (Some(None), Some(None)) => std::cmp::Ordering::Equal,
+                                                (Some(None), Some(Some(_))) => std::cmp::Ordering::Greater,
+                                                (Some(Some(_)), Some(None)) => std::cmp::Ordering::Less,
+                                                (Some(Some(a)), Some(Some(b))) => a.cmp(&b),
+                                            }
+                                        });
+
+                                        // 节点表格 — 9 列，支持横向滚动
+                                        let avail_w = ui.available_width();
+                                        let select_w: f32 = 50.0;
+                                        let url_w: f32 = 260.0;
+                                        let server_w: f32 = 120.0;
+                                        let ip_w: f32 = 130.0;
+                                        let loc_w: f32 = 90.0;
+                                        let api_latency_w: f32 = 90.0;
+                                        let latency_w: f32 = 90.0;
+                                        let speed_w: f32 = 90.0;
+                                        let tag_w: f32 = 100.0;
+                                        let spacing: f32 = 16.0;
+                                        let total_fixed: f32 = select_w
+                                            + server_w
+                                            + ip_w
+                                            + loc_w
+                                            + api_latency_w
+                                            + latency_w
+                                            + speed_w
+                                            + tag_w
+                                            + spacing * 8.0;
+                                        let url_calc: f32 = (avail_w - total_fixed).max(url_w);
+
+                                        egui::ScrollArea::new(egui::Vec2b::TRUE)
+                                            .id_salt("github_nodes_scroll")
+                                            .max_height(400.0)
+                                            .min_scrolled_height(400.0)
+                                            .show(ui, |ui| {
+                                                egui::Grid::new("github_nodes_grid")
+                                                    .striped(true)
+                                                    .num_columns(9)
+                                                    .spacing(egui::vec2(spacing, 6.0))
+                                                    .show(ui, |ui| {
+                                                        // 表头
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(select_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong(lang::t("col_select", &state.language));
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(url_calc, 28.0),
+                                                            egui::Layout::left_to_right(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong(lang::t("col_url", &state.language));
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(server_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong("Server");
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(ip_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong("IP");
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(loc_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong(lang::t("col_location", &state.language));
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(api_latency_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong("接口延迟");
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(latency_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong(lang::t("col_latency", &state.language));
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(speed_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong(lang::t("col_speed", &state.language));
+                                                            },
+                                                        );
+                                                        ui.allocate_ui_with_layout(
+                                                            egui::vec2(tag_w, 28.0),
+                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            |ui| {
+                                                                ui.strong("Tag");
+                                                            },
+                                                        );
+                                                        ui.end_row();
+
+                                                        for entry in sorted_entries.iter() {
+                                                            let is_selected =
+                                                                state.github_proxy_url == entry.url;
+
+                                                            // 选择列
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(select_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    let mut sel = is_selected;
+                                                                    if ui.radio(sel, "").clicked() {
+                                                                        sel = true;
+                                                                    }
+                                                                    if sel && !is_selected {
+                                                                        state.github_proxy_url =
+                                                                            entry.url.clone();
+                                                                    }
+                                                                },
+                                                            );
+                                                            // URL
+                                                            let url_display = entry
+                                                                .url
+                                                                .trim_start_matches("https://")
+                                                                .trim_start_matches("http://")
+                                                                .trim_end_matches('/');
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(url_calc, 28.0),
+                                                                egui::Layout::left_to_right(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(url_display)
+                                                                            .size(13.0)
+                                                                            .color(ui.visuals().text_color()),
+                                                                    )
+                                                                    .on_hover_text(entry.url.clone());
+                                                                },
+                                                            );
+                                                            // Server
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(server_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(&entry.server)
+                                                                            .size(13.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // IP
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(ip_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(&entry.ip)
+                                                                            .size(13.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // 地区
+                                                            let loc = if entry.location.is_empty() {
+                                                                "-".to_string()
+                                                            } else {
+                                                                entry.location.clone()
+                                                            };
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(loc_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(&loc).size(13.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // 接口延迟
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(api_latency_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(format!(
+                                                                            "{} ms",
+                                                                            entry.api_latency
+                                                                        ))
+                                                                        .size(13.0)
+                                                                        .color(egui::Color32::from_rgb(
+                                                                            140, 140, 140,
+                                                                        )),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // 实测延迟
+                                                            let latency_text = {
+                                                                let guard =
+                                                                    entry.measured_ms.lock().unwrap();
+                                                                match &*guard {
+                                                                    None => lang::t("testing", &state.language).to_string(),
+                                                                    Some(None) => lang::t("timeout", &state.language).to_string(),
+                                                                    Some(Some(ms)) => format!("{ms} ms"),
+                                                                }
+                                                            };
+                                                            let latency_color = {
+                                                                let guard =
+                                                                    entry.measured_ms.lock().unwrap();
+                                                                match &*guard {
+                                                                    Some(Some(ms)) if *ms < 200 => {
+                                                                        egui::Color32::from_rgb(80, 200, 100)
+                                                                    }
+                                                                    Some(Some(ms)) if *ms < 500 => {
+                                                                        egui::Color32::from_rgb(230, 180, 60)
+                                                                    }
+                                                                    Some(Some(_)) => {
+                                                                        egui::Color32::from_rgb(220, 80, 60)
+                                                                    }
+                                                                    _ => egui::Color32::GRAY,
+                                                                }
+                                                            };
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(latency_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(&latency_text)
+                                                                            .size(13.0)
+                                                                            .color(latency_color),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // 速度
+                                                            let speed_str =
+                                                                if entry.speed >= 1000.0 {
+                                                                    format!(
+                                                                        "{:.1} MB/s",
+                                                                        entry.speed / 1024.0
+                                                                    )
+                                                                } else {
+                                                                    format!("{:.1} KB/s", entry.speed)
+                                                                };
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(speed_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    ui.label(
+                                                                        egui::RichText::new(&speed_str)
+                                                                            .size(13.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                            // Tag
+                                                            ui.allocate_ui_with_layout(
+                                                                egui::vec2(tag_w, 28.0),
+                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                |ui| {
+                                                                    let tag_display =
+                                                                        if entry.tag.is_empty() {
+                                                                            "-".to_string()
+                                                                        } else {
+                                                                            entry.tag.clone()
+                                                                        };
+                                                                    ui.label(
+                                                                        egui::RichText::new(&tag_display)
+                                                                            .size(13.0),
+                                                                    );
+                                                                },
+                                                            );
+                                                            ui.end_row();
+                                                        }
+                                                    });
+                                            });
+
+                                        // 当前选中节点提示
+                                        if !state.github_proxy_url.is_empty() {
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(lang::t("selected_node", &state.language))
+                                                        .size(12.0)
+                                                        .color(egui::Color32::GRAY),
+                                                );
+                                                ui.label(
+                                                    egui::RichText::new(&state.github_proxy_url)
+                                                        .size(12.0)
+                                                        .color(egui::Color32::from_rgb(100, 160, 240)),
+                                                );
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
 
                     // 网络设置
-                    setting_section(ui, egui_phosphor::regular::WIFI_HIGH, lang::t("network_settings", &state.language), |ui| {
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::SHIELD,
-                            lang::t("proxy_settings", &state.language),
-                            lang::t("proxy_settings_desc", &state.language),
-                            |ui| {
-                                let mut pt = state.proxy_type.clone();
-                                egui::ComboBox::from_id_salt("proxy_type_combo")
-                                    .selected_text(match pt {
-                                        ProxyType::None => lang::t("off", &state.language),
-                                        ProxyType::System => lang::t("follow_system", &state.language),
-                                        ProxyType::Custom => lang::t("custom_proxy", &state.language),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut pt, ProxyType::None, lang::t("off", &state.language));
-                                        ui.selectable_value(&mut pt, ProxyType::System, lang::t("follow_system", &state.language));
-                                        ui.selectable_value(&mut pt, ProxyType::Custom, lang::t("custom_proxy", &state.language));
-                                    });
-
-                                if pt != state.proxy_type {
-                                    state.proxy_type = pt;
-                                    if state.proxy_type != ProxyType::None {
-                                        state.github_proxy_enabled = false;
-                                    }
+                    setting_section(
+                        ui,
+                        egui_phosphor::regular::WIFI_HIGH,
+                        lang::t("network_settings", &state.language),
+                        |ui| {
+                            let mut proxy_desc =
+                                lang::t("proxy_settings_desc", &state.language).to_string();
+                            if state.proxy_type == ProxyType::System {
+                                if let Some((_, enabled)) =
+                                    crate::core::network::read_system_proxy()
+                                {
+                                    let status_text = if enabled {
+                                        lang::t("on", &state.language)
+                                    } else {
+                                        lang::t("off", &state.language)
+                                    };
+                                    proxy_desc = format!(
+                                        "{} ({} {})",
+                                        proxy_desc,
+                                        lang::t("system_proxy_status", &state.language),
+                                        status_text
+                                    );
+                                } else {
+                                    proxy_desc = format!(
+                                        "{} ({} {})",
+                                        proxy_desc,
+                                        lang::t("system_proxy_status", &state.language),
+                                        lang::t("unknown", &state.language)
+                                    );
                                 }
-                            },
-                        );
+                            }
 
-                        if state.proxy_type == ProxyType::Custom {
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::SHIELD,
+                                lang::t("proxy_settings", &state.language),
+                                &proxy_desc,
+                                |ui| {
+                                    let mut pt = state.proxy_type.clone();
+                                    egui::ComboBox::from_id_salt("proxy_type_combo")
+                                        .selected_text(match pt {
+                                            ProxyType::None => lang::t("off", &state.language),
+                                            ProxyType::System => {
+                                                lang::t("follow_system", &state.language)
+                                            }
+                                            ProxyType::Custom => {
+                                                lang::t("custom_proxy", &state.language)
+                                            }
+                                        })
+                                        .show_ui(ui, |ui| {
+                                            ui.selectable_value(
+                                                &mut pt,
+                                                ProxyType::None,
+                                                lang::t("off", &state.language),
+                                            );
+                                            ui.selectable_value(
+                                                &mut pt,
+                                                ProxyType::System,
+                                                lang::t("follow_system", &state.language),
+                                            );
+                                            ui.selectable_value(
+                                                &mut pt,
+                                                ProxyType::Custom,
+                                                lang::t("custom_proxy", &state.language),
+                                            );
+                                        });
+
+                                    if pt != state.proxy_type {
+                                        state.proxy_type = pt;
+                                        if state.proxy_type != ProxyType::None {
+                                            state.github_proxy_enabled = false;
+                                        }
+                                    }
+                                },
+                            );
+
+                            if state.proxy_type == ProxyType::Custom {
+                                ui.add_space(10.0);
+                                setting_row(
+                                    ui,
+                                    egui_phosphor::regular::LINK,
+                                    lang::t("proxy_address", &state.language),
+                                    lang::t("proxy_address_desc", &state.language),
+                                    |ui| {
+                                        ui.text_edit_singleline(&mut state.custom_proxy);
+                                    },
+                                );
+                            }
+
                             ui.add_space(10.0);
                             setting_row(
                                 ui,
-                                egui_phosphor::regular::LINK,
-                                lang::t("proxy_address", &state.language),
-                                lang::t("proxy_address_desc", &state.language),
+                                egui_phosphor::regular::PLUG,
+                                lang::t("github_test", &state.language),
+                                lang::t("github_test_desc", &state.language),
                                 |ui| {
-                                    ui.text_edit_singleline(&mut state.custom_proxy);
+                                    if ui
+                                        .button(lang::t("start_test", &state.language))
+                                        .clicked()
+                                    {
+                                        let mut popup_state =
+                                            GITHUB_TEST_POPUP_STATE.lock().unwrap();
+                                        popup_state.show = true;
+                                        popup_state.results.clear();
+
+                                        // 启动测试
+                                        let has_proxy = state.proxy_type != ProxyType::None;
+                                        let has_accelerate = state.github_proxy_enabled;
+
+                                        let (proxy_mode, proxy_host, accelerate_url) =
+                                            match (has_proxy, has_accelerate) {
+                                                (true, true) => {
+                                                    let p_mode = match state.proxy_type {
+                                                        ProxyType::System => "system",
+                                                        ProxyType::Custom => "custom",
+                                                        ProxyType::None => "none",
+                                                    };
+                                                    (
+                                                        p_mode,
+                                                        state.custom_proxy.clone(),
+                                                        Some(state.github_proxy_url.clone()),
+                                                    )
+                                                }
+                                                (true, false) => {
+                                                    let p_mode = match state.proxy_type {
+                                                        ProxyType::System => "system",
+                                                        ProxyType::Custom => "custom",
+                                                        ProxyType::None => "none",
+                                                    };
+                                                    (
+                                                        p_mode,
+                                                        state.custom_proxy.clone(),
+                                                        None,
+                                                    )
+                                                }
+                                                (false, true) => (
+                                                    "none",
+                                                    String::new(),
+                                                    Some(state.github_proxy_url.clone()),
+                                                ),
+                                                (false, false) => ("none", String::new(), None),
+                                            };
+
+                                        crate::core::network::start_github_multi_test(
+                                            proxy_mode,
+                                            &proxy_host,
+                                            0,
+                                            accelerate_url,
+                                            true,
+                                        );
+                                    }
                                 },
                             );
-                        }
-                    });
+                        },
+                    );
 
                     ui.add_space(20.0);
                 });
@@ -890,6 +1389,316 @@ pub fn render(
                         });
                 });
             });
+        }
+    }
+
+    // === Github 测试弹窗 ===
+    {
+        // 获取弹窗状态（不持有锁）
+        let (show, results) = {
+            let popup_state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
+            (popup_state.show, popup_state.results.clone())
+        };
+
+        if show {
+            let mut open = true;
+            let mut results = results;
+
+            egui::Window::new(lang::t("github_test", &state.language))
+                .open(&mut open)
+                .resizable(true)
+                .default_width(400.0)
+                .show(ui.ctx(), |ui| {
+                    // 检查测试是否正在进行
+                    let testing = crate::core::network::is_github_multi_test_in_progress();
+
+                    let has_proxy = state.proxy_type != ProxyType::None;
+                    let has_accelerate = state.github_proxy_enabled;
+
+                    let mode_text = match (has_proxy, has_accelerate) {
+                        (false, false) => lang::t("direct_mode", &state.language),
+                        (true, false) => lang::t("proxy_only_mode", &state.language),
+                        (false, true) => lang::t("accelerate_only_mode", &state.language),
+                        (true, true) => lang::t("proxy_and_accelerate_mode", &state.language),
+                    };
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(lang::t("test_mode", &state.language)).strong(),
+                        );
+                        ui.label(mode_text);
+
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if testing {
+                                    ui.spinner();
+                                    ui.label(lang::t("testing", &state.language));
+                                } else {
+                                    if ui
+                                        .button(lang::t("start_test", &state.language))
+                                        .clicked()
+                                    {
+                                        results.clear();
+                                        let mut popup_state =
+                                            GITHUB_TEST_POPUP_STATE.lock().unwrap();
+                                        popup_state.show = true;
+                                        popup_state.results.clear();
+
+                                        // 启动测试
+                                        let has_proxy =
+                                            state.proxy_type != ProxyType::None;
+                                        let has_accelerate = state.github_proxy_enabled;
+
+                                        let (proxy_mode, proxy_host, accelerate_url) =
+                                            match (has_proxy, has_accelerate) {
+                                                (true, true) => {
+                                                    let p_mode = match state.proxy_type {
+                                                        ProxyType::System => "system",
+                                                        ProxyType::Custom => "custom",
+                                                        ProxyType::None => "none",
+                                                    };
+                                                    (
+                                                        p_mode,
+                                                        state.custom_proxy.clone(),
+                                                        Some(
+                                                            state.github_proxy_url.clone(),
+                                                        ),
+                                                    )
+                                                }
+                                                (true, false) => {
+                                                    let p_mode = match state.proxy_type {
+                                                        ProxyType::System => "system",
+                                                        ProxyType::Custom => "custom",
+                                                        ProxyType::None => "none",
+                                                    };
+                                                    (
+                                                        p_mode,
+                                                        state.custom_proxy.clone(),
+                                                        None,
+                                                    )
+                                                }
+                                                (false, true) => (
+                                                    "none",
+                                                    String::new(),
+                                                    Some(state.github_proxy_url.clone()),
+                                                ),
+                                                (false, false) => {
+                                                    ("none", String::new(), None)
+                                                }
+                                            };
+
+                                        crate::core::network::start_github_multi_test(
+                                            proxy_mode,
+                                            &proxy_host,
+                                            0,
+                                            accelerate_url,
+                                            true,
+                                        );
+                                    }
+                                }
+                            },
+                        );
+                    });
+
+                    ui.separator();
+
+                    if testing || !results.is_empty() {
+                        ui.heading(lang::t("test_results", &state.language));
+                        ui.add_space(5.0);
+
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                if testing && results.is_empty() {
+                                    let expected_tests = [
+                                        "文件访问",
+                                        "仓库访问",
+                                        "首页访问",
+                                        "API 访问",
+                                        "下载速度",
+                                    ];
+                                    for name in expected_tests {
+                                        ui.horizontal(|ui| {
+                                            ui.label(name);
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(
+                                                    egui::Align::Center,
+                                                ),
+                                                |ui| {
+                                                    ui.spinner();
+                                                    ui.label(
+                                                        egui::RichText::new(
+                                                            lang::t(
+                                                                "testing",
+                                                                &state.language,
+                                                            ),
+                                                        )
+                                                        .color(egui::Color32::GRAY),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                        ui.separator();
+                                    }
+                                } else {
+                                    for item in &results {
+                                        ui.horizontal(|ui| {
+                                            ui.label(&item.name);
+
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(
+                                                    egui::Align::Center,
+                                                ),
+                                                |ui| {
+                                                    if let Some(warn) = &item.warning
+                                                    {
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                egui_phosphor::regular::WARNING_CIRCLE,
+                                                            )
+                                                            .color(
+                                                                egui::Color32::YELLOW,
+                                                            ),
+                                                        )
+                                                        .on_hover_text(warn);
+
+                                                        let short_msg =
+                                                            if warn.contains("速度") {
+                                                                if let Some(start) =
+                                                                    warn.find('(')
+                                                                {
+                                                                    if let Some(end) =
+                                                                        warn.find(')')
+                                                                    {
+                                                                        &warn[start + 1
+                                                                            ..end]
+                                                                    } else {
+                                                                        "异常"
+                                                                    }
+                                                                } else {
+                                                                    "异常"
+                                                                }
+                                                            } else {
+                                                                "异常"
+                                                            };
+                                                        ui.label(
+                                                            egui::RichText::new(short_msg)
+                                                                .color(
+                                                                    egui::Color32::GRAY,
+                                                                ),
+                                                        );
+                                                    } else if item.success {
+                                                        let mut hover_text = lang::t(
+                                                            "connectivity_available",
+                                                            &state.language,
+                                                        )
+                                                        .to_string();
+                                                        if let Some(latency) =
+                                                            item.latency_ms
+                                                        {
+                                                            hover_text.push_str(&format!(
+                                                                "\n{} ms",
+                                                                latency
+                                                            ));
+                                                        }
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                egui_phosphor::regular::CHECK_CIRCLE,
+                                                            )
+                                                            .color(
+                                                                egui::Color32::GREEN,
+                                                            ),
+                                                        )
+                                                        .on_hover_text(hover_text);
+
+                                                        if let Some(latency) =
+                                                            item.latency_ms
+                                                        {
+                                                            ui.label(
+                                                                egui::RichText::new(
+                                                                    format!(
+                                                                        "{}ms",
+                                                                        latency
+                                                                    ),
+                                                                )
+                                                                .color(
+                                                                    egui::Color32::GRAY,
+                                                                ),
+                                                            );
+                                                        } else {
+                                                            ui.label(
+                                                                egui::RichText::new(lang::t(
+                                                                    "success",
+                                                                    &state.language,
+                                                                ))
+                                                                .color(
+                                                                    egui::Color32::GRAY,
+                                                                ),
+                                                            );
+                                                        }
+                                                    } else {
+                                                        let err_text =
+                                                            item.error.as_deref().unwrap_or(
+                                                                lang::t(
+                                                                    "connectivity_unavailable",
+                                                                    &state.language,
+                                                                ),
+                                                            );
+                                                        ui.label(
+                                                            egui::RichText::new(
+                                                                egui_phosphor::regular::X_CIRCLE,
+                                                            )
+                                                            .color(
+                                                                egui::Color32::RED,
+                                                            ),
+                                                        )
+                                                        .on_hover_text(err_text);
+
+                                                        let short_err =
+                                                            if err_text.contains("超时") || err_text.contains("timeout")
+                                                            {
+                                                                "超时"
+                                                            } else if err_text
+                                                                .contains("HTTP")
+                                                            {
+                                                                "拒绝"
+                                                            } else {
+                                                                "失败"
+                                                            };
+                                                        ui.label(
+                                                            egui::RichText::new(short_err)
+                                                                .color(
+                                                                    egui::Color32::GRAY,
+                                                                ),
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.separator();
+                                    }
+                                }
+                            });
+                    }
+                });
+
+            // 检查测试是否完成（不持有锁时调用）
+            if let Some(test_results) = crate::core::network::get_github_multi_test_result()
+            {
+                results = test_results;
+            }
+
+            // 保存状态
+            let mut popup_state = GITHUB_TEST_POPUP_STATE.lock().unwrap();
+
+            if !open && popup_state.show {
+                crate::core::network::cancel_github_multi_test();
+                results.clear();
+            }
+
+            popup_state.show = open;
+            popup_state.results = results;
         }
     }
 }

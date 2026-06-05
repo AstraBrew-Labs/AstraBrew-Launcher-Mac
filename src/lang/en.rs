@@ -85,7 +85,6 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         
         // Environment Dependencies
         "env_dependencies" => "Environment Dependencies",
-        "homebrew_env_source" => "Homebrew",
         "homebrew_purpose" => "Package manager for macOS (Required)",
         "update_btn" => "Update",
         "version_too_low" => "Low Version",
@@ -107,12 +106,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
 
         // Git Settings
         "git_settings" => "Git Settings",
-        "git_env_source" => "Git",
         "git_purpose" => "For managing & downloading Tavern (Required)",
         
         // NodeJs Settings
         "nodejs_settings" => "NodeJs Settings",
-        "nodejs_env_source" => "Node.js",
         "nodejs_purpose" => "For running Tavern (Required)",
         "npm_env_info" => "NPM Environment Info",
         "npm_env_info_desc" => "View current NPM version and path\nVersion: {version}\nPath: {path}",

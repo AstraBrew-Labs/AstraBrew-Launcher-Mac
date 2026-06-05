@@ -59,13 +59,18 @@
 - `ConsoleState::add_log` 改为 `pub` 供主页调用
 - 翻译键 `home_*` 前缀，中英双语 18 个 key
 
-## macOS 路径管理（2026-06-05）
+## macOS 路径管理（2026-06-06 更新 — macOS 标准规范）
 - `src/utils.rs`：`AppPaths` 结构体 + 全局单例 `app_paths()`
-- 生产环境根目录：`~/Library/Application Support/AstraBrew Launcher/`
-- 开发环境根目录：项目 `data/`（仅 `target/debug/` 触发）
-- `is_dev_mode()` 判断逻辑：
-  - `ASTRA_DEV=1` 环境变量 → 强制开发模式
-  - `.app/Contents/MacOS/` bundle → 强制生产模式
-  - `target/debug/` → 开发模式
-  - 其他（含 `target/release/`）→ 生产模式
-- 子目录：`data/` `logs/` `temp/` `sillytavern/`
+- **生产环境路径（macOS 规范）**：
+  - `root`：`~/Library/Application Support/AstraBrew Launcher/`
+  - `logs`：`~/Library/Logs/AstraBrew Launcher/`
+  - `caches`：`~/Library/Caches/AstraBrew Launcher/`
+  - `temp`：`/tmp/AstraBrew Launcher/`（程序结束可清理）
+- **开发环境（ASTRA_DEV=1）**：所有路径归一到项目 `data/` 子目录
+- **关键文件路径**：
+  - 启动器配置：`root/config.json`（`settings_file()`）
+  - 内置酒馆配置：`root/sillytavern/config.yaml`（`tavern_config_file()`）
+  - 全局酒馆配置：`root/data/config.yaml`（`global_tavern_config_file()`）
+  - 酒馆配置模板：`root/data/sillytavern/config.yaml`（`tavern_template_file()`）
+  - 本地实例列表：`root/data/local_instances.json`（`instances_file()`）
+  - GitHub 缓存：`caches/github_proxy_cache.json`

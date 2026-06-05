@@ -97,6 +97,13 @@ struct MyApp {
     homebrew_update_state: pages::settings::BrewTaskState,
     git_install_state: pages::settings::BrewTaskState,
     nodejs_install_state: pages::settings::BrewTaskState,
+
+    // Github 节点状态
+    github_node_rx: Option<
+        std::sync::mpsc::Receiver<crate::core::settings::github_proxy::NodeLoadMsg>,
+    >,
+    github_node_state: crate::core::settings::github_proxy::NodeLoadState,
+    on_refresh_nodes: bool,
 }
 
 impl MyApp {
@@ -119,6 +126,9 @@ impl MyApp {
             homebrew_update_state: pages::settings::BrewTaskState::new(),
             git_install_state: pages::settings::BrewTaskState::new(),
             nodejs_install_state: pages::settings::BrewTaskState::new(),
+            github_node_rx: None,
+            github_node_state: crate::core::settings::github_proxy::NodeLoadState::Idle,
+            on_refresh_nodes: false,
         }
     }
 }
@@ -292,6 +302,81 @@ impl eframe::App for MyApp {
             ctx.request_repaint();
         }
 
+        // 轮询 Github 节点加载消息
+        {
+            let mut clear_rx = false;
+            if let Some(ref rx) = self.github_node_rx {
+                while let Ok(msg) = rx.try_recv() {
+                    use crate::core::settings::github_proxy::NodeLoadMsg;
+                    match msg {
+                        NodeLoadMsg::Nodes(entries) => {
+                            // 自动选择 ghfast.top（如果列表里有且当前未选中）
+                            if self.settings_state.github_proxy_url.is_empty()
+                                || !entries
+                                    .iter()
+                                    .any(|e| e.url == self.settings_state.github_proxy_url)
+                            {
+                                if let Some(ghfast) =
+                                    entries.iter().find(|e| e.url.contains("ghfast.top"))
+                                {
+                                    self.settings_state.github_proxy_url = ghfast.url.clone();
+                                }
+                            }
+                            self.github_node_state =
+                                crate::core::settings::github_proxy::NodeLoadState::Done(entries);
+                        }
+                        NodeLoadMsg::LatencyUpdate => {
+                            ctx.request_repaint();
+                        }
+                        NodeLoadMsg::Done => {
+                            clear_rx = true;
+                        }
+                        NodeLoadMsg::DoneWithWarning(warning) => {
+                            // 数据已在 NodeLoadMsg::Nodes 中设置，这里只附加警告
+                            if let crate::core::settings::github_proxy::NodeLoadState::Done(
+                                ref entries,
+                            ) = self.github_node_state
+                            {
+                                self.github_node_state =
+                                    crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(
+                                        entries.clone(),
+                                        warning,
+                                    );
+                            }
+                            clear_rx = true;
+                        }
+                        NodeLoadMsg::Error(e) => {
+                            self.github_node_state =
+                                crate::core::settings::github_proxy::NodeLoadState::Error(e);
+                            clear_rx = true;
+                        }
+                    }
+                }
+            }
+            if clear_rx {
+                self.github_node_rx = None;
+            }
+        }
+
+        // 处理刷新节点请求
+        if self.on_refresh_nodes {
+            self.on_refresh_nodes = false;
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.github_node_rx = Some(rx);
+            self.github_node_state =
+                crate::core::settings::github_proxy::NodeLoadState::Loading;
+            crate::core::settings::github_proxy::start_fetch_and_test(tx, false);
+        }
+
+        // 节点加载中或测试进行中时持续重绘
+        if matches!(
+            self.github_node_state,
+            crate::core::settings::github_proxy::NodeLoadState::Loading
+        ) || crate::core::network::is_github_multi_test_in_progress()
+        {
+            ctx.request_repaint();
+        }
+
         // 每帧同步酒馆配置页的数据模式 & 实例
         {
             use crate::core::settings::tavern::{ConfigMode, InstanceInfo};
@@ -349,6 +434,17 @@ impl eframe::App for MyApp {
                 Page::Settings => {
                     ui.heading(lang::t("software_settings", &self.settings_state.language));
                     ui.separator();
+
+                    // 代理开关已开启 + 节点列表未加载 → 自动加载缓存数据
+                    if self.settings_state.github_proxy_enabled
+                        && matches!(
+                            self.github_node_state,
+                            crate::core::settings::github_proxy::NodeLoadState::Idle
+                        )
+                    {
+                        self.on_refresh_nodes = true;
+                    }
+
                     pages::settings::render(
                         ui,
                         &mut self.settings_tab,
@@ -356,6 +452,8 @@ impl eframe::App for MyApp {
                         &mut self.homebrew_update_state,
                         &mut self.git_install_state,
                         &mut self.nodejs_install_state,
+                        &self.github_node_state,
+                        &mut self.on_refresh_nodes,
                     );
                 }
             }
