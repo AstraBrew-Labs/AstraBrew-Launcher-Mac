@@ -74,6 +74,7 @@ mod core;
 mod lang;
 mod pages;
 mod ui;
+mod utils;
 
 use pages::console::ConsoleState;
 use pages::settings::{SettingsState, SettingsTab, Theme};
@@ -92,10 +93,17 @@ struct MyApp {
     tavern_config_ui: TavernConfigUI,
     // 控制台状态
     console_state: ConsoleState,
+    // brew 任务状态
+    homebrew_update_state: pages::settings::BrewTaskState,
+    git_install_state: pages::settings::BrewTaskState,
+    nodejs_install_state: pages::settings::BrewTaskState,
 }
 
 impl MyApp {
-    fn new(settings_state: SettingsState) -> Self {
+    fn new(mut settings_state: SettingsState) -> Self {
+        // 检测环境依赖版本
+        settings_state.detect_all_env();
+
         Self {
             current_page: Page::OneClickStart,
             last_monitor_size: None,
@@ -108,6 +116,9 @@ impl MyApp {
                 None,
             ),
             console_state: ConsoleState::new(),
+            homebrew_update_state: pages::settings::BrewTaskState::new(),
+            git_install_state: pages::settings::BrewTaskState::new(),
+            nodejs_install_state: pages::settings::BrewTaskState::new(),
         }
     }
 }
@@ -261,6 +272,26 @@ impl eframe::App for MyApp {
         // 右侧页面区域
         let old_state = self.settings_state.clone();
 
+        // 轮询 brew 任务日志
+        if let Some(new_ver) = self.homebrew_update_state.poll() {
+            self.settings_state.homebrew_version = Some(new_ver);
+        }
+        if let Some(new_ver) = self.git_install_state.poll() {
+            self.settings_state.git_version = Some(new_ver);
+        }
+        if let Some(new_ver) = self.nodejs_install_state.poll() {
+            self.settings_state.nodejs_version = new_ver;
+        }
+        if self.homebrew_update_state.running
+            || self.git_install_state.running
+            || self.nodejs_install_state.running
+            || self.homebrew_update_state.done_at.is_some()
+            || self.git_install_state.done_at.is_some()
+            || self.nodejs_install_state.done_at.is_some()
+        {
+            ctx.request_repaint();
+        }
+
         // 每帧同步酒馆配置页的数据模式 & 实例
         {
             use crate::core::settings::tavern::{ConfigMode, InstanceInfo};
@@ -322,6 +353,9 @@ impl eframe::App for MyApp {
                         ui,
                         &mut self.settings_tab,
                         &mut self.settings_state,
+                        &mut self.homebrew_update_state,
+                        &mut self.git_install_state,
+                        &mut self.nodejs_install_state,
                     );
                 }
             }

@@ -1,10 +1,10 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 use std::fs;
 
 use crate::lang;
 use crate::pages::settings::SettingsState;
+use crate::utils;
 
 #[derive(PartialEq, Clone, Copy)]
 pub enum VersionTab {
@@ -42,27 +42,9 @@ impl Default for VersionManageState {
     }
 }
 
-/// 本地实例列表持久化文件路径
-fn get_instances_path() -> PathBuf {
-    let mut current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-    current_exe.pop();
-    let path_str = current_exe.to_string_lossy();
-    let mut root = if path_str.contains("target\\debug") || path_str.contains("target\\release") {
-        let mut p = current_exe.clone();
-        p.pop();
-        p.pop();
-        p
-    } else {
-        current_exe
-    };
-    root.push("data");
-    root.push("local_instances.json");
-    root
-}
-
 /// 保存本地实例列表
 pub fn save_local_instances(instances: &[LocalInstance]) {
-    let path = get_instances_path();
+    let path = utils::app_paths().instances_file();
     let locals: Vec<&LocalInstance> = instances.iter().filter(|i| !i.is_online).collect();
     if let Ok(content) = serde_json::to_string_pretty(&locals) {
         let _ = fs::write(path, content);
@@ -71,7 +53,7 @@ pub fn save_local_instances(instances: &[LocalInstance]) {
 
 /// 加载本地实例列表
 pub fn load_local_instances() -> Vec<LocalInstance> {
-    let path = get_instances_path();
+    let path = utils::app_paths().instances_file();
     if path.exists() {
         if let Ok(content) = fs::read_to_string(&path) {
             if let Ok(instances) = serde_json::from_str::<Vec<LocalInstance>>(&content) {

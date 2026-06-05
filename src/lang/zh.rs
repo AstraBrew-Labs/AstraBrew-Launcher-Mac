@@ -83,21 +83,37 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "allow_tavern_background" => "允许酒馆后台运行",
         "allow_tavern_background_desc" => "关闭启动器也不影响酒馆服务在后台运行",
         
+        // 环境依赖
+        "env_dependencies" => "环境依赖",
+        "homebrew_env_source" => "Homebrew",
+        "homebrew_purpose" => "MacOS下的环境安装工具（必装）",
+        "update_btn" => "更新",
+        "version_too_low" => "版本过低",
+        "close" => "关闭",
+
+        // Homebrew 更新弹窗
+        "homebrew_update_title" => "Homebrew 更新",
+        "homebrew_update_desc" => "正在执行 brew update，请稍候...",
+        "homebrew_update_waiting" => "等待输出...",
+        "homebrew_update_running" => "更新中...",
+
+        // 安装弹窗
+        "git_install_title" => "Git 安装",
+        "git_install_desc" => "正在执行 brew install git，请稍候...",
+        "nodejs_install_title" => "NodeJs 安装",
+        "nodejs_install_desc" => "正在执行 brew install node@24，请稍候...",
+        "brew_install_waiting" => "等待输出...",
+        "brew_install_running" => "安装中...",
+
         // Git Settings
         "git_settings" => "Git 设置",
-        "git_env_info" => "Git 环境信息",
-        "git_env_info_desc" => "查看当前使用的 Git 版本和路径\n版本：{version}\n路径：{path}",
-        "git_env_source" => "Git 环境来源",
-        "git_env_source_desc" => "可切换使用系统 Git 或内置 Git",
-        "system_env" => "系统环境",
-        "builtin_env" => "内置环境（默认）",
+        "git_env_source" => "Git",
+        "git_purpose" => "用于管理酒馆与下载酒馆（必装）",
         
         // NodeJs Settings
         "nodejs_settings" => "NodeJs 设置",
-        "nodejs_env_info" => "NodeJs 环境信息",
-        "nodejs_env_info_desc" => "查看当前使用的 NodeJs 版本和路径\n版本：{version}\n路径：{path}",
-        "nodejs_env_source" => "Node.js 环境来源",
-        "nodejs_env_source_desc" => "可切换使用系统 NodeJs 或内置 NodeJs",
+        "nodejs_env_source" => "NodeJs",
+        "nodejs_purpose" => "用于运行酒馆（必装）",
         "npm_env_info" => "NPM 环境信息",
         "npm_env_info_desc" => "查看当前使用的 NPM 版本和路径\n版本：{version}\n路径：{path}",
         "npm_registry" => "NPM 源设置",

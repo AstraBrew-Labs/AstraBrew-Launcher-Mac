@@ -83,21 +83,37 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "allow_tavern_background" => "Allow Background Running",
         "allow_tavern_background_desc" => "Closing the launcher does not affect the tavern service running in background",
         
+        // Environment Dependencies
+        "env_dependencies" => "Environment Dependencies",
+        "homebrew_env_source" => "Homebrew",
+        "homebrew_purpose" => "Package manager for macOS (Required)",
+        "update_btn" => "Update",
+        "version_too_low" => "Low Version",
+        "close" => "Close",
+
+        // Homebrew Update Popup
+        "homebrew_update_title" => "Homebrew Update",
+        "homebrew_update_desc" => "Running brew update, please wait...",
+        "homebrew_update_waiting" => "Waiting for output...",
+        "homebrew_update_running" => "Updating...",
+
+        // Install Popups
+        "git_install_title" => "Git Installation",
+        "git_install_desc" => "Running brew install git, please wait...",
+        "nodejs_install_title" => "NodeJs Installation",
+        "nodejs_install_desc" => "Running brew install node@24, please wait...",
+        "brew_install_waiting" => "Waiting for output...",
+        "brew_install_running" => "Installing...",
+
         // Git Settings
         "git_settings" => "Git Settings",
-        "git_env_info" => "Git Environment Info",
-        "git_env_info_desc" => "View current Git version and path\nVersion: {version}\nPath: {path}",
-        "git_env_source" => "Git Environment Source",
-        "git_env_source_desc" => "Switch between System Git or Built-in Git",
-        "system_env" => "System Env",
-        "builtin_env" => "Built-in Env (Default)",
+        "git_env_source" => "Git",
+        "git_purpose" => "For managing & downloading Tavern (Required)",
         
         // NodeJs Settings
         "nodejs_settings" => "NodeJs Settings",
-        "nodejs_env_info" => "NodeJs Environment Info",
-        "nodejs_env_info_desc" => "View current NodeJs version and path\nVersion: {version}\nPath: {path}",
-        "nodejs_env_source" => "Node.js Environment Source",
-        "nodejs_env_source_desc" => "Switch between System NodeJs or Built-in NodeJs",
+        "nodejs_env_source" => "Node.js",
+        "nodejs_purpose" => "For running Tavern (Required)",
         "npm_env_info" => "NPM Environment Info",
         "npm_env_info_desc" => "View current NPM version and path\nVersion: {version}\nPath: {path}",
         "npm_registry" => "NPM Registry",

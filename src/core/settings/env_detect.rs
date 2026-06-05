@@ -1,0 +1,270 @@
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+
+/// 检测 Homebrew 版本，返回版本号字符串，如 "4.2.0"
+pub fn detect_homebrew() -> Option<String> {
+    let output = Command::new("brew").arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 输出格式: "Homebrew 4.2.0" 或 "Homebrew 4.2.0-xxx"
+    parse_homebrew_version(&stdout)
+}
+
+fn parse_homebrew_version(output: &str) -> Option<String> {
+    // 提取 "Homebrew X.Y.Z" 中的版本号
+    let prefix = "Homebrew ";
+    if let Some(pos) = output.find(prefix) {
+        let rest = &output[pos + prefix.len()..];
+        // 取第一个空白字符之前的部分
+        let version = rest.split_whitespace().next()?;
+        // 去掉尾部可能的非数字后缀（如 -xxx）
+        let version = version.split('-').next()?;
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+/// 检测 Git 版本，返回版本号字符串，如 "2.39.0"
+pub fn detect_git() -> Option<String> {
+    let output = Command::new("git").arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 输出格式: "git version 2.39.0" 或 "git version 2.39.0 (Apple Git-xxx)"
+    parse_git_version(&stdout)
+}
+
+fn parse_git_version(output: &str) -> Option<String> {
+    let prefix = "git version ";
+    if let Some(pos) = output.find(prefix) {
+        let rest = &output[pos + prefix.len()..];
+        let version = rest.split_whitespace().next()?;
+        Some(version.to_string())
+    } else {
+        None
+    }
+}
+
+/// 检测 Node.js 版本，返回版本号字符串，如 "v22.1.0"
+pub fn detect_nodejs() -> Option<String> {
+    let output = Command::new("node").arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 输出格式: "v22.1.0"
+    let version = stdout.trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
+/// 解析 semver 主版本号
+fn parse_major(version: &str) -> Option<u32> {
+    let version = version.trim_start_matches('v').trim_start_matches('V');
+    version.split('.').next()?.parse::<u32>().ok()
+}
+
+/// Homebrew 版本是否低于 5.0.0
+pub fn is_homebrew_outdated(version: &str) -> bool {
+    match parse_major(version) {
+        Some(major) => major < 5,
+        None => false,
+    }
+}
+
+/// Node.js 版本是否低于 v22
+pub fn is_nodejs_outdated(version: &str) -> bool {
+    match parse_major(version) {
+        Some(major) => major < 22,
+        None => false,
+    }
+}
+
+/// 运行 brew update 并返回日志（通过 channel 逐行发送）
+pub fn run_brew_update(sender: std::sync::mpsc::Sender<String>) {
+    run_brew_command(&["update"], sender, "homebrew");
+}
+
+/// 运行 brew install <package> 并返回日志
+pub fn run_brew_install(package: &str, sender: std::sync::mpsc::Sender<String>) {
+    let detect_target = match package {
+        "git" => "git",
+        "node@24" => "nodejs",
+        _ => "",
+    };
+    run_brew_command(&["install", package], sender, detect_target);
+}
+
+fn detect_version(target: &str) -> Option<String> {
+    match target {
+        "homebrew" => detect_homebrew(),
+        "git" => detect_git(),
+        "nodejs" => detect_nodejs(),
+        _ => None,
+    }
+}
+
+fn run_brew_command(args: &[&str], sender: std::sync::mpsc::Sender<String>, detect_target: &str) {
+    let mut cmd = Command::new("brew");
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = sender.send(format!("无法启动进程: {}", e));
+            let _ = sender.send("__DONE__".to_string());
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let tx_stdout = sender.clone();
+    let tx_stderr = sender.clone();
+    let tx_final = sender;
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    // 读取 stdout
+    if let Some(out) = stdout {
+        let done = done_tx.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(out);
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        let cleaned = strip_ansi(&line).trim().to_string();
+                        if !cleaned.is_empty() {
+                            let _ = tx_stdout.send(cleaned);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = done.send(());
+        });
+    } else {
+        let _ = done_tx.send(());
+    }
+
+    // 读取 stderr
+    if let Some(err) = stderr {
+        let done = done_tx;
+        std::thread::spawn(move || {
+            let reader = BufReader::new(err);
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        let cleaned = strip_ansi(&line).trim().to_string();
+                        if !cleaned.is_empty() {
+                            let _ = tx_stderr.send(cleaned);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = done.send(());
+        });
+    } else {
+        let _ = done_tx.send(());
+    }
+
+    // 等待两个读取线程完成
+    let _ = done_rx.recv();
+    let _ = done_rx.recv();
+
+    // 在后台线程检测版本，避免阻塞主线程
+    let detect_target = detect_target.to_string();
+    if !detect_target.is_empty() {
+        if let Some(ver) = detect_version(&detect_target) {
+            let _ = tx_final.send(format!("__VERSION__:{}", ver));
+        }
+    }
+
+    let _ = tx_final.send("__DONE__".to_string());
+
+    // 不等待子进程退出，避免阻塞
+    // child 在此作用域结束时被 drop，进程由 OS 回收
+    drop(child);
+}
+
+/// 简易 ANSI 转义序列清理（SGR 颜色码 + 光标控制）
+fn strip_ansi(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // skip '['
+            // 跳过参数部分 (数字和分号)
+            while let Some(&next) = chars.peek() {
+                if next.is_ascii_digit() || next == ';' {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            // 跳过终止字符 (通常是 m，但也可能是其他)
+            chars.next();
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_homebrew_version() {
+        assert_eq!(parse_homebrew_version("Homebrew 4.2.0"), Some("4.2.0".to_string()));
+        assert_eq!(parse_homebrew_version("Homebrew 5.0.0-xxx"), Some("5.0.0".to_string()));
+    }
+
+    #[test]
+    fn test_parse_git_version() {
+        assert_eq!(parse_git_version("git version 2.39.0"), Some("2.39.0".to_string()));
+        assert_eq!(parse_git_version("git version 2.39.0 (Apple Git-xxx)"), Some("2.39.0".to_string()));
+    }
+
+    #[test]
+    fn test_is_homebrew_outdated() {
+        assert!(is_homebrew_outdated("4.2.0"));
+        assert!(!is_homebrew_outdated("5.0.0"));
+        assert!(!is_homebrew_outdated("5.1.0"));
+    }
+
+    #[test]
+    fn test_is_nodejs_outdated() {
+        assert!(is_nodejs_outdated("v18.19.0"));
+        assert!(!is_nodejs_outdated("v22.0.0"));
+        assert!(!is_nodejs_outdated("v23.1.0"));
+    }
+
+    #[test]
+    fn test_parse_major() {
+        assert_eq!(parse_major("4.2.0"), Some(4));
+        assert_eq!(parse_major("v22.1.0"), Some(22));
+        assert_eq!(parse_major("v5.0.0"), Some(5));
+    }
+
+    #[test]
+    fn test_strip_ansi() {
+        assert_eq!(strip_ansi("hello"), "hello");
+        assert_eq!(strip_ansi("\x1b[32mhello\x1b[0m"), "hello");
+        assert_eq!(strip_ansi("\x1b[1;32mworld\x1b[0m"), "world");
+        assert_eq!(strip_ansi("no ansi here"), "no ansi here");
+    }
+}

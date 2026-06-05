@@ -1,7 +1,8 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+
+use crate::utils;
 
 #[derive(PartialEq, Default)]
 pub enum SettingsTab {
@@ -97,6 +98,9 @@ pub struct SettingsState {
     pub auto_start_tavern: bool,
     pub allow_tavern_background: bool,
 
+    // Homebrew 设置
+    pub homebrew_env: EnvSource,
+
     // Git 设置
     pub git_env: EnvSource,
 
@@ -119,6 +123,12 @@ pub struct SettingsState {
     // Node.js 运行时版本（不持久化）
     #[serde(skip)]
     pub nodejs_version: String,
+
+    // 环境依赖检测结果（不持久化）
+    #[serde(skip)]
+    pub homebrew_version: Option<String>,
+    #[serde(skip)]
+    pub git_version: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -135,6 +145,7 @@ impl Default for SettingsState {
             auto_minimize: false,
             auto_start_tavern: false,
             allow_tavern_background: false,
+            homebrew_env: EnvSource::default(),
             git_env: EnvSource::default(),
             nodejs_env: EnvSource::default(),
             npm_registry: NpmRegistry::default(),
@@ -144,32 +155,15 @@ impl Default for SettingsState {
             custom_proxy: String::new(),
             sillytavern: None,
             nodejs_version: String::new(),
+            homebrew_version: None,
+            git_version: None,
         }
     }
 }
 
 impl SettingsState {
-    fn config_path() -> PathBuf {
-        let mut current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        current_exe.pop();
-
-        let path_str = current_exe.to_string_lossy();
-        let mut root = if path_str.contains("target\\debug") || path_str.contains("target\\release") {
-            let mut p = current_exe.clone();
-            p.pop();
-            p.pop();
-            p
-        } else {
-            current_exe
-        };
-
-        root.push("data");
-        root.push("settings.json");
-        root
-    }
-
     pub fn load() -> Self {
-        let path = Self::config_path();
+        let path = utils::app_paths().settings_file();
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(state) = serde_json::from_str(&content) {
@@ -183,7 +177,7 @@ impl SettingsState {
     }
 
     pub fn save(&self) {
-        let path = Self::config_path();
+        let path = utils::app_paths().settings_file();
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -191,9 +185,151 @@ impl SettingsState {
             let _ = fs::write(path, content);
         }
     }
+
+    /// 检测所有环境依赖版本
+    pub fn detect_all_env(&mut self) {
+        use crate::core::settings::env_detect;
+        self.homebrew_version = env_detect::detect_homebrew();
+        self.git_version = env_detect::detect_git();
+        let node_ver = env_detect::detect_nodejs();
+        if let Some(v) = node_ver {
+            self.nodejs_version = v;
+        }
+    }
+}
+
+/// brew 任务弹窗状态（更新/安装通用）
+pub struct BrewTaskState {
+    pub show: bool,
+    pub log: String,
+    pub running: bool,
+    pub receiver: Option<std::sync::mpsc::Receiver<String>>,
+    /// 任务完成的时间点（用于 3 秒后自动关闭）
+    pub done_at: Option<std::time::Instant>,
+}
+
+impl BrewTaskState {
+    pub fn new() -> Self {
+        Self {
+            show: false,
+            log: String::new(),
+            running: false,
+            receiver: None,
+            done_at: None,
+        }
+    }
+
+    /// 启动 brew update
+    pub fn start_update(&mut self) {
+        use crate::core::settings::env_detect;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.receiver = Some(rx);
+        self.log = String::new();
+        self.running = true;
+        self.show = true;
+        std::thread::spawn(move || {
+            env_detect::run_brew_update(tx);
+        });
+    }
+
+    /// 启动 brew install <package>
+    pub fn start_install(&mut self, package: &str) {
+        use crate::core::settings::env_detect;
+        let package = package.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.receiver = Some(rx);
+        self.log = String::new();
+        self.running = true;
+        self.show = true;
+        std::thread::spawn(move || {
+            env_detect::run_brew_install(&package, tx);
+        });
+    }
+
+    /// 轮询日志，返回完成后的新版本号
+    pub fn poll(&mut self) -> Option<String> {
+        let mut new_version = None;
+        if let Some(ref rx) = self.receiver {
+            while let Ok(line) = rx.try_recv() {
+                if line == "__DONE__" {
+                    self.running = false;
+                    self.log.push_str("\n✅ 安装完成，3秒后自动关闭");
+                    self.done_at = Some(std::time::Instant::now());
+                    self.receiver = None;
+                    break;
+                }
+                if let Some(ver) = line.strip_prefix("__VERSION__:") {
+                    new_version = Some(ver.to_string());
+                    continue;
+                }
+                if !self.log.is_empty() {
+                    self.log.push('\n');
+                }
+                self.log.push_str(&line);
+            }
+        }
+        new_version
+    }
 }
 
 use crate::lang;
+
+fn render_brew_task_window(
+    ctx: &egui::Context,
+    task: &mut BrewTaskState,
+    title: &str,
+    desc: &str,
+    waiting: &str,
+    running_label: &str,
+    close_label: &str,
+) {
+    // 完成后 3 秒自动关闭
+    if let Some(done_at) = task.done_at {
+        if done_at.elapsed().as_secs() >= 3 {
+            task.show = false;
+            task.done_at = None;
+            return;
+        }
+        ctx.request_repaint();
+    }
+
+    if !task.show {
+        return;
+    }
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(true)
+        .min_width(500.0)
+        .show(ctx, |ui| {
+            ui.label(desc);
+            ui.add_space(10.0);
+            egui::ScrollArea::vertical()
+                .max_height(300.0)
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let log = if task.log.is_empty() {
+                        waiting.to_string()
+                    } else {
+                        task.log.clone()
+                    };
+                    ui.label(log);
+                });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                if task.running {
+                    ui.spinner();
+                    ui.label(running_label);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !task.running {
+                        if ui.button(close_label).clicked() {
+                            task.show = false;
+                        }
+                    }
+                });
+            });
+        });
+}
 
 fn setting_section(
     ui: &mut egui::Ui,
@@ -252,6 +388,9 @@ pub fn render(
     ui: &mut egui::Ui,
     tab: &mut SettingsTab,
     state: &mut SettingsState,
+    homebrew_update: &mut BrewTaskState,
+    git_install: &mut BrewTaskState,
+    nodejs_install: &mut BrewTaskState,
 ) {
     ui.horizontal(|ui| {
         ui.selectable_value(tab, SettingsTab::General, lang::t("general_settings", &state.language));
@@ -429,47 +568,114 @@ pub fn render(
                         );
                     });
 
-                    // Git 设置
-                    setting_section(ui, egui_phosphor::regular::GIT_BRANCH, lang::t("git_settings", &state.language), |ui| {
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::WRENCH,
-                            lang::t("git_env_source", &state.language),
-                            lang::t("git_env_source_desc", &state.language),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("git_env_combo")
-                                    .selected_text(match state.git_env {
-                                        EnvSource::System => lang::t("system_env", &state.language),
-                                        EnvSource::Builtin => lang::t("builtin_env", &state.language),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut state.git_env, EnvSource::System, lang::t("system_env", &state.language));
-                                        ui.selectable_value(&mut state.git_env, EnvSource::Builtin, lang::t("builtin_env", &state.language));
-                                    });
-                            },
-                        );
-                    });
+                    // 环境依赖
+                    {
+                        let brew_installed = state.homebrew_version.is_some();
 
-                    // NodeJs 设置
-                    setting_section(ui, egui_phosphor::regular::TERMINAL, lang::t("nodejs_settings", &state.language), |ui| {
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::WRENCH,
-                            lang::t("nodejs_env_source", &state.language),
-                            lang::t("nodejs_env_source_desc", &state.language),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("nodejs_env_combo")
-                                    .selected_text(match state.nodejs_env {
-                                        EnvSource::System => lang::t("system_env", &state.language),
-                                        EnvSource::Builtin => lang::t("builtin_env", &state.language),
-                                    })
-                                    .show_ui(ui, |ui| {
-                                        ui.selectable_value(&mut state.nodejs_env, EnvSource::System, lang::t("system_env", &state.language));
-                                        ui.selectable_value(&mut state.nodejs_env, EnvSource::Builtin, lang::t("builtin_env", &state.language));
-                                    });
-                            },
-                        );
+                        setting_section(ui, egui_phosphor::regular::PACKAGE, lang::t("env_dependencies", &state.language), |ui| {
+                        // Homebrew
+                        {
+                            let hv = state.homebrew_version.clone();
+                            let hv_outdated = hv.as_ref().map_or(false, |v| {
+                                crate::core::settings::env_detect::is_homebrew_outdated(v)
+                            });
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::BEER_BOTTLE,
+                                lang::t("homebrew_env_source", &state.language),
+                                lang::t("homebrew_purpose", &state.language),
+                                |ui| {
+                                    match hv {
+                                        Some(ref ver) if hv_outdated => {
+                                            if ui.button(lang::t("update_btn", &state.language)).clicked() {
+                                                homebrew_update.start_update();
+                                            }
+                                        }
+                                        Some(ref ver) => {
+                                            ui.label(egui::RichText::new(ver.as_str()).size(14.0));
+                                        }
+                                        None => {
+                                            if ui.button(lang::t("install", &state.language)).clicked() {
+                                                // TODO: 触发 Homebrew 安装逻辑
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
                         ui.add_space(10.0);
+                        // Git
+                        {
+                            let gv = state.git_version.clone();
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::GIT_BRANCH,
+                                lang::t("git_env_source", &state.language),
+                                lang::t("git_purpose", &state.language),
+                                |ui| {
+                                    match gv {
+                                        Some(ref ver) => {
+                                            ui.label(egui::RichText::new(ver.as_str()).size(14.0));
+                                        }
+                                        None => {
+                                            let btn = egui::Button::new(lang::t("install", &state.language));
+                                            let resp = if brew_installed {
+                                                ui.add_enabled(true, btn)
+                                            } else {
+                                                ui.add_enabled(false, btn)
+                                            };
+                                            if resp.clicked() {
+                                                git_install.start_install("git");
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                        ui.add_space(10.0);
+                        // NodeJs
+                        {
+                            let nv = if state.nodejs_version.is_empty() { None } else { Some(state.nodejs_version.clone()) };
+                            let nv_outdated = nv.as_ref().map_or(false, |v| {
+                                crate::core::settings::env_detect::is_nodejs_outdated(v)
+                            });
+                            let title = if nv_outdated {
+                                format!("{}  ⚠ {}", lang::t("nodejs_env_source", &state.language), lang::t("version_too_low", &state.language))
+                            } else {
+                                lang::t("nodejs_env_source", &state.language).to_string()
+                            };
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::CODE,
+                                &title,
+                                lang::t("nodejs_purpose", &state.language),
+                                |ui| {
+                                    match nv {
+                                        Some(ref ver) if nv_outdated => {
+                                            if ui.button(lang::t("update_btn", &state.language)).clicked() {
+                                                // TODO: 触发 NodeJs 更新逻辑
+                                            }
+                                        }
+                                        Some(ref ver) => {
+                                            ui.label(egui::RichText::new(ver.as_str()).size(14.0));
+                                        }
+                                        None => {
+                                            let btn = egui::Button::new(lang::t("install", &state.language));
+                                            let resp = if brew_installed {
+                                                ui.add_enabled(true, btn)
+                                            } else {
+                                                ui.add_enabled(false, btn)
+                                            };
+                                            if resp.clicked() {
+                                                nodejs_install.start_install("node@24");
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                        ui.add_space(10.0);
+                        // NPM 源设置
                         setting_row(
                             ui,
                             egui_phosphor::regular::GLOBE,
@@ -490,6 +696,40 @@ pub fn render(
                             },
                         );
                     });
+
+                    // Homebrew 更新弹窗
+                    render_brew_task_window(
+                        ui.ctx(),
+                        homebrew_update,
+                        lang::t("homebrew_update_title", &state.language),
+                        lang::t("homebrew_update_desc", &state.language),
+                        lang::t("homebrew_update_waiting", &state.language),
+                        lang::t("homebrew_update_running", &state.language),
+                        lang::t("close", &state.language),
+                    );
+
+                    // Git 安装弹窗
+                    render_brew_task_window(
+                        ui.ctx(),
+                        git_install,
+                        lang::t("git_install_title", &state.language),
+                        lang::t("git_install_desc", &state.language),
+                        lang::t("brew_install_waiting", &state.language),
+                        lang::t("brew_install_running", &state.language),
+                        lang::t("close", &state.language),
+                    );
+
+                    // NodeJs 安装弹窗
+                    render_brew_task_window(
+                        ui.ctx(),
+                        nodejs_install,
+                        lang::t("nodejs_install_title", &state.language),
+                        lang::t("nodejs_install_desc", &state.language),
+                        lang::t("brew_install_waiting", &state.language),
+                        lang::t("brew_install_running", &state.language),
+                        lang::t("close", &state.language),
+                    );
+                    }
 
                     // Github 设置
                     setting_section(ui, egui_phosphor::regular::GITHUB_LOGO, lang::t("github_settings", &state.language), |ui| {

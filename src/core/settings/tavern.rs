@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::utils;
+
 // ============================================================================
 // 子结构体
 // ============================================================================
@@ -839,72 +841,38 @@ pub struct InstanceInfo {
 }
 
 impl TavernConfig {
-    /// 获取数据目录的根路径（项目本地，dev 时即项目 root/data）
-    fn data_dir() -> PathBuf {
-        let mut current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-        current_exe.pop();
-        let path_str = current_exe.to_string_lossy();
-        if path_str.contains("target\\debug") || path_str.contains("target\\release") {
-            current_exe.pop(); // target
-            current_exe.pop(); // debug/release
-        }
-        current_exe.push("data");
-        current_exe
-    }
-
-    /// 获取全局数据目录的根路径（%APPDATA%/astrabrew-launcher/data）
-    fn global_data_dir() -> PathBuf {
-        std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| Self::data_dir())
-            .join("astrabrew-launcher")
-            .join("data")
-    }
-
     /// 获取 builtin 酒馆实例路径
     pub fn builtin_instance_path() -> PathBuf {
-        let mut p = Self::data_dir();
-        p.push("sillytavern");
-        p
+        utils::app_paths().sillytavern_dir()
     }
 
     /// 根据数据模式和实例信息解析 config.yaml 路径
     pub fn resolve_path(mode: ConfigMode, instance: Option<&InstanceInfo>) -> PathBuf {
+        let paths = utils::app_paths();
         match mode {
             ConfigMode::Current => {
                 if let Some(inst) = instance {
                     match inst.instance_type.as_str() {
                         "local" => {
                             if let Some(ref p) = inst.path {
-                                let mut path = PathBuf::from(p);
-                                path.push("config.yaml");
-                                return path;
+                                return PathBuf::from(p).join("config.yaml");
                             }
                         }
                         _ => {} // builtin → use default
                     }
                 }
-                let mut p = Self::builtin_instance_path();
-                p.push("config.yaml");
-                p
+                paths.tavern_config_file()
             }
             ConfigMode::Global => {
-                let mut p = Self::global_data_dir();
-                p.push("sillytavern");
-                p.push("data");
-                p.push("config.yaml");
-                p
+                // 全局模式：data/sillytavern/config.yaml
+                paths.data.join("sillytavern").join("config.yaml")
             }
         }
     }
 
     /// 默认模板文件路径（用于生成配置）
     pub fn template_path() -> PathBuf {
-        let mut p = Self::data_dir();
-        p.push("sillytavern");
-        p.push("default");
-        p.push("config.yaml");
-        p
+        utils::app_paths().tavern_template_file()
     }
 
     /// 检查配置文件是否存在
