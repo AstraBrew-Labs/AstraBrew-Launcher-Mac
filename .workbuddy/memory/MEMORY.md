@@ -3,7 +3,7 @@
 ## 项目基础信息
 - **项目名**：AstraBrew Launcher（星酿启动器）
 - **技术栈**：Rust + egui/eframe 0.33，egui-phosphor 图标库
-- **平台**：Windows
+- **平台**：macOS
 - **窗口规格**：默认 1280x720（16:9），最小 800x600，禁用最大化
 
 ## 关键目录/文件
@@ -58,3 +58,14 @@
 - 底部三列信息卡片：当前版本 / 启动模式 / 服务端口
 - `ConsoleState::add_log` 改为 `pub` 供主页调用
 - 翻译键 `home_*` 前缀，中英双语 18 个 key
+
+## macOS 路径管理（2026-06-05）
+- `src/utils.rs`：`AppPaths` 结构体 + 全局单例 `app_paths()`
+- 生产环境根目录：`~/Library/Application Support/AstraBrew Launcher/`
+- 开发环境根目录：项目 `data/`（仅 `target/debug/` 触发）
+- `is_dev_mode()` 判断逻辑：
+  - `ASTRA_DEV=1` 环境变量 → 强制开发模式
+  - `.app/Contents/MacOS/` bundle → 强制生产模式
+  - `target/debug/` → 开发模式
+  - 其他（含 `target/release/`）→ 生产模式
+- 子目录：`data/` `logs/` `temp/` `sillytavern/`

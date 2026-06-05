@@ -1,6 +1,6 @@
 //! 工具函数模块 — macOS 路径管理
 //!
-//! 路径规范（macOS）：
+//! 所有数据统一存储在 macOS 标准路径：
 //!
 //! ```text
 //! ~/Library/Application Support/AstraBrew Launcher/    ← 应用根目录
@@ -15,8 +15,7 @@
 //! └── temp/                 ← 临时目录
 //! ```
 //!
-//! 开发模式（cargo run）时，根目录自动切换为项目 `data/` 目录，
-//! 所有子目录结构保持一致。
+//! 开发调试时如需使用项目本地 `data/` 目录，设置环境变量 `ASTRA_DEV=1`。
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -27,8 +26,8 @@ use std::sync::OnceLock;
 
 /// 应用所有标准路径的集中管理器
 ///
-/// 生产环境根目录: `~/Library/Application Support/AstraBrew Launcher/`
-/// 开发环境根目录: `{项目根目录}/data/`
+/// 根目录: `~/Library/Application Support/AstraBrew Launcher/`
+/// 设置 `ASTRA_DEV=1` 后切换为项目本地 `data/`
 #[derive(Debug, Clone)]
 pub struct AppPaths {
     /// 应用根目录
@@ -74,25 +73,24 @@ impl AppPaths {
         }
     }
 
-    /// 判断是否开发模式（cargo run）
+    /// 判断是否开发模式
+    ///
+    /// 仅通过环境变量 `ASTRA_DEV=1` 激活。
+    /// 未设置时始终使用 macOS 标准路径。
     fn is_dev_mode() -> bool {
-        let exe = std::env::current_exe().unwrap_or_default();
-        let s = exe.to_string_lossy();
-        s.contains("/target/debug/") || s.contains("/target/release/")
+        std::env::var("ASTRA_DEV").as_deref() == Ok("1")
     }
 
     /// 开发模式根目录 → 项目 `data/`
     ///
     /// 从可执行文件路径推导项目根目录：
     /// `.../project/target/debug/astrabrew-launcher-mac` → `.../project/data/`
+    /// `.../project/target/release/astrabrew-launcher-mac` → `.../project/data/`
     fn dev_root() -> PathBuf {
         let mut exe = std::env::current_exe().unwrap_or_default();
-        // pop: executable name
-        exe.pop();
-        // pop: debug or release
-        exe.pop();
-        // pop: target
-        exe.pop();
+        exe.pop(); // executable name
+        exe.pop(); // debug or release
+        exe.pop(); // target
         exe.join("data")
     }
 

@@ -652,7 +652,13 @@ pub fn render(
                                 |ui| {
                                     match nv {
                                         Some(ref ver) if nv_outdated => {
-                                            if ui.button(lang::t("update_btn", &state.language)).clicked() {
+                                            let btn = egui::Button::new(lang::t("update_btn", &state.language));
+                                            let resp = if brew_installed {
+                                                ui.add_enabled(true, btn)
+                                            } else {
+                                                ui.add_enabled(false, btn)
+                                            };
+                                            if resp.clicked() {
                                                 // TODO: 触发 NodeJs 更新逻辑
                                             }
                                         }
