@@ -12,18 +12,20 @@ pub enum SettingsTab {
     About,
 }
 
-#[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Default, Clone, Copy, Serialize, Deserialize)]
 pub enum Language {
     #[default]
     Chinese,
     English,
+    System,
 }
 
-#[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
+#[derive(PartialEq, Default, Clone, Copy, Serialize, Deserialize)]
 pub enum Theme {
     Light,
     #[default]
     Dark,
+    System,
 }
 
 #[derive(PartialEq, Default, Clone, Serialize, Deserialize)]
@@ -428,12 +430,15 @@ pub fn render(
                                         .selected_text(match state.language {
                                             Language::Chinese => lang::t("zh_cn", &state.language),
                                             Language::English => lang::t("en_us", &state.language),
+                                            Language::System => lang::t("system_language", &state.language),
                                         })
                                         .show_ui(ui, |ui| {
                                             let text_zh = lang::t("zh_cn", &state.language);
                                             let text_en = lang::t("en_us", &state.language);
+                                            let text_sys = lang::t("system_language", &state.language);
                                             ui.selectable_value(&mut state.language, Language::Chinese, text_zh);
                                             ui.selectable_value(&mut state.language, Language::English, text_en);
+                                            ui.selectable_value(&mut state.language, Language::System, text_sys);
                                         });
                                 },
                             );
@@ -448,10 +453,12 @@ pub fn render(
                                         .selected_text(match state.theme {
                                             Theme::Light => lang::t("light_theme", &state.language),
                                             Theme::Dark => lang::t("dark_theme", &state.language),
+                                            Theme::System => lang::t("system_theme", &state.language),
                                         })
                                         .show_ui(ui, |ui| {
                                             ui.selectable_value(&mut state.theme, Theme::Light, lang::t("light_theme", &state.language));
                                             ui.selectable_value(&mut state.theme, Theme::Dark, lang::t("dark_theme", &state.language));
+                                            ui.selectable_value(&mut state.theme, Theme::System, lang::t("system_theme", &state.language));
                                         });
                                 },
                             );

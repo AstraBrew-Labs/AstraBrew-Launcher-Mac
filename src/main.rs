@@ -137,6 +137,11 @@ impl eframe::App for MyApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 应用主题
         let visuals = match self.settings_state.theme {
+            Theme::System => match ctx.system_theme() {
+                Some(egui::Theme::Dark) => egui::Visuals::dark(),
+                Some(egui::Theme::Light) => egui::Visuals::light(),
+                None => egui::Visuals::dark(), // 无法检测时默认深色
+            },
             Theme::Light => egui::Visuals::light(),
             Theme::Dark => egui::Visuals::dark(),
         };
@@ -165,9 +170,10 @@ impl eframe::App for MyApp {
             }
         }
 
-        let panel_width = match self.settings_state.language {
+        let panel_width = match lang::effective_language(&self.settings_state.language) {
             pages::settings::Language::Chinese => 150.0,
             pages::settings::Language::English => 180.0,
+            pages::settings::Language::System => unreachable!("effective_language already resolved System"),
         };
 
         // 左侧导航栏
