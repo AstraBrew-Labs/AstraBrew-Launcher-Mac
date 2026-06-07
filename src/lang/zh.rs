@@ -136,7 +136,14 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "pm2_env_info" => "PM2 环境",
         "pm2_env_info_desc" => "版本: {version}\n路径: {path}",
         "pm2_not_installed" => "尚未安装 PM2",
+        "pm2_purpose" => "让酒馆支持脱离启动器来后台运行（可选，依赖 Node.js）",
+        "pm2_need_nodejs" => "请先安装 Node.js",
+        "pm2_install_title" => "PM2 安装",
+        "pm2_install_desc" => "正在执行 npm install -g pm2，请稍候...",
         "install" => "安装",
+        "caddy_purpose" => "用于给酒馆添加反向代理（可选）",
+        "caddy_install_title" => "Caddy 安装",
+        "caddy_install_desc" => "正在执行 brew install caddy，请稍候...",
         
         // Github Settings
         "github_settings" => "Github 设置",

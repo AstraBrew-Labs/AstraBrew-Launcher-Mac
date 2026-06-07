@@ -134,6 +134,8 @@ struct MyApp {
     homebrew_update_state: pages::settings::BrewTaskState,
     git_install_state: pages::settings::BrewTaskState,
     nodejs_install_state: pages::settings::BrewTaskState,
+    caddy_install_state: pages::settings::BrewTaskState,
+    pm2_install_state: pages::settings::BrewTaskState,
 
     // Github 节点状态
     github_node_rx: Option<
@@ -171,6 +173,8 @@ impl MyApp {
             homebrew_update_state: pages::settings::BrewTaskState::new(),
             git_install_state: pages::settings::BrewTaskState::new(),
             nodejs_install_state: pages::settings::BrewTaskState::new(),
+            caddy_install_state: pages::settings::BrewTaskState::new(),
+            pm2_install_state: pages::settings::BrewTaskState::new(),
             github_node_rx: None,
             github_node_state: crate::core::settings::github_proxy::NodeLoadState::Idle,
             on_refresh_nodes: false,
@@ -344,12 +348,22 @@ impl eframe::App for MyApp {
         if let Some(new_ver) = self.nodejs_install_state.poll() {
             self.settings_state.nodejs_version = new_ver;
         }
+        if let Some(new_ver) = self.caddy_install_state.poll() {
+            self.settings_state.caddy_version = Some(new_ver);
+        }
+        if let Some(new_ver) = self.pm2_install_state.poll() {
+            self.settings_state.pm2_version = Some(new_ver);
+        }
         if self.homebrew_update_state.running
             || self.git_install_state.running
             || self.nodejs_install_state.running
+            || self.caddy_install_state.running
+            || self.pm2_install_state.running
             || self.homebrew_update_state.done_at.is_some()
             || self.git_install_state.done_at.is_some()
             || self.nodejs_install_state.done_at.is_some()
+            || self.caddy_install_state.done_at.is_some()
+            || self.pm2_install_state.done_at.is_some()
         {
             ctx.request_repaint();
         }
@@ -517,6 +531,8 @@ impl eframe::App for MyApp {
                         &mut self.homebrew_update_state,
                         &mut self.git_install_state,
                         &mut self.nodejs_install_state,
+                        &mut self.caddy_install_state,
+                        &mut self.pm2_install_state,
                         &self.github_node_state,
                         &mut self.on_refresh_nodes,
                     );

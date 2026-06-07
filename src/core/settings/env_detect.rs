@@ -65,6 +65,37 @@ pub fn detect_nodejs() -> Option<String> {
     }
 }
 
+/// 检测 Caddy 版本，返回版本号字符串，如 "v2.9.1"
+pub fn detect_caddy() -> Option<String> {
+    let output = Command::new("caddy").arg("version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 输出格式: "v2.9.1 h1:..." 取第一段
+    let version = stdout.trim().split_whitespace().next()?;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
+/// 检测 PM2 版本，返回版本号字符串，如 "6.0.4"
+pub fn detect_pm2() -> Option<String> {
+    let output = Command::new("pm2").arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let version = stdout.trim().to_string();
+    if version.is_empty() {
+        None
+    } else {
+        Some(version)
+    }
+}
+
 /// 解析 semver 主版本号
 fn parse_major(version: &str) -> Option<u32> {
     let version = version.trim_start_matches('v').trim_start_matches('V');
@@ -97,6 +128,7 @@ pub fn run_brew_install(package: &str, sender: std::sync::mpsc::Sender<String>) 
     let detect_target = match package {
         "git" => "git",
         "node@24" => "nodejs",
+        "caddy" => "caddy",
         _ => "",
     };
     run_brew_command(&["install", package], sender, detect_target);
@@ -107,6 +139,7 @@ fn detect_version(target: &str) -> Option<String> {
         "homebrew" => detect_homebrew(),
         "git" => detect_git(),
         "nodejs" => detect_nodejs(),
+        "caddy" => detect_caddy(),
         _ => None,
     }
 }
@@ -196,6 +229,88 @@ fn run_brew_command(args: &[&str], sender: std::sync::mpsc::Sender<String>, dete
 
     // 不等待子进程退出，避免阻塞
     // child 在此作用域结束时被 drop，进程由 OS 回收
+    drop(child);
+}
+
+/// 运行 npm install -g <package> 并返回日志（用于 PM2 等全局 npm 包）
+pub fn run_npm_install_global(package: &str, sender: std::sync::mpsc::Sender<String>) {
+    let mut cmd = Command::new("npm");
+    cmd.args(["install", "-g", package]);
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = sender.send(format!("无法启动进程: {}", e));
+            let _ = sender.send("__DONE__".to_string());
+            return;
+        }
+    };
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let tx_stdout = sender.clone();
+    let tx_stderr = sender.clone();
+    let tx_final = sender;
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    // 读取 stdout
+    if let Some(out) = stdout {
+        let done = done_tx.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(out);
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        let cleaned = strip_ansi(&line).trim().to_string();
+                        if !cleaned.is_empty() {
+                            let _ = tx_stdout.send(cleaned);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = done.send(());
+        });
+    } else {
+        let _ = done_tx.send(());
+    }
+
+    // 读取 stderr
+    if let Some(err) = stderr {
+        let done = done_tx;
+        std::thread::spawn(move || {
+            let reader = BufReader::new(err);
+            for line_result in reader.lines() {
+                match line_result {
+                    Ok(line) => {
+                        let cleaned = strip_ansi(&line).trim().to_string();
+                        if !cleaned.is_empty() {
+                            let _ = tx_stderr.send(cleaned);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = done.send(());
+        });
+    } else {
+        let _ = done_tx.send(());
+    }
+
+    // 等待两个读取线程完成
+    let _ = done_rx.recv();
+    let _ = done_rx.recv();
+
+    // 安装后检测 PM2 版本
+    if let Some(ver) = detect_pm2() {
+        let _ = tx_final.send(format!("__VERSION__:{}", ver));
+    }
+
+    let _ = tx_final.send("__DONE__".to_string());
+
     drop(child);
 }
 

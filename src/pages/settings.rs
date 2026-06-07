@@ -140,6 +140,10 @@ pub struct SettingsState {
     pub homebrew_version: Option<String>,
     #[serde(skip)]
     pub git_version: Option<String>,
+    #[serde(skip)]
+    pub caddy_version: Option<String>,
+    #[serde(skip)]
+    pub pm2_version: Option<String>,
 
     // 恢复默认触发标记（不持久化）
     #[serde(skip)]
@@ -176,6 +180,8 @@ impl Default for SettingsState {
             nodejs_version: String::new(),
             homebrew_version: None,
             git_version: None,
+            caddy_version: None,
+            pm2_version: None,
             restore_defaults_triggered: false,
             trigger_folder_picker: false,
         }
@@ -216,6 +222,8 @@ impl SettingsState {
         if let Some(v) = node_ver {
             self.nodejs_version = v;
         }
+        self.caddy_version = env_detect::detect_caddy();
+        self.pm2_version = env_detect::detect_pm2();
     }
 }
 
@@ -264,6 +272,20 @@ impl BrewTaskState {
         self.show = true;
         std::thread::spawn(move || {
             env_detect::run_brew_install(&package, tx);
+        });
+    }
+
+    /// 启动 npm install -g <package>（用于 PM2 等全局 npm 包安装）
+    pub fn start_npm_install(&mut self, package: &str) {
+        use crate::core::settings::env_detect;
+        let package = package.to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.receiver = Some(rx);
+        self.log = String::new();
+        self.running = true;
+        self.show = true;
+        std::thread::spawn(move || {
+            env_detect::run_npm_install_global(&package, tx);
         });
     }
 
@@ -412,6 +434,8 @@ pub fn render(
     homebrew_update: &mut BrewTaskState,
     git_install: &mut BrewTaskState,
     nodejs_install: &mut BrewTaskState,
+    caddy_install: &mut BrewTaskState,
+    pm2_install: &mut BrewTaskState,
     github_node_state: &crate::core::settings::github_proxy::NodeLoadState,
     on_refresh_nodes: &mut bool,
 ) {
@@ -424,10 +448,14 @@ pub fn render(
                 let nodejs_version = state.nodejs_version.clone();
                 let homebrew_version = state.homebrew_version.clone();
                 let git_version = state.git_version.clone();
+                let caddy_version = state.caddy_version.clone();
+                let pm2_version = state.pm2_version.clone();
                 *state = SettingsState::default();
                 state.nodejs_version = nodejs_version;
                 state.homebrew_version = homebrew_version;
                 state.git_version = git_version;
+                state.caddy_version = caddy_version;
+                state.pm2_version = pm2_version;
                 state.restore_defaults_triggered = true;
             }
         });
@@ -824,6 +852,66 @@ pub fn render(
                                     });
                             },
                         );
+                        ui.add_space(10.0);
+                        // Caddy
+                        {
+                            let cv = state.caddy_version.clone();
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::SHIELD_CHECK,
+                                "Caddy",
+                                lang::t("caddy_purpose", &state.language),
+                                |ui| {
+                                    match cv {
+                                        Some(ref ver) => {
+                                            ui.label(egui::RichText::new(ver.as_str()).size(14.0));
+                                        }
+                                        None => {
+                                            let btn = egui::Button::new(lang::t("install", &state.language));
+                                            let resp = if brew_installed {
+                                                ui.add_enabled(true, btn)
+                                            } else {
+                                                ui.add_enabled(false, btn)
+                                            };
+                                            if resp.clicked() {
+                                                caddy_install.start_install("caddy");
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
+                        ui.add_space(10.0);
+                        // PM2
+                        {
+                            let pv = state.pm2_version.clone();
+                            let nodejs_installed = !state.nodejs_version.is_empty();
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::CLOUD_ARROW_DOWN,
+                                "PM2",
+                                lang::t("pm2_purpose", &state.language),
+                                |ui| {
+                                    match pv {
+                                        Some(ref ver) => {
+                                            ui.label(egui::RichText::new(ver.as_str()).size(14.0));
+                                        }
+                                        None => {
+                                            let btn = egui::Button::new(lang::t("install", &state.language));
+                                            let resp = if nodejs_installed {
+                                                ui.add_enabled(true, btn)
+                                            } else {
+                                                ui.add_enabled(false, btn)
+                                                    .on_disabled_hover_text(lang::t("pm2_need_nodejs", &state.language))
+                                            };
+                                            if resp.clicked() {
+                                                pm2_install.start_npm_install("pm2");
+                                            }
+                                        }
+                                    }
+                                },
+                            );
+                        }
                     });
 
                     // Homebrew 更新弹窗
@@ -854,6 +942,28 @@ pub fn render(
                         nodejs_install,
                         lang::t("nodejs_install_title", &state.language),
                         lang::t("nodejs_install_desc", &state.language),
+                        lang::t("brew_install_waiting", &state.language),
+                        lang::t("brew_install_running", &state.language),
+                        lang::t("close", &state.language),
+                    );
+
+                    // Caddy 安装弹窗
+                    render_brew_task_window(
+                        ui.ctx(),
+                        caddy_install,
+                        lang::t("caddy_install_title", &state.language),
+                        lang::t("caddy_install_desc", &state.language),
+                        lang::t("brew_install_waiting", &state.language),
+                        lang::t("brew_install_running", &state.language),
+                        lang::t("close", &state.language),
+                    );
+
+                    // PM2 安装弹窗
+                    render_brew_task_window(
+                        ui.ctx(),
+                        pm2_install,
+                        lang::t("pm2_install_title", &state.language),
+                        lang::t("pm2_install_desc", &state.language),
                         lang::t("brew_install_waiting", &state.language),
                         lang::t("brew_install_running", &state.language),
                         lang::t("close", &state.language),
