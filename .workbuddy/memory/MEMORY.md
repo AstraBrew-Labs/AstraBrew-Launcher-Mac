@@ -19,6 +19,10 @@
 - 工作流：先分析根因、参考现有模式、再编码
 - 配置持久化：`SettingsState::save()` / `load()`（JSON）
 - 异步通信：`std::sync::mpsc::channel` + `ctx.request_repaint()`
+不要使用cargo run启动项目，也不要用于测试
+只能使用cargo check检查项目
+代码要严格模式，warning要修复，error要修复。
+仅MacOS平台，不用考虑其他平台。
 
 ## GitHub 代理功能（2026-05-15）
 - 接口：`https://api.akams.cn/github`（每10小时更新，50条节点）
@@ -70,7 +74,7 @@
 - **关键文件路径**：
   - 启动器配置：`root/config.json`（`settings_file()`）
   - 内置酒馆配置：`root/sillytavern/config.yaml`（`tavern_config_file()`）
-  - 全局酒馆配置：`root/data/config.yaml`（`global_tavern_config_file()`）
-  - 酒馆配置模板：`root/data/sillytavern/config.yaml`（`tavern_template_file()`）
+  - 全局酒馆配置：`root/data/sillytavern/data/config.yaml`（`global_tavern_config_file()`）
+  - 酒馆配置模板：`data/default/sillytavern/config.yaml`（`tavern_template_file()`）
   - 本地实例列表：`root/data/local_instances.json`（`instances_file()`）
   - GitHub 缓存：`caches/github_proxy_cache.json`

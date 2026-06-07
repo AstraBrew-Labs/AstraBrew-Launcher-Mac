@@ -7,9 +7,28 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
+use std::time::Duration;
 
 use crate::utils;
+
+// ============================================================================
+// 配置下载消息
+// ============================================================================
+
+/// 模板配置下载进度消息
+pub enum GenConfigMsg {
+    /// 下载进度 (已下载字节, 总字节)
+    Progress(u64, u64),
+    /// 下载完成
+    Done,
+    /// 下载出错
+    Error(String),
+    /// 正在尝试回退到直连
+    FallingBack,
+}
 
 // ============================================================================
 // 子结构体
@@ -847,7 +866,7 @@ impl TavernConfig {
     }
 
     /// 根据数据模式和实例信息解析 config.yaml 路径
-    pub fn resolve_path(mode: ConfigMode, instance: Option<&InstanceInfo>) -> PathBuf {
+    pub fn resolve_path(mode: ConfigMode, instance: Option<&InstanceInfo>, global_data_path: Option<&str>) -> PathBuf {
         let paths = utils::app_paths();
         match mode {
             ConfigMode::Current => {
@@ -864,7 +883,11 @@ impl TavernConfig {
                 paths.tavern_config_file()
             }
             ConfigMode::Global => {
-                paths.global_tavern_config_file()
+                if let Some(custom) = global_data_path {
+                    PathBuf::from(custom).join("config.yaml")
+                } else {
+                    paths.global_tavern_config_file()
+                }
             }
         }
     }
@@ -875,20 +898,20 @@ impl TavernConfig {
     }
 
     /// 检查配置文件是否存在
-    pub fn config_exists(mode: ConfigMode, instance: Option<&InstanceInfo>) -> bool {
-        Self::resolve_path(mode, instance).exists()
+    pub fn config_exists(mode: ConfigMode, instance: Option<&InstanceInfo>, global_data_path: Option<&str>) -> bool {
+        Self::resolve_path(mode, instance, global_data_path).exists()
     }
 
     /// 从 YAML 文件加载配置
-    pub fn load_from_yaml(mode: ConfigMode, instance: Option<&InstanceInfo>) -> Option<Self> {
-        let path = Self::resolve_path(mode, instance);
+    pub fn load_from_yaml(mode: ConfigMode, instance: Option<&InstanceInfo>, global_data_path: Option<&str>) -> Option<Self> {
+        let path = Self::resolve_path(mode, instance, global_data_path);
         let content = fs::read_to_string(&path).ok()?;
         Self::from_yaml(&content)
     }
 
     /// 保存配置到 YAML 文件（保留未知字段）
-    pub fn save_to_yaml(&self, mode: ConfigMode, instance: Option<&InstanceInfo>) -> bool {
-        let path = Self::resolve_path(mode, instance);
+    pub fn save_to_yaml(&self, mode: ConfigMode, instance: Option<&InstanceInfo>, global_data_path: Option<&str>) -> bool {
+        let path = Self::resolve_path(mode, instance, global_data_path);
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
@@ -921,19 +944,123 @@ impl TavernConfig {
     /// 从模板文件生成目标配置文件
     pub fn generate_from_template(target_path: &Path) -> bool {
         let template = Self::template_path();
-        if !template.exists() {
-            eprintln!("[tavern_config] 模板文件不存在: {:?}", template);
+        Self::copy_template_to(&template, target_path)
+    }
+
+    /// 从指定模板路径复制配置文件到目标
+    pub fn copy_template_to(template_path: &Path, target_path: &Path) -> bool {
+        if !template_path.exists() {
+            eprintln!("[tavern_config] 模板文件不存在: {:?}", template_path);
             return false;
         }
         if let Some(parent) = target_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        match fs::copy(&template, target_path) {
+        match fs::copy(template_path, target_path) {
             Ok(_) => true,
             Err(e) => {
                 eprintln!("[tavern_config] 复制模板失败: {}", e);
                 false
             }
         }
+    }
+
+    /// 在后台线程中下载默认模板配置文件
+    /// target_path: 目标配置文件路径
+    /// template_path: 默认模板缓存路径（下载后同时保存一份到此，供后续"恢复默认"使用）
+    pub fn start_download_template(
+        target_path: PathBuf,
+        template_path: PathBuf,
+        proxy_enabled: bool,
+        proxy_url: String,
+        tx: Sender<GenConfigMsg>,
+    ) {
+        std::thread::spawn(move || {
+            let direct_url = "https://raw.githubusercontent.com/SillyTavern/SillyTavern/refs/heads/release/default/config.yaml";
+
+            // 确保目标目录存在
+            if let Some(parent) = target_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            // 确保模板目录存在
+            if let Some(parent) = template_path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+
+            // 构建 URL 列表：代理在前，直连在后
+            let urls: Vec<String> = if proxy_enabled && !proxy_url.is_empty() {
+                let proxy_clean = proxy_url.trim_end_matches('/');
+                vec![
+                    format!("{}/{}", proxy_clean, direct_url),
+                    direct_url.to_string(),
+                ]
+            } else {
+                vec![direct_url.to_string()]
+            };
+
+            for (i, url) in urls.iter().enumerate() {
+                if i > 0 {
+                    let _ = tx.send(GenConfigMsg::FallingBack);
+                }
+                match Self::download_single(&url, &target_path, &tx) {
+                    Ok(()) => {
+                        // 同时保存一份到模板目录，供后续"恢复默认"使用
+                        let _ = fs::copy(&target_path, &template_path);
+                        let _ = tx.send(GenConfigMsg::Done);
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[tavern_config] 下载失败 ({}): {}", url, e);
+                    }
+                }
+            }
+
+            let _ = tx.send(GenConfigMsg::Error("所有下载地址均失败".to_string()));
+        });
+    }
+
+    /// 从单个 URL 下载配置文件，实时报告进度
+    fn download_single(
+        url: &str,
+        target_path: &Path,
+        tx: &Sender<GenConfigMsg>,
+    ) -> Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+
+        let mut resp = client
+            .get(url)
+            .header("User-Agent", "AstraBrew-Launcher/0.1.0")
+            .send()
+            .map_err(|e| format!("请求失败: {}", e))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("HTTP {}", status));
+        }
+
+        let total = resp.content_length().unwrap_or(0);
+        let mut downloaded: u64 = 0;
+        let mut data = Vec::new();
+        let mut buf = [0u8; 8192];
+
+        loop {
+            let n = resp
+                .read(&mut buf)
+                .map_err(|e| format!("读取响应失败: {}", e))?;
+            if n == 0 {
+                break;
+            }
+            data.extend_from_slice(&buf[..n]);
+            downloaded += n as u64;
+            let _ = tx.send(GenConfigMsg::Progress(downloaded, total));
+        }
+
+        fs::write(target_path, &data)
+            .map_err(|e| format!("写入文件失败: {}", e))?;
+
+        Ok(())
     }
 }

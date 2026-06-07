@@ -7,8 +7,26 @@
 use eframe::egui;
 use egui::{Align, Color32, Frame, Layout, RichText, ScrollArea};
 
-use crate::core::settings::tavern::{ConfigMode, InstanceInfo, TavernConfig};
+use crate::core::settings::tavern::{ConfigMode, GenConfigMsg, InstanceInfo, TavernConfig};
 use crate::pages::settings::Language;
+use crate::Page;
+
+// ---------------------------------------------------------------------------
+// 配置生成状态
+// ---------------------------------------------------------------------------
+
+pub enum GenConfigStatus {
+    Idle,
+    Downloading { progress: u64, total: u64 },
+    Done,
+    Error(String),
+}
+
+impl GenConfigStatus {
+    pub fn is_downloading(&self) -> bool {
+        matches!(self, GenConfigStatus::Downloading { .. })
+    }
+}
 
 // ---------------------------------------------------------------------------
 // UI 状态
@@ -21,6 +39,8 @@ pub struct TavernConfigUI {
     pub save_time: Option<std::time::Instant>,
     /// 数据模式（当前 vs 全局）
     pub config_mode: ConfigMode,
+    /// 全局数据自定义路径
+    pub global_data_path: Option<String>,
     /// 当前酒馆实例信息
     pub instance: Option<InstanceInfo>,
     /// 配置文件是否已存在
@@ -33,13 +53,28 @@ pub struct TavernConfigUI {
     ipv4_snapshot: String,
     /// IPv6 编辑开始前的快照
     ipv6_snapshot: String,
+
+    // ── 下载相关 ──
+    /// 配置生成/下载状态
+    pub gen_config_status: GenConfigStatus,
+    /// 下载进度接收端
+    pub gen_config_rx: Option<std::sync::mpsc::Receiver<GenConfigMsg>>,
+    /// GitHub 代理是否开启（由 main.rs 每帧同步）
+    pub proxy_enabled: bool,
+    /// GitHub 代理 URL（由 main.rs 每帧同步）
+    pub proxy_url: String,
+
+    // ── 恢复默认 ──
+    /// 是否显示恢复默认二次确认弹窗
+    pub show_reset_confirm: bool,
 }
 
 impl TavernConfigUI {
-    pub fn new(config_mode: ConfigMode, instance: Option<InstanceInfo>) -> Self {
-        let config_ready = TavernConfig::config_exists(config_mode, instance.as_ref());
+    pub fn new(config_mode: ConfigMode, instance: Option<InstanceInfo>, global_data_path: Option<String>) -> Self {
+        let gdp = global_data_path.as_deref();
+        let config_ready = TavernConfig::config_exists(config_mode, instance.as_ref(), gdp);
         let config = if config_ready {
-            TavernConfig::load_from_yaml(config_mode, instance.as_ref())
+            TavernConfig::load_from_yaml(config_mode, instance.as_ref(), gdp)
                 .unwrap_or_default()
         } else {
             TavernConfig::default()
@@ -49,17 +84,24 @@ impl TavernConfigUI {
             just_saved: false,
             save_time: None,
             config_mode,
+            global_data_path,
             instance,
             config_ready,
             gen_config_success: false,
             last_config_key: String::new(),
             ipv4_snapshot: String::new(),
             ipv6_snapshot: String::new(),
+            gen_config_status: GenConfigStatus::Idle,
+            gen_config_rx: None,
+            proxy_enabled: false,
+            proxy_url: String::new(),
+            show_reset_confirm: false,
         }
     }
 
-    /// 构建当前配置的唯一标识 key（模式 + 实例）
+    /// 构建当前配置的唯一标识 key（模式 + 实例 + 自定义路径）
     pub fn config_key(&self) -> String {
+        let gdp = self.global_data_path.as_deref().unwrap_or("");
         match (self.config_mode, &self.instance) {
             (ConfigMode::Current, Some(inst)) => {
                 format!("Current:{}:{}", 
@@ -67,23 +109,25 @@ impl TavernConfigUI {
                     inst.path.as_deref().unwrap_or("builtin"))
             }
             (ConfigMode::Current, None) => "Current:builtin:".to_string(),
-            (ConfigMode::Global, _) => "Global:".to_string(),
+            (ConfigMode::Global, _) => format!("Global:{}", gdp),
         }
     }
 
     /// 重新扫描配置文件状态并加载；仅在 key 变化或强制刷新时调用
     pub fn refresh(&mut self) {
         let new_key = self.config_key();
-        self.config_ready = TavernConfig::config_exists(self.config_mode, self.instance.as_ref());
+        let gdp = self.global_data_path.as_deref();
+        self.config_ready = TavernConfig::config_exists(self.config_mode, self.instance.as_ref(), gdp);
         if self.config_ready {
-            self.config = TavernConfig::load_from_yaml(self.config_mode, self.instance.as_ref())
+            self.config = TavernConfig::load_from_yaml(self.config_mode, self.instance.as_ref(), gdp)
                 .unwrap_or_default();
         }
         self.last_config_key = new_key;
     }
 
     pub fn save(&mut self) {
-        self.config.save_to_yaml(self.config_mode, self.instance.as_ref());
+        let gdp = self.global_data_path.as_deref();
+        self.config.save_to_yaml(self.config_mode, self.instance.as_ref(), gdp);
         self.just_saved = true;
         self.save_time = Some(std::time::Instant::now());
     }
@@ -233,7 +277,7 @@ fn dynamic_list(ui: &mut egui::Ui, items: &mut Vec<String>, add_label: &str) {
 // 主渲染
 // ---------------------------------------------------------------------------
 
-pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
+pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, current_page: &mut Page) {
     // 保存成功提示 3 秒后自动恢复按钮状态
     if state.just_saved {
         if let Some(t) = state.save_time {
@@ -262,6 +306,81 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
         }
     }
 
+    // ── 轮询下载进度 ──
+    {
+        let mut clear_rx = false;
+        let mut needs_refresh = false;
+        if let Some(ref rx) = state.gen_config_rx {
+            while let Ok(msg) = rx.try_recv() {
+                match msg {
+                    GenConfigMsg::Progress(downloaded, total) => {
+                        state.gen_config_status = GenConfigStatus::Downloading { progress: downloaded, total };
+                    }
+                    GenConfigMsg::FallingBack => {
+                        // 保持 downloading 状态，后续 progress 会更新
+                    }
+                    GenConfigMsg::Done => {
+                        clear_rx = true;
+                        needs_refresh = true;
+                        state.gen_config_status = GenConfigStatus::Done;
+                        state.gen_config_success = true;
+                        state.save_time = Some(std::time::Instant::now());
+                    }
+                    GenConfigMsg::Error(e) => {
+                        clear_rx = true;
+                        state.gen_config_status = GenConfigStatus::Error(e);
+                    }
+                }
+            }
+            ui.ctx().request_repaint();
+        }
+        if clear_rx {
+            state.gen_config_rx = None;
+        }
+        if needs_refresh {
+            state.refresh();
+        }
+    }
+
+    // ── 未选择酒馆实例遮罩（仅 Current 模式生效）──
+    if state.instance.is_none() && state.config_mode == ConfigMode::Current {
+        let content_rect = ui.max_rect();
+        ui.painter().rect_filled(content_rect, 0.0, Color32::from_black_alpha(200));
+
+        let center = content_rect.center();
+        let overlay_rect = egui::Rect::from_center_size(
+            center,
+            egui::vec2(340.0, 170.0),
+        );
+
+        let mut child_ui = ui.new_child(egui::UiBuilder::new()
+            .max_rect(overlay_rect)
+            .layout(Layout::top_down(Align::Center)));
+
+        child_ui.add_space(20.0);
+        child_ui.label(
+            RichText::new(crate::lang::t("tc_no_instance_title", lang))
+                .size(18.0)
+                .color(Color32::from_rgb(255, 200, 100)),
+        );
+        child_ui.add_space(8.0);
+        child_ui.label(
+            RichText::new(crate::lang::t("tc_no_instance_desc", lang))
+                .size(13.0)
+                .color(Color32::LIGHT_GRAY),
+        );
+        child_ui.add_space(16.0);
+
+        if child_ui.add_sized(
+            [200.0, 32.0],
+            egui::Button::new(RichText::new(crate::lang::t("tc_goto_version_mgmt", lang)).size(15.0)),
+        ).clicked() {
+            *current_page = Page::VersionManage;
+        }
+
+        return;
+    }
+
     // ── 未初始化遮罩 ──
     if !state.config_ready {
         // 半透明遮罩覆盖整个页面
@@ -272,7 +391,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
         let center = content_rect.center();
         let overlay_rect = egui::Rect::from_center_size(
             center,
-            egui::vec2(320.0, 160.0),
+            egui::vec2(360.0, 200.0),
         );
 
         let mut child_ui = ui.new_child(egui::UiBuilder::new()
@@ -286,23 +405,128 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
                 .color(Color32::from_rgb(255, 200, 100)),
         );
         child_ui.add_space(8.0);
-        child_ui.label(
-            RichText::new("目标配置文件不存在，点击下方按钮生成默认配置")
-                .size(13.0)
-                .color(Color32::LIGHT_GRAY),
-        );
-        child_ui.add_space(16.0);
 
-        if child_ui.add_sized(
-            [180.0, 32.0],
-            egui::Button::new(RichText::new("🔄 生成配置").size(15.0)),
-        ).clicked() {
-            let target = TavernConfig::resolve_path(state.config_mode, state.instance.as_ref());
-            if TavernConfig::generate_from_template(&target) {
-                state.refresh();
-                state.just_saved = false;
-                state.gen_config_success = true;
-                state.save_time = Some(std::time::Instant::now());
+        match &state.gen_config_status {
+            GenConfigStatus::Idle => {
+                // 默认按钮：生成配置
+                child_ui.label(
+                    RichText::new("目标配置文件不存在，点击下方按钮生成默认配置")
+                        .size(13.0)
+                        .color(Color32::LIGHT_GRAY),
+                );
+                child_ui.add_space(16.0);
+
+                if child_ui.add_sized(
+                    [200.0, 32.0],
+                    egui::Button::new(RichText::new(format!("🔄 {}", crate::lang::t("tc_gen_config_btn", lang))).size(15.0)),
+                ).clicked() {
+                    let target = TavernConfig::resolve_path(state.config_mode, state.instance.as_ref(), state.global_data_path.as_deref());
+
+                    // 确定模板路径
+                    // 全局模式：data/default/sillytavern/config.yaml
+                    // 独立模式：<instance>/default/config.yaml
+                    let template = match (state.config_mode, state.instance.as_ref()) {
+                        (ConfigMode::Current, Some(inst)) => {
+                            let inst_path = inst.path.as_deref().unwrap_or("");
+                            if inst_path.is_empty() {
+                                std::path::PathBuf::new()
+                            } else {
+                                std::path::PathBuf::from(inst_path).join("default").join("config.yaml")
+                            }
+                        }
+                        _ => TavernConfig::template_path(),
+                    };
+
+                    if template.exists() {
+                        if TavernConfig::copy_template_to(&template, &target) {
+                            state.gen_config_status = GenConfigStatus::Done;
+                            state.refresh();
+                            state.gen_config_success = true;
+                            state.save_time = Some(std::time::Instant::now());
+                        } else {
+                            state.gen_config_status = GenConfigStatus::Error("复制模板失败".to_string());
+                        }
+                    } else {
+                        // 模板不存在，启动网络下载
+                        state.gen_config_status = GenConfigStatus::Downloading { progress: 0, total: 0 };
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        state.gen_config_rx = Some(rx);
+                        TavernConfig::start_download_template(
+                            target,
+                            template,
+                            state.proxy_enabled,
+                            state.proxy_url.clone(),
+                            tx,
+                        );
+                    }
+                }
+            }
+            GenConfigStatus::Downloading { progress, total } => {
+                // 下载中：进度条
+                child_ui.label(
+                    RichText::new(crate::lang::t("tc_downloading", lang))
+                        .size(13.0)
+                        .color(Color32::LIGHT_GRAY),
+                );
+                child_ui.add_space(12.0);
+
+                let bar_width = 240.0;
+                let bar_height = 8.0;
+                let (bar_rect, _) = child_ui.allocate_exact_size(
+                    egui::vec2(bar_width, bar_height),
+                    egui::Sense::hover(),
+                );
+
+                // 背景
+                child_ui.painter().rect_filled(
+                    bar_rect,
+                    4.0,
+                    Color32::from_gray(60),
+                );
+
+                // 进度
+                if *total > 0 {
+                    let fraction = (*progress as f32) / (*total as f32).min(1.0);
+                    let fill_w = bar_width * fraction;
+                    child_ui.painter().rect_filled(
+                        egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_w, bar_height)),
+                        4.0,
+                        Color32::from_rgb(37, 99, 235),
+                    );
+                }
+
+                child_ui.add_space(8.0);
+                let info = if *total > 0 {
+                    let pct = ((*progress as f64) / (*total as f64) * 100.0) as u32;
+                    format!("{}% ({} / {} KB)", pct, progress / 1024, total / 1024)
+                } else {
+                    format!("{} KB", progress / 1024)
+                };
+                child_ui.label(
+                    RichText::new(info)
+                        .size(11.0)
+                        .color(Color32::GRAY),
+                );
+            }
+            GenConfigStatus::Done => {
+                // 理论上不会走到这里（config_ready 变为 true 后遮罩消失）
+                // 但留做防御
+            }
+            GenConfigStatus::Error(e) => {
+                // 下载失败
+                child_ui.label(
+                    RichText::new(format!("{}: {}", crate::lang::t("tc_download_error", lang), e))
+                        .size(13.0)
+                        .color(Color32::from_rgb(255, 100, 100)),
+                );
+                child_ui.add_space(16.0);
+
+                if child_ui.add_sized(
+                    [200.0, 32.0],
+                    egui::Button::new(RichText::new(format!("🔄 {}", crate::lang::t("tc_download_retry", lang))).size(15.0)),
+                ).clicked() {
+                    state.gen_config_status = GenConfigStatus::Idle;
+                }
             }
         }
 
@@ -329,12 +553,16 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
         ui.label(RichText::new(egui_phosphor::regular::SLIDERS).size(22.0).color(Color32::from_rgb(37, 99, 235)));
         ui.heading(RichText::new(crate::lang::t("tavern_config", lang)).strong());
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.button("打开配置文件").clicked() {
-                let path = TavernConfig::resolve_path(state.config_mode, state.instance.as_ref());
-                let _ = std::process::Command::new("explorer")
-                    .arg("/select,")
+            if ui.button(crate::lang::t("tc_open_config_file", lang)).clicked() {
+                let path = TavernConfig::resolve_path(state.config_mode, state.instance.as_ref(), state.global_data_path.as_deref());
+                let _ = std::process::Command::new("open")
+                    .arg("-R")
                     .arg(path.to_string_lossy().as_ref())
                     .spawn();
+            }
+            ui.add_space(8.0);
+            if ui.button(crate::lang::t("tc_reset_default", lang)).clicked() {
+                state.show_reset_confirm = true;
             }
             ui.add_space(8.0);
             let label = if state.just_saved { "✓ 已保存" } else { "保存配置" };
@@ -357,6 +585,46 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language) {
     });
     ui.separator();
     ui.add_space(4.0);
+
+    // ---------- 恢复默认确认弹窗 ----------
+    if state.show_reset_confirm {
+        let ctx = ui.ctx().clone();
+        egui::Window::new(crate::lang::t("tc_reset_confirm_title", lang))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(&ctx, |ui| {
+                ui.set_min_width(300.0);
+                ui.label(crate::lang::t("tc_reset_confirm_desc", lang));
+                ui.add_space(16.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button(crate::lang::t("tc_confirm", lang)).clicked() {
+                            state.show_reset_confirm = false;
+                            // 用模板覆盖当前配置
+                            let target = TavernConfig::resolve_path(state.config_mode, state.instance.as_ref(), state.global_data_path.as_deref());
+                            let template = match (state.config_mode, state.instance.as_ref()) {
+                                (ConfigMode::Current, Some(inst)) => {
+                                    let inst_path = inst.path.as_deref().unwrap_or("");
+                                    if inst_path.is_empty() {
+                                        std::path::PathBuf::new()
+                                    } else {
+                                        std::path::PathBuf::from(inst_path).join("default").join("config.yaml")
+                                    }
+                                }
+                                _ => TavernConfig::template_path(),
+                            };
+                            if TavernConfig::copy_template_to(&template, &target) {
+                                state.refresh();
+                            }
+                        }
+                        if ui.button(crate::lang::t("tc_cancel", lang)).clicked() {
+                            state.show_reset_confirm = false;
+                        }
+                    });
+                });
+            });
+    }
 
     // ---------- 内容 ----------
     ScrollArea::vertical()

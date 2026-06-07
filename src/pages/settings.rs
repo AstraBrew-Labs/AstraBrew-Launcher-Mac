@@ -14,17 +14,17 @@ pub enum SettingsTab {
 
 #[derive(PartialEq, Default, Clone, Copy, Serialize, Deserialize)]
 pub enum Language {
-    #[default]
     Chinese,
     English,
+    #[default]
     System,
 }
 
 #[derive(PartialEq, Default, Clone, Copy, Serialize, Deserialize)]
 pub enum Theme {
     Light,
-    #[default]
     Dark,
+    #[default]
     System,
 }
 
@@ -109,6 +109,9 @@ pub struct SettingsState {
     pub server_mode_enabled: bool,
     pub server_service_mode: ServerServiceMode,
     pub data_mode: TavernDataMode,
+    /// 全局数据模式下的自定义存放路径
+    #[serde(default)]
+    pub global_data_path: Option<String>,
     pub auto_start: bool,
     pub auto_minimize: bool,
     pub auto_start_tavern: bool,
@@ -137,6 +140,14 @@ pub struct SettingsState {
     pub homebrew_version: Option<String>,
     #[serde(skip)]
     pub git_version: Option<String>,
+
+    // 恢复默认触发标记（不持久化）
+    #[serde(skip)]
+    pub restore_defaults_triggered: bool,
+
+    // 文件夹选择器触发标记（不持久化）
+    #[serde(skip)]
+    pub trigger_folder_picker: bool,
 }
 
 impl Default for SettingsState {
@@ -151,6 +162,7 @@ impl Default for SettingsState {
             server_mode_enabled: false,
             server_service_mode: ServerServiceMode::default(),
             data_mode: TavernDataMode::default(),
+            global_data_path: None,
             auto_start: false,
             auto_minimize: false,
             auto_start_tavern: false,
@@ -164,6 +176,8 @@ impl Default for SettingsState {
             nodejs_version: String::new(),
             homebrew_version: None,
             git_version: None,
+            restore_defaults_triggered: false,
+            trigger_folder_picker: false,
         }
     }
 }
@@ -404,6 +418,19 @@ pub fn render(
     ui.horizontal(|ui| {
         ui.selectable_value(tab, SettingsTab::General, lang::t("general_settings", &state.language));
         ui.selectable_value(tab, SettingsTab::About, lang::t("about_software", &state.language));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button(lang::t("restore_defaults", &state.language)).clicked() {
+                // 保留环境依赖检测结果，避免误显示安装按钮
+                let nodejs_version = state.nodejs_version.clone();
+                let homebrew_version = state.homebrew_version.clone();
+                let git_version = state.git_version.clone();
+                *state = SettingsState::default();
+                state.nodejs_version = nodejs_version;
+                state.homebrew_version = homebrew_version;
+                state.git_version = git_version;
+                state.restore_defaults_triggered = true;
+            }
+        });
     });
     ui.separator();
 
@@ -639,6 +666,29 @@ pub fn render(
                                 );
                             },
                         );
+                        ui.add_space(10.0);
+
+                        // 全局数据模式 — 自定义路径
+                        if state.data_mode == TavernDataMode::Global {
+                            let default_path = crate::utils::app_paths().default_global_data_dir().to_string_lossy().to_string();
+                            let current_path = state.global_data_path.as_deref().unwrap_or(&default_path);
+                            let desc = format!("{}\n{}",
+                                lang::t("global_data_path_desc", &state.language),
+                                current_path,
+                            );
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::FOLDER_OPEN,
+                                lang::t("global_data_path", &state.language),
+                                &desc,
+                                |ui| {
+                                    if ui.button(lang::t("change_path", &state.language)).clicked() {
+                                        state.trigger_folder_picker = true;
+                                    }
+                                },
+                            );
+                            ui.add_space(10.0);
+                        }
                     });
 
                     // 环境依赖

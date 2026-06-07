@@ -85,7 +85,7 @@ struct MyApp {
     last_monitor_size: Option<egui::Vec2>,
     settings_tab: SettingsTab,
     settings_state: SettingsState,
-    last_save_time: Option<std::time::Instant>,
+    toast_stack: ui::toast::ToastStack,
 
     // 版本管理状态
     version_manage_state: pages::version_manage::VersionManageState,
@@ -104,6 +104,7 @@ struct MyApp {
     >,
     github_node_state: crate::core::settings::github_proxy::NodeLoadState,
     on_refresh_nodes: bool,
+    folder_picker_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
 }
 
 impl MyApp {
@@ -111,16 +112,19 @@ impl MyApp {
         // 检测环境依赖版本
         settings_state.detect_all_env();
 
+        let global_data_path = settings_state.global_data_path.clone();
+
         Self {
             current_page: Page::OneClickStart,
             last_monitor_size: None,
             settings_tab: SettingsTab::default(),
             settings_state,
-            last_save_time: None,
+            toast_stack: ui::toast::ToastStack::new(),
             version_manage_state: pages::version_manage::VersionManageState::new(),
             tavern_config_ui: TavernConfigUI::new(
                 crate::core::settings::tavern::ConfigMode::Current,
                 None,
+                global_data_path,
             ),
             console_state: ConsoleState::new(),
             homebrew_update_state: pages::settings::BrewTaskState::new(),
@@ -129,6 +133,7 @@ impl MyApp {
             github_node_rx: None,
             github_node_state: crate::core::settings::github_proxy::NodeLoadState::Idle,
             on_refresh_nodes: false,
+            folder_picker_rx: None,
         }
     }
 }
@@ -383,17 +388,25 @@ impl eframe::App for MyApp {
             ctx.request_repaint();
         }
 
-        // 每帧同步酒馆配置页的数据模式 & 实例
+        // 每帧同步酒馆配置页的数据模式 & 实例 & 全局路径 & 代理设置
         {
             use crate::core::settings::tavern::{ConfigMode, InstanceInfo};
             self.tavern_config_ui.config_mode = match self.settings_state.data_mode {
                 crate::pages::settings::TavernDataMode::Current => ConfigMode::Current,
                 crate::pages::settings::TavernDataMode::Global => ConfigMode::Global,
             };
+            self.tavern_config_ui.global_data_path = self.settings_state.global_data_path.clone();
             self.tavern_config_ui.instance = self.settings_state.sillytavern.as_ref().map(|i| InstanceInfo {
                 instance_type: i.instance_type.clone(),
                 path: i.path.clone(),
             });
+            self.tavern_config_ui.proxy_enabled = self.settings_state.github_proxy_enabled;
+            self.tavern_config_ui.proxy_url = self.settings_state.github_proxy_url.clone();
+        }
+
+        // 酒馆配置下载中持续重绘
+        if self.tavern_config_ui.gen_config_status.is_downloading() {
+            ctx.request_repaint();
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -422,7 +435,7 @@ impl eframe::App for MyApp {
                     if current_key != self.tavern_config_ui.last_config_key {
                         self.tavern_config_ui.refresh();
                     }
-                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language);
+                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language, &mut self.current_page);
                 }
                 Page::VersionManage => {
                     ui.heading(lang::t("version_manage", &self.settings_state.language));
@@ -473,55 +486,37 @@ impl eframe::App for MyApp {
         // 设置变化时保存
         if old_state != self.settings_state {
             self.settings_state.save();
-            self.last_save_time = Some(std::time::Instant::now());
-        }
-
-        // Toast 提示（设置保存）
-        let mut show_toast = None;
-        if let Some(save_time) = self.last_save_time {
-            let elapsed = save_time.elapsed().as_secs_f32();
-            if elapsed < 3.0 {
-                show_toast = Some((lang::t("settings_saved", &self.settings_state.language).to_string(), elapsed));
+            let toast_key = if self.settings_state.restore_defaults_triggered {
+                self.settings_state.restore_defaults_triggered = false;
+                "restore_defaults_done"
             } else {
-                self.last_save_time = None;
-            }
-        }
-
-        if let Some((toast_text, elapsed)) = show_toast {
-            let alpha = if elapsed > 2.0 {
-                1.0 - (elapsed - 2.0)
-            } else {
-                1.0
+                "settings_saved"
             };
+            let toast_text = lang::t(toast_key, &self.settings_state.language).to_string();
+            self.toast_stack.push(toast_text, ctx);
+        }
 
-            let visuals = ctx.style().visuals.clone();
-            let text_color = visuals.text_color().linear_multiply(alpha);
-            let bg_color = visuals.window_fill().linear_multiply(alpha);
-            let stroke_color = visuals.window_stroke().color.linear_multiply(alpha);
+        // 渲染 toast 堆叠
+        self.toast_stack.render(ctx);
 
-            let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("toast")));
-
-            let font_id = egui::FontId::proportional(16.0);
-            let text_galley = painter.layout_no_wrap(toast_text, font_id, text_color);
-
-            let screen_rect = ctx.content_rect();
-            let center_x = screen_rect.center().x;
-            let bottom_y = screen_rect.max.y - 50.0;
-
-            let padding = egui::vec2(16.0, 10.0);
-            let rect = egui::Rect::from_center_size(
-                egui::pos2(center_x, bottom_y),
-                text_galley.size() + padding * 2.0,
-            );
-
-            painter.rect(rect, 8.0, bg_color, egui::Stroke::new(1.0, stroke_color), egui::StrokeKind::Middle);
-            let text_pos = egui::pos2(
-                rect.center().x - text_galley.size().x / 2.0,
-                rect.center().y - text_galley.size().y / 2.0,
-            );
-            painter.galley(text_pos, text_galley, text_color);
-
-            ctx.request_repaint();
+        // 文件夹选择器处理
+        if self.settings_state.trigger_folder_picker {
+            self.settings_state.trigger_folder_picker = false;
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.folder_picker_rx = Some(rx);
+            std::thread::spawn(move || {
+                let path = rfd::FileDialog::new().pick_folder();
+                let _ = tx.send(path);
+            });
+        }
+        if let Some(rx) = &self.folder_picker_rx {
+            if let Ok(result) = rx.try_recv() {
+                if let Some(path) = result {
+                    self.settings_state.global_data_path =
+                        Some(path.to_string_lossy().to_string());
+                }
+                self.folder_picker_rx = None;
+            }
         }
 
         // 关闭时保存窗口位置

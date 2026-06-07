@@ -2,12 +2,16 @@
 //!
 //! ```text
 //! ~/Library/Application Support/AstraBrew Launcher/    ← 根目录 (root)
-//! ├── data/                    ← 用户数据目录
-//! │   ├── sillytavern/        ← 全局统一酒馆数据目录
-//! │   ├── config.yaml         ← 全局统一酒馆配置文件
+//! ├── data/                   ← 软件数据目录
+//! │   ├── default/            ← 默认数据子目录
+//! │   │   └── sillytavern/        ← 酒馆数据子目录
+//! │   │       └── config.yaml     ← 全局统一酒馆配置文件
+//! │   ├── sillytavern/        ← 酒馆数据子目录
+//! │   │   └── data/           ← 默认全局酒馆数据目录
+//! │   │       └── config.yaml ← 全局统一酒馆配置文件
 //! │   └── local_instances.json
 //! ├── sillytavern/            ← 酒馆核心文件目录 (ST installation)
-//! └── settings.json           ← 启动器配置文件
+//! └── config.json             ← 启动器配置文件
 //!
 //! ~/Library/Logs/AstraBrew Launcher/      ← 日志目录 (logs)
 //!
@@ -36,7 +40,7 @@ pub struct AppPaths {
     pub caches: PathBuf,
     /// `/tmp/AstraBrew Launcher/`
     pub temp: PathBuf,
-    /// `root/data/`
+    /// `~/Library/Application Support/AstraBrew Launcher/data/` — 软件数据目录
     pub data: PathBuf,
 }
 
@@ -123,7 +127,9 @@ impl AppPaths {
         // 确保子目录
         for sub in [
             self.sillytavern_dir(),
+            self.data.join("default").join("sillytavern"),
             self.data.join("sillytavern"),
+            self.data.join("sillytavern").join("data"),
         ] {
             let _ = std::fs::create_dir_all(&sub);
         }
@@ -141,14 +147,19 @@ impl AppPaths {
         self.sillytavern_dir().join("config.yaml")
     }
 
-    /// 全局酒馆配置文件: `root/data/config.yaml`
+    /// 全局酒馆配置文件: `root/data/sillytavern/data/config.yaml`
     pub fn global_tavern_config_file(&self) -> PathBuf {
-        self.data.join("config.yaml")
+        self.data.join("sillytavern").join("data").join("config.yaml")
     }
 
-    /// 酒馆配置模板: `root/data/sillytavern/config.yaml`
+    /// 默认全局数据目录: `root/data/sillytavern/data/`
+    pub fn default_global_data_dir(&self) -> PathBuf {
+        self.data.join("sillytavern").join("data")
+    }
+
+    /// 酒馆配置模板: `data/default/sillytavern/config.yaml`
     pub fn tavern_template_file(&self) -> PathBuf {
-        self.data.join("sillytavern").join("config.yaml")
+        self.data.join("default").join("sillytavern").join("config.yaml")
     }
 
     /// 启动器配置文件: `root/settings.json`
