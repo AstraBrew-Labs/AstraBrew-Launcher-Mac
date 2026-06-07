@@ -248,6 +248,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "info_fetch_failed_desc" => "Hint: Access Denied (403). Please try disabling proxy or switching network and retry.",
         "missing_env_warning" => "Missing Git or Node.js environment. Please install them or configure the correct environment source in settings, otherwise download and installation cannot proceed!",
         "not_sillytavern_instance" => "The selected file is not a SillyTavern instance. Please select the correct package.json file.",
+        "cannot_add_online_instance" => "Cannot add the online-downloaded instance to the local list. Please add a different SillyTavern instance.",
         "status_preparing" => "Preparing...",
         "status_scanning" => "Scanning...",
         "scan_tips_scanning_header" => "Scan Progress",
@@ -393,6 +394,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "home_card_mode" => "Start Mode",
         "home_card_port" => "Service Port",
         "home_no_version" => "Not Set",
+
+        // File/Folder Dialogs
+        "dialog_select_package_json" => "Select SillyTavern package.json",
+        "dialog_select_folder" => "Select Folder",
 
         // Fallback
         _ => key,

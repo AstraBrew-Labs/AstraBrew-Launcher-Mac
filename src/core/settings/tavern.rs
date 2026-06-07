@@ -861,6 +861,7 @@ pub struct InstanceInfo {
 
 impl TavernConfig {
     /// 获取 builtin 酒馆实例路径
+    #[allow(dead_code)]
     pub fn builtin_instance_path() -> PathBuf {
         utils::app_paths().sillytavern_dir()
     }
@@ -942,6 +943,7 @@ impl TavernConfig {
     }
 
     /// 从模板文件生成目标配置文件
+    #[allow(dead_code)]
     pub fn generate_from_template(target_path: &Path) -> bool {
         let template = Self::template_path();
         Self::copy_template_to(&template, target_path)

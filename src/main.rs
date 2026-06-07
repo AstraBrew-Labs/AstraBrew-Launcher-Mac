@@ -1,13 +1,50 @@
+// objc 0.2 宏内使用旧式 `cargo-clippy` cfg，Rust 2024 默认报 warning
+#![allow(unexpected_cfgs)]
+
 use eframe::egui;
 use egui::{FontData, FontDefinitions, FontFamily};
 
+/// 设置 macOS 进程显示名称（Dock 栏、菜单栏、Cmd+Tab 切换器）
+///
+/// 直接运行二进制时，macOS 默认显示进程名（即 `Cargo.toml` 中的 `package.name`）。
+/// 通过 `NSProcessInfo.setProcessName` 覆盖为正确的中/英文显示名称。
+#[cfg(target_os = "macos")]
+fn set_macos_process_name(lang: &pages::settings::Language) {
+    use objc::{class, msg_send, sel};
+    #[allow(unused_imports)]
+    use objc::sel_impl;
+
+    let effective = lang::effective_language(lang);
+    let name = match effective {
+        pages::settings::Language::Chinese => "星酿启动器",
+        pages::settings::Language::English => "AstraBrew Launcher",
+        pages::settings::Language::System => "AstraBrew Launcher", // 不应到达，安全回退
+    };
+
+    let c_name = std::ffi::CString::new(name).expect("CString::new failed");
+    unsafe {
+        let ns_string: *mut objc::runtime::Object = msg_send![class!(NSString), alloc];
+        let ns_string: *mut objc::runtime::Object =
+            msg_send![ns_string, initWithUTF8String: c_name.as_ptr()];
+        let process_info: *mut objc::runtime::Object = msg_send![class!(NSProcessInfo), processInfo];
+        let _: () = msg_send![process_info, setProcessName: ns_string];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_macos_process_name(_lang: &pages::settings::Language) {}
+
 fn main() -> eframe::Result {
     let settings = pages::settings::SettingsState::load();
+
+    // 必须在创建窗口之前设置，否则 Dock/菜单栏会先显示进程名再切换
+    set_macos_process_name(&settings.language);
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([800.0, 600.0])
         .with_max_inner_size([1280.0, 720.0])
+        .with_app_id("com.astrabrew.launcher")
         .with_maximize_button(false);
 
     let mut is_centered = true;
@@ -120,7 +157,11 @@ impl MyApp {
             settings_tab: SettingsTab::default(),
             settings_state,
             toast_stack: ui::toast::ToastStack::new(),
-            version_manage_state: pages::version_manage::VersionManageState::new(),
+            version_manage_state: {
+                let mut state = pages::version_manage::VersionManageState::new();
+                state.local_instances = pages::version_manage::load_local_instances();
+                state
+            },
             tavern_config_ui: TavernConfigUI::new(
                 crate::core::settings::tavern::ConfigMode::Current,
                 None,
@@ -502,10 +543,12 @@ impl eframe::App for MyApp {
         // 文件夹选择器处理
         if self.settings_state.trigger_folder_picker {
             self.settings_state.trigger_folder_picker = false;
+            let lang = self.settings_state.language;
             let (tx, rx) = std::sync::mpsc::channel();
             self.folder_picker_rx = Some(rx);
             std::thread::spawn(move || {
-                let path = rfd::FileDialog::new().pick_folder();
+                let title = lang::t("dialog_select_folder", &lang);
+                let path = rfd::FileDialog::new().set_title(title).pick_folder();
                 let _ = tx.send(path);
             });
         }

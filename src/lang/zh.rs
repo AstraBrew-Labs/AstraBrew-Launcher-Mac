@@ -248,6 +248,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "info_fetch_failed_desc" => "提示：被拒绝访问 (403)，请尝试关闭代理或切换网络后重试。",
         "missing_env_warning" => "缺少 Git 或 Node.js 环境，请先安装或在设置中配置正确的环境来源，否则无法下载与安装！",
         "not_sillytavern_instance" => "选择的不是酒馆实例，请选择正确的酒馆实例 package.json 文件",
+        "cannot_add_online_instance" => "不能添加在线下载的酒馆实例到本地实例列表，请添加其他酒馆实例",
         "status_preparing" => "正在准备...",
         "status_scanning" => "扫描中...",
         "scan_tips_scanning_header" => "扫描进度",
@@ -393,6 +394,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "home_card_mode" => "启动模式",
         "home_card_port" => "服务端口",
         "home_no_version" => "未设置",
+
+        // 文件/文件夹对话框
+        "dialog_select_package_json" => "选择酒馆的 package.json 文件",
+        "dialog_select_folder" => "选择文件夹",
 
         // Fallback
         _ => key,
