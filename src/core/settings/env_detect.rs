@@ -81,19 +81,56 @@ pub fn detect_caddy() -> Option<String> {
     }
 }
 
-/// 检测 PM2 版本，返回版本号字符串，如 "6.0.4"
+/// 检测 PM2 版本，返回版本号字符串，如 "7.0.1"
+/// pm2 --version 或 pm2 -v 在首次运行时可能夹杂 daemon 启动日志，
+/// 因此合并 stdout + stderr 后用正则提取 X.Y.Z 格式的版本号。
 pub fn detect_pm2() -> Option<String> {
-    let output = Command::new("pm2").arg("--version").output().ok()?;
-    if !output.status.success() {
-        return None;
+    let output = Command::new("pm2").arg("-v").output().ok()?;
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // 从混合输出中提取第一个 MAJOR.MINOR.PATCH 格式的版本号
+    extract_semver(&combined)
+}
+
+/// 从文本中提取第一个符合 X.Y.Z 模式的版本号
+fn extract_semver(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        // 找数字开头
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            let mut dots = 0u8;
+            let mut valid = true;
+            i += 1;
+            while i < len && dots < 2 {
+                if bytes[i].is_ascii_digit() {
+                    i += 1;
+                } else if bytes[i] == b'.' && i + 1 < len && bytes[i + 1].is_ascii_digit() {
+                    dots += 1;
+                    i += 1; // 跳过 '.'
+                } else {
+                    valid = false;
+                    break;
+                }
+            }
+            if valid && dots == 2 {
+                // 截断尾部非数字字符（如换行后的额外文本）
+                let mut end = i;
+                while end > start && !bytes[end - 1].is_ascii_digit() {
+                    end -= 1;
+                }
+                return Some(String::from_utf8_lossy(&bytes[start..end]).to_string());
+            }
+        } else {
+            i += 1;
+        }
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let version = stdout.trim().to_string();
-    if version.is_empty() {
-        None
-    } else {
-        Some(version)
-    }
+    None
 }
 
 /// 解析 semver 主版本号
