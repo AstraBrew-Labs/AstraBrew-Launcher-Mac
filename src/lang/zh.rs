@@ -31,6 +31,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "console_btn_restart" => "重启",
         "console_btn_stop" => "停止",
         "console_btn_kill" => "强行停止",
+        "console_btn_visit" => "访问酒馆",
         "console_btn_clear" => "清空",
         "console_log_area" => "日志输出",
         "console_log_starting_instance" => "正在启动酒馆实例...",

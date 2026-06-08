@@ -17,3 +17,4 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 objc = "0.2"
 rfd = "0.15"
 jwalk = "0.8"
+wry = "0.53"

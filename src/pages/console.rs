@@ -36,6 +36,8 @@ pub struct ConsoleState {
     github_proxy_url: Option<String>,
     /// 是否在启动日志中显示完整命令行
     show_startup_command: bool,
+    /// 酒馆访问地址（从日志中解析 "Go to: http://... to open SillyTavern"）
+    tavern_url: Option<String>,
 }
 
 impl ConsoleState {
@@ -53,6 +55,7 @@ impl ConsoleState {
             custom_proxy: String::new(),
             github_proxy_url: None,
             show_startup_command: false,
+            tavern_url: None,
         }
     }
 
@@ -117,6 +120,7 @@ impl ConsoleState {
 
         // 启动前清空日志
         self.logs.clear();
+        self.tavern_url = None;
 
         self.status = ConsoleStatus::Starting;
         self.add_log(&lang::t("console_log_starting_instance", lang));
@@ -218,7 +222,18 @@ impl ConsoleState {
         // 拉取新日志
         let new_logs = self.process.poll_logs();
         for line in new_logs {
-            self.add_log(&strip_osc(&line));
+            let cleaned = strip_osc(&line);
+
+            // 解析酒馆访问地址: "Go to: http://localhost:11451/ to open SillyTavern"
+            if self.tavern_url.is_none() {
+                // 先剥离 ANSI 再匹配
+                let plain = strip_ansi(&cleaned);
+                if let Some(url) = extract_tavern_url(&plain) {
+                    self.tavern_url = Some(url);
+                }
+            }
+
+            self.add_log(&cleaned);
         }
 
         // 检查进程是否已退出
@@ -639,10 +654,44 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                     );
                     ui.add_space(10.0);
                     ui.vertical(|ui| {
-                        ui.add(
-                            egui::Label::new(RichText::new(status_title).size(18.0).strong())
-                                .selectable(false),
-                        );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::Label::new(RichText::new(status_title).size(18.0).strong())
+                                    .selectable(false),
+                            );
+                            // 访问酒馆链接（运行中 + URL 已捕获时显示）
+                            if state.status == ConsoleStatus::Running {
+                                if let Some(ref url) = state.tavern_url {
+                                    // 分隔符
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new("|").size(18.0).color(Color32::from_rgb(100, 100, 100)),
+                                        )
+                                        .selectable(false),
+                                    );
+                                    ui.add_space(6.0);
+                                    // 超链接样式（无下划线）
+                                    let link_color = Color32::from_rgb(80, 180, 255);
+                                    let link = RichText::new(
+                                        format!("{} {}", egui_phosphor::regular::GLOBE, lang::t("console_btn_visit", lang)),
+                                    )
+                                    .size(15.0)
+                                    .color(link_color);
+                                    let resp = ui.add(
+                                        egui::Label::new(link)
+                                            .sense(egui::Sense::click()),
+                                    );
+                                    if resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if resp.clicked() {
+                                        let _ = std::process::Command::new("open")
+                                            .arg(url)
+                                            .spawn();
+                                    }
+                                }
+                            }
+                        });
                         // 显示实例信息
                         if state.has_instance() {
                             if state.instance_type == "builtin" {
@@ -852,4 +901,17 @@ fn folder_truncate(path: &str) -> String {
         return path.to_string();
     }
     format!("{}{}...{}{}", parts[0], sep, sep, parts[parts.len() - 1])
+}
+
+/// 从日志行提取酒馆访问地址: "Go to: http://localhost:11451/ to open SillyTavern"
+fn extract_tavern_url(line: &str) -> Option<String> {
+    let prefix = "Go to: ";
+    let suffix = " to open SillyTavern";
+    if let Some(start) = line.find(prefix) {
+        let after = &line[start + prefix.len()..];
+        if let Some(end) = after.find(suffix) {
+            return Some(after[..end].trim().to_string());
+        }
+    }
+    None
 }

@@ -31,6 +31,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "console_btn_restart" => "Restart",
         "console_btn_stop" => "Stop",
         "console_btn_kill" => "Force Stop",
+        "console_btn_visit" => "Visit Tavern",
         "console_btn_clear" => "Clear",
         "console_log_area" => "Log Output",
         "console_log_starting_instance" => "Starting tavern instance...",
