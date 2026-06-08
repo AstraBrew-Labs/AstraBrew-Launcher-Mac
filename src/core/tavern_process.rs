@@ -226,10 +226,15 @@ pub fn build_startup_command(
     data_mode: &TavernDataMode,
     http_proxy: Option<&str>,
     _github_proxy_url: Option<&str>,
+    is_desktop_mode: bool,
 ) -> String {
     let mut parts: Vec<String> = vec!["node".to_string()];
 
     parts.push("server.js".to_string());
+
+    if is_desktop_mode {
+        parts.push("--browserLaunchEnabled false".to_string());
+    }
 
     if *data_mode == TavernDataMode::Global {
         let paths = crate::utils::app_paths();
@@ -289,6 +294,7 @@ impl TavernProcess {
         data_mode: &TavernDataMode,
         http_proxy: Option<&str>,
         github_proxy_url: Option<&str>,
+        is_desktop_mode: bool,
     ) -> Result<(), String> {
         if self.child.is_some() {
             return Err("进程已在运行".into());
@@ -348,6 +354,12 @@ impl TavernProcess {
             cmd.arg(&proxy_url);
             cmd.arg("--requestProxyBypass");
             cmd.arg("localhost 127.0.0.1 ::1");
+        }
+
+        // 桌面模式：禁止酒馆自动打开浏览器（由启动器的 WebView 替代）
+        if is_desktop_mode {
+            cmd.arg("--browserLaunchEnabled");
+            cmd.arg("false");
         }
 
         cmd.current_dir(working_dir);

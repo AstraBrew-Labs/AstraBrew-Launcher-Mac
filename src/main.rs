@@ -113,8 +113,9 @@ mod pages;
 mod ui;
 mod utils;
 
+use core::desktop_webview::DesktopWebView;
 use pages::console::ConsoleState;
-use pages::settings::{SettingsState, SettingsTab, Theme};
+use pages::settings::{SettingsState, SettingsTab, StartMode, Theme};
 use pages::tavern_config::TavernConfigUI;
 
 struct MyApp {
@@ -147,6 +148,8 @@ struct MyApp {
     // 异步路径检查
     path_check_rx: Option<std::sync::mpsc::Receiver<PathCheckResult>>,
     last_path_check: Option<std::time::Instant>,
+    // 桌面模式 WebView
+    desktop_webview: Option<DesktopWebView>,
 }
 
 /// 后台路径检查结果
@@ -192,6 +195,7 @@ impl MyApp {
             folder_picker_rx: None,
             path_check_rx: None,
             last_path_check: None,
+            desktop_webview: None,
         }
     }
 }
@@ -481,11 +485,103 @@ impl eframe::App for MyApp {
                 &self.settings_state.custom_proxy,
                 github_proxy_url,
                 self.settings_state.show_startup_command,
+                self.settings_state.auto_stop_tavern_on_webview_close,
+                self.settings_state.start_mode == StartMode::Desktop,
             );
         }
 
         // 每帧轮询酒馆进程状态
         self.console_state.poll(&self.settings_state.language);
+
+        // ---- 桌面模式 WebView 管理 ----
+        if self.settings_state.start_mode == StartMode::Desktop {
+            // 日志中出现 "Go to: http://..." → 首次自动打开 WebView
+            if let Some(ref url) = self.console_state.tavern_url {
+                if self.desktop_webview.is_none() && !self.console_state.webview_auto_opened {
+                    let title = format!(
+                        "SillyTavern - v{}",
+                        self.console_state.instance_version
+                    );
+                    match DesktopWebView::open(url, &title) {
+                        Ok(wv) => {
+                            self.console_state.add_log(&format!(
+                                "[系统] 桌面模式 WebView 已打开: {}",
+                                url
+                            ));
+                            self.desktop_webview = Some(wv);
+                            self.console_state.webview_auto_opened = true;
+                        }
+                        Err(e) => {
+                            self.console_state.add_log(&format!(
+                                "[错误] 桌面模式 WebView 启动失败: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // 用户关闭 WebView → 根据设置决定是否停止酒馆
+            if let Some(ref mut wv) = self.desktop_webview {
+                if wv.is_closed() {
+                    self.desktop_webview = None;
+                    if self.settings_state.auto_stop_tavern_on_webview_close {
+                        self.console_state.add_log("[系统] 桌面模式 WebView 已关闭，正在停止酒馆...");
+                        if self.console_state.status == pages::console::ConsoleStatus::Running {
+                            self.console_state.stop(&self.settings_state.language);
+                        }
+                    } else {
+                        self.console_state.add_log("[系统] 桌面模式 WebView 已关闭（服务继续运行）");
+                    }
+                }
+            }
+
+            // 重新打开 WebView（控制台"打开酒馆"按钮触发）
+            if self.console_state.reopen_webview_triggered {
+                self.console_state.reopen_webview_triggered = false;
+                if let Some(ref mut wv) = self.desktop_webview {
+                    // WebView 已存在 → 唤回前台，不重复打开
+                    wv.bring_to_front();
+                } else if let Some(ref url) = self.console_state.tavern_url {
+                    // WebView 不存在 → 新建
+                    let title = format!(
+                        "SillyTavern - v{}",
+                        self.console_state.instance_version
+                    );
+                    match DesktopWebView::open(url, &title) {
+                        Ok(wv) => {
+                            self.console_state.add_log(&format!(
+                                "[系统] 桌面模式 WebView 已打开: {}",
+                                url
+                            ));
+                            self.desktop_webview = Some(wv);
+                        }
+                        Err(e) => {
+                            self.console_state.add_log(&format!(
+                                "[错误] 桌面模式 WebView 启动失败: {}",
+                                e
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // 酒馆停止/停止中 → 关闭 WebView（从控制台手动停止时）
+            if self.console_state.status != pages::console::ConsoleStatus::Running
+                && self.console_state.status != pages::console::ConsoleStatus::Starting
+            {
+                if let Some(ref mut wv) = self.desktop_webview {
+                    wv.close();
+                    self.desktop_webview = None;
+                }
+            }
+        } else {
+            // 非桌面模式 → 确保 WebView 已关闭
+            if let Some(ref mut wv) = self.desktop_webview {
+                wv.close();
+                self.desktop_webview = None;
+            }
+        }
 
         // 酒馆进程运行中持续重绘（确保日志实时更新）
         if self.console_state.status == pages::console::ConsoleStatus::Running
@@ -610,7 +706,7 @@ impl eframe::App for MyApp {
                     if current_key != self.tavern_config_ui.last_config_key {
                         self.tavern_config_ui.refresh();
                     }
-                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language, &mut self.current_page);
+                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language, &mut self.current_page, self.settings_state.start_mode == StartMode::Desktop);
                 }
                 Page::VersionManage => {
                     ui.heading(lang::t("version_manage", &self.settings_state.language));

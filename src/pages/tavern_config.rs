@@ -277,7 +277,7 @@ fn dynamic_list(ui: &mut egui::Ui, items: &mut Vec<String>, add_label: &str) {
 // 主渲染
 // ---------------------------------------------------------------------------
 
-pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, current_page: &mut Page) {
+pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, current_page: &mut Page, is_desktop_mode: bool) {
     // 保存成功提示 3 秒后自动恢复按钮状态
     if state.just_saved {
         if let Some(t) = state.save_time {
@@ -704,8 +704,11 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, cu
                         "心跳检测间隔，以及启动后是否自动打开浏览器",
                     );
                     multi_row_controls(ui, |ui| {
-                        toggle_labeled(ui, crate::lang::t("tc_auto_browser", lang), &mut state.config.browser_launch_enabled);
-                        ui.add_space(16.0);
+                        // 桌面模式下不显示（命令行 --browserLaunchEnabled false 强制关闭）
+                        if !is_desktop_mode {
+                            toggle_labeled(ui, crate::lang::t("tc_auto_browser", lang), &mut state.config.browser_launch_enabled);
+                            ui.add_space(16.0);
+                        }
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("心跳间隔").size(12.0).color(Color32::GRAY));
                             let mut hb = state.config.heartbeat_interval as i64;

@@ -3,7 +3,7 @@
 ## 项目基础信息
 - **项目名**：AstraBrew Launcher（星酿启动器）
 - **技术栈**：Rust + egui/eframe 0.33，egui-phosphor 图标库
-- **平台**：macOS
+- **平台**：仅macOS
 - **窗口规格**：默认 1280x720（16:9），最小 800x600，禁用最大化
 
 ## 关键目录/文件

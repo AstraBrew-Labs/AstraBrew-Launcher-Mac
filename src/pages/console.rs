@@ -25,7 +25,7 @@ pub struct ConsoleState {
     /// 实例类型（"builtin" / "local"）
     instance_type: String,
     /// 实例版本号
-    instance_version: String,
+    pub instance_version: String,
     /// 当前数据模式
     data_mode: TavernDataMode,
     /// HTTP 代理类型
@@ -37,7 +37,15 @@ pub struct ConsoleState {
     /// 是否在启动日志中显示完整命令行
     show_startup_command: bool,
     /// 酒馆访问地址（从日志中解析 "Go to: http://... to open SillyTavern"）
-    tavern_url: Option<String>,
+    pub tavern_url: Option<String>,
+    /// 桌面模式：关闭 WebView 时是否自动停止服务
+    pub desktop_auto_stop: bool,
+    /// 重新打开 WebView 的触发标记（控制台"打开酒馆"按钮点击后置 true，main.rs 消费后置 false）
+    pub reopen_webview_triggered: bool,
+    /// 桌面模式：WebView 是否已自动打开过（防止关闭后循环重新打开）
+    pub webview_auto_opened: bool,
+    /// 当前启动模式是否为桌面模式（状态栏不显示访问酒馆链接）
+    pub is_desktop_mode: bool,
 }
 
 impl ConsoleState {
@@ -56,6 +64,10 @@ impl ConsoleState {
             github_proxy_url: None,
             show_startup_command: false,
             tavern_url: None,
+            desktop_auto_stop: true,
+            reopen_webview_triggered: false,
+            webview_auto_opened: false,
+            is_desktop_mode: false,
         }
     }
 
@@ -70,6 +82,8 @@ impl ConsoleState {
         custom_proxy: &str,
         github_proxy_url: Option<String>,
         show_startup_command: bool,
+        desktop_auto_stop: bool,
+        is_desktop_mode: bool,
     ) {
         self.instance_path = instance_path;
         self.instance_type = instance_type;
@@ -79,6 +93,8 @@ impl ConsoleState {
         self.custom_proxy = custom_proxy.to_string();
         self.github_proxy_url = github_proxy_url;
         self.show_startup_command = show_startup_command;
+        self.desktop_auto_stop = desktop_auto_stop;
+        self.is_desktop_mode = is_desktop_mode;
     }
 
     /// 是否有已选择的酒馆实例
@@ -121,6 +137,7 @@ impl ConsoleState {
         // 启动前清空日志
         self.logs.clear();
         self.tavern_url = None;
+        self.webview_auto_opened = false;
 
         self.status = ConsoleStatus::Starting;
         self.add_log(&lang::t("console_log_starting_instance", lang));
@@ -156,6 +173,7 @@ impl ConsoleState {
                 &self.data_mode,
                 proxy.as_deref(),
                 github_proxy.as_deref(),
+                self.is_desktop_mode,
             );
             self.add_log(&format!("[启动命令] {}", cmd));
         }
@@ -164,6 +182,7 @@ impl ConsoleState {
             &self.data_mode,
             proxy.as_deref(),
             github_proxy.as_deref(),
+            self.is_desktop_mode,
         ) {
             Ok(()) => {
                 self.status = ConsoleStatus::Running;
@@ -243,6 +262,36 @@ impl ConsoleState {
                 exit_code.map_or("无".to_string(), |c| c.to_string())
             ));
 
+            // 检测端口冲突，自动解除并重启
+            let port_conflict = exit_code == Some(1)
+                && self.logs.iter().any(|l| l.contains("already in use"));
+            if port_conflict && !self.restart_pending {
+                // 从日志中提取端口号
+                let port = self.logs.iter().find_map(|l| {
+                    if l.contains("already in use") {
+                        // 匹配 :<port> 模式（如 :11451）
+                        if let Some(pos) = l.rfind(':') {
+                            let after = &l[pos + 1..];
+                            let num: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if !num.is_empty() {
+                                return num.parse::<u16>().ok();
+                            }
+                        }
+                    }
+                    None
+                });
+
+                if let Some(p) = port {
+                    self.add_log(&format!(
+                        "[系统] 检测到端口 {} 被占用，正在强制解除...",
+                        p
+                    ));
+                    kill_port(p);
+                    self.add_log(&format!("[系统] 端口 {} 已释放，自动重启酒馆", p));
+                    self.restart_pending = true;
+                }
+            }
+
             if self.restart_pending {
                 // 重启流程：停止已完成 → 清空日志并自动启动
                 self.restart_pending = false;
@@ -278,6 +327,7 @@ impl ConsoleState {
                     &self.data_mode,
                     proxy.as_deref(),
                     github_proxy.as_deref(),
+                    self.is_desktop_mode,
                 ) {
                     Ok(()) => {
                         self.status = ConsoleStatus::Running;
@@ -659,8 +709,15 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                 egui::Label::new(RichText::new(status_title).size(18.0).strong())
                                     .selectable(false),
                             );
-                            // 访问酒馆链接（运行中 + URL 已捕获时显示）
-                            if state.status == ConsoleStatus::Running {
+                            // 访问/打开酒馆链接（运行中 + URL 已捕获时显示）
+                            // - 正常模式/服务器模式 → 显示"访问酒馆"（浏览器打开）
+                            // - 桌面模式 + 不自动停止 → 显示"打开酒馆"（重新唤出 WebView）
+                            // - 桌面模式 + 自动停止 → 不显示（关闭 WebView 即停服务）
+
+                            // 桌面模式 + 自动停止 → 隐藏链接
+                            let show_link = !state.is_desktop_mode || !state.desktop_auto_stop;
+
+                            if state.status == ConsoleStatus::Running && show_link {
                                 if let Some(ref url) = state.tavern_url {
                                     // 分隔符
                                     ui.add(
@@ -670,10 +727,17 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                         .selectable(false),
                                     );
                                     ui.add_space(6.0);
-                                    // 超链接样式（无下划线）
+
+                                    // 正常模式：用浏览器打开；桌面模式：重新打开 WebView
+                                    let (btn_key, open_in_browser, icon) = if state.is_desktop_mode {
+                                        ("console_btn_open", false, egui_phosphor::regular::ARROW_SQUARE_OUT)
+                                    } else {
+                                        ("console_btn_visit", true, egui_phosphor::regular::GLOBE)
+                                    };
+
                                     let link_color = Color32::from_rgb(80, 180, 255);
                                     let link = RichText::new(
-                                        format!("{} {}", egui_phosphor::regular::GLOBE, lang::t("console_btn_visit", lang)),
+                                        format!("{} {}", icon, lang::t(btn_key, lang)),
                                     )
                                     .size(15.0)
                                     .color(link_color);
@@ -685,9 +749,13 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
                                     if resp.clicked() {
-                                        let _ = std::process::Command::new("open")
-                                            .arg(url)
-                                            .spawn();
+                                        if open_in_browser {
+                                            let _ = std::process::Command::new("open")
+                                                .arg(url)
+                                                .spawn();
+                                        } else {
+                                            state.reopen_webview_triggered = true;
+                                        }
                                     }
                                 }
                             }
@@ -889,6 +957,23 @@ fn render_instance_path(ui: &mut egui::Ui, prefix: &str, full_path: &str) {
             .on_hover_text(full_path);
         if resp.clicked() {
             ui.ctx().copy_text(full_path.to_string());
+        }
+    }
+}
+
+/// 强制释放指定端口（找到占用进程并 kill -9）
+fn kill_port(port: u16) {
+    let output = std::process::Command::new("lsof")
+        .args(["-ti", &format!(":{}", port)])
+        .output()
+        .ok();
+    if let Some(out) = output {
+        let pids = String::from_utf8_lossy(&out.stdout);
+        for pid in pids.lines().filter(|l| !l.is_empty()) {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid)
+                .status();
         }
     }
 }

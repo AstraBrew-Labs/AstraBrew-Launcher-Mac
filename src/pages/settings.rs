@@ -116,6 +116,9 @@ pub struct SettingsState {
     pub auto_minimize: bool,
     pub auto_start_tavern: bool,
     pub allow_tavern_background: bool,
+    /// 桌面模式：关闭 WebView 窗口时自动停止酒馆服务（默认开启）
+    #[serde(default = "default_auto_stop")]
+    pub auto_stop_tavern_on_webview_close: bool,
 
     // 控制台设置
     pub show_startup_command: bool,
@@ -157,6 +160,11 @@ pub struct SettingsState {
     pub trigger_folder_picker: bool,
 }
 
+/// auto_stop_tavern_on_webview_close 默认值
+fn default_auto_stop() -> bool {
+    true
+}
+
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
@@ -174,6 +182,7 @@ impl Default for SettingsState {
             auto_minimize: false,
             auto_start_tavern: false,
             allow_tavern_background: false,
+            auto_stop_tavern_on_webview_close: true,
             show_startup_command: false,
             npm_registry: NpmRegistry::default(),
             github_proxy_enabled: false,
@@ -636,6 +645,20 @@ pub fn render(
                             },
                         );
                         ui.add_space(10.0);
+
+                        // 桌面模式专属选项：关闭窗口时自动停止服务
+                        if state.start_mode == StartMode::Desktop {
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::X_CIRCLE,
+                                lang::t("desktop_auto_stop", &state.language),
+                                lang::t("desktop_auto_stop_desc", &state.language),
+                                |ui| {
+                                    ui.add(crate::ui::switch::toggle(&mut state.auto_stop_tavern_on_webview_close));
+                                },
+                            );
+                            ui.add_space(10.0);
+                        }
 
                         // 启用服务器模式
                         setting_row(
