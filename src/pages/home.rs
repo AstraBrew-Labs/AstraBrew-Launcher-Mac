@@ -123,6 +123,44 @@ pub fn render(
                     ui.vertical_centered(|ui| {
                         ui.add_space(20.0);
 
+                        // 访问/打开酒馆按钮（运行中 + URL 已捕获时显示，位于状态指示上方）
+                        if is_running {
+                            if let Some(ref url) = console_state.tavern_url {
+                                let (btn_key, icon, open_in_browser) = if console_state.is_desktop_mode && !console_state.desktop_auto_stop {
+                                    ("console_btn_open", egui_phosphor::regular::ARROW_SQUARE_OUT, false)
+                                } else if !console_state.is_desktop_mode {
+                                    ("console_btn_visit", egui_phosphor::regular::GLOBE, true)
+                                } else {
+                                    ("", "", false) // desktop + auto_stop: no button
+                                };
+
+                                if !btn_key.is_empty() {
+                                    let link_color = Color32::from_rgb(80, 180, 255);
+                                    let link = RichText::new(
+                                        format!("{} {}", icon, lang::t(btn_key, lang)),
+                                    )
+                                    .size(15.0)
+                                    .color(link_color);
+                                    let resp = ui.add(
+                                        egui::Label::new(link).sense(egui::Sense::click()),
+                                    );
+                                    if resp.hovered() {
+                                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    if resp.clicked() {
+                                        if open_in_browser {
+                                            let _ = std::process::Command::new("open")
+                                                .arg(url)
+                                                .spawn();
+                                        } else {
+                                            console_state.reopen_webview_triggered = true;
+                                        }
+                                    }
+                                    ui.add_space(12.0);
+                                }
+                            }
+                        }
+
                         // 状态标签
                         let (status_icon, status_text, status_color) = match console_state.status {
                             ConsoleStatus::Stopped => (
