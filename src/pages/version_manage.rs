@@ -1278,11 +1278,10 @@ fn start_install(state: &mut VersionManageState, _url: &str, version: &str, sett
 
     let npm_registry = npm_registry_url(&settings.npm_registry).to_string();
 
-    let repo_url = if let Some(proxy) = github_proxy_url {
-        format!("{}https://github.com/SillyTavern/SillyTavern.git", proxy)
-    } else {
-        "https://github.com/SillyTavern/SillyTavern.git".to_string()
-    };
+    let repo_url = github_proxy_url
+        .as_ref()
+        .map(|proxy| format!("{}https://github.com/SillyTavern/SillyTavern.git", proxy))
+        .unwrap_or_else(|| "https://github.com/SillyTavern/SillyTavern.git".to_string());
 
     thread::spawn(move || {
         let _ = tx.send(DownloadMsg::Log("Starting installation...".to_string()));
@@ -1340,6 +1339,20 @@ fn start_install(state: &mut VersionManageState, _url: &str, version: &str, sett
             } else {
                 // 目录已存在，fetch + checkout
                 let _ = tx.send(DownloadMsg::Log("Directory exists, fetching updates...".to_string()));
+
+                // 更新 remote URL，确保走代理加速（如果启用）
+                let remote_url = github_proxy_url
+                    .as_ref()
+                    .map(|p| format!("{}https://github.com/SillyTavern/SillyTavern.git", p))
+                    .unwrap_or_else(|| "https://github.com/SillyTavern/SillyTavern.git".to_string());
+                let _ = tx.send(DownloadMsg::Log(format!("Setting remote origin to: {}", remote_url)));
+                let _ = Command::new(&git_path)
+                    .arg("remote")
+                    .arg("set-url")
+                    .arg("origin")
+                    .arg(&remote_url)
+                    .current_dir(&target_dir)
+                    .output();
 
                 // Fetch
                 let mut git_fetch = Command::new(&git_path);

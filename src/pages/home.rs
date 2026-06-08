@@ -195,14 +195,12 @@ pub fn render(
 
                         if btn_response.clicked() && !is_transitioning {
                             if is_stopped {
-                                // 一键启动 → 跳转控制台 + 启动服务
-                                console_state.status = ConsoleStatus::Running;
-                                console_state.add_log(lang::t("home_log_started", lang));
+                                // 一键启动 → 调用控制台启动服务
+                                console_state.start(lang);
                                 *current_page = Page::Console;
                             } else if is_running {
-                                // 立即停止 → 跳转控制台 + 正常关闭
-                                console_state.status = ConsoleStatus::Stopped;
-                                console_state.add_log(lang::t("home_log_stopped", lang));
+                                // 立即停止 → 调用控制台正常关闭
+                                console_state.stop(lang);
                                 *current_page = Page::Console;
                             }
                         }

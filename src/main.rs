@@ -144,6 +144,17 @@ struct MyApp {
     github_node_state: crate::core::settings::github_proxy::NodeLoadState,
     on_refresh_nodes: bool,
     folder_picker_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    // 异步路径检查
+    path_check_rx: Option<std::sync::mpsc::Receiver<PathCheckResult>>,
+    last_path_check: Option<std::time::Instant>,
+}
+
+/// 后台路径检查结果
+struct PathCheckResult {
+    should_clear_current: bool,
+    dead_instance_indices: Vec<usize>,
+    /// 在线下载的 builtin 实例是否被删除
+    builtin_deleted: bool,
 }
 
 impl MyApp {
@@ -176,9 +187,11 @@ impl MyApp {
             caddy_install_state: pages::settings::BrewTaskState::new(),
             pm2_install_state: pages::settings::BrewTaskState::new(),
             github_node_rx: None,
-            github_node_state: crate::core::settings::github_proxy::NodeLoadState::Idle,
+            github_node_state: crate::core::settings::github_proxy::NodeLoadState::Done(vec![]),
             on_refresh_nodes: false,
             folder_picker_rx: None,
+            path_check_rx: None,
+            last_path_check: None,
         }
     }
 }
@@ -376,16 +389,14 @@ impl eframe::App for MyApp {
                     use crate::core::settings::github_proxy::NodeLoadMsg;
                     match msg {
                         NodeLoadMsg::Nodes(entries) => {
-                            // 自动选择 ghfast.top（如果列表里有且当前未选中）
+                            // 自动选择首选节点（如果当前未选中）
                             if self.settings_state.github_proxy_url.is_empty()
                                 || !entries
                                     .iter()
                                     .any(|e| e.url == self.settings_state.github_proxy_url)
                             {
-                                if let Some(ghfast) =
-                                    entries.iter().find(|e| e.url.contains("ghfast.top"))
-                                {
-                                    self.settings_state.github_proxy_url = ghfast.url.clone();
+                                if let Some(first) = entries.first() {
+                                    self.settings_state.github_proxy_url = first.url.clone();
                                 }
                             }
                             self.github_node_state =
@@ -395,25 +406,6 @@ impl eframe::App for MyApp {
                             ctx.request_repaint();
                         }
                         NodeLoadMsg::Done => {
-                            clear_rx = true;
-                        }
-                        NodeLoadMsg::DoneWithWarning(warning) => {
-                            // 数据已在 NodeLoadMsg::Nodes 中设置，这里只附加警告
-                            if let crate::core::settings::github_proxy::NodeLoadState::Done(
-                                ref entries,
-                            ) = self.github_node_state
-                            {
-                                self.github_node_state =
-                                    crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(
-                                        entries.clone(),
-                                        warning,
-                                    );
-                            }
-                            clear_rx = true;
-                        }
-                        NodeLoadMsg::Error(e) => {
-                            self.github_node_state =
-                                crate::core::settings::github_proxy::NodeLoadState::Error(e);
                             clear_rx = true;
                         }
                     }
@@ -459,9 +451,137 @@ impl eframe::App for MyApp {
             self.tavern_config_ui.proxy_url = self.settings_state.github_proxy_url.clone();
         }
 
+        // 同步控制台所需配置（实例路径 + 类型/版本 + 数据模式 + 代理）
+        {
+            let inst = self.settings_state.sillytavern.as_ref();
+            let instance_path = inst.map(|i| {
+                match i.instance_type.as_str() {
+                    "builtin" => crate::utils::app_paths().sillytavern_dir().to_string_lossy().to_string(),
+                    "local" => i.path.clone().unwrap_or_default(),
+                    _ => String::new(),
+                }
+            }).unwrap_or_default();
+            let instance_type = inst.map(|i| i.instance_type.clone()).unwrap_or_default();
+            let instance_version = inst.map(|i| i.version.clone()).unwrap_or_default();
+
+            let github_proxy_url = if self.settings_state.github_proxy_enabled
+                && !self.settings_state.github_proxy_url.is_empty()
+            {
+                Some(self.settings_state.github_proxy_url.clone())
+            } else {
+                None
+            };
+
+            self.console_state.sync_with_settings(
+                instance_path,
+                instance_type,
+                instance_version,
+                &self.settings_state.data_mode,
+                &self.settings_state.proxy_type,
+                &self.settings_state.custom_proxy,
+                github_proxy_url,
+                self.settings_state.show_startup_command,
+            );
+        }
+
+        // 每帧轮询酒馆进程状态
+        self.console_state.poll(&self.settings_state.language);
+
+        // 酒馆进程运行中持续重绘（确保日志实时更新）
+        if self.console_state.status == pages::console::ConsoleStatus::Running
+            || self.console_state.status == pages::console::ConsoleStatus::Starting
+            || self.console_state.status == pages::console::ConsoleStatus::Stopping
+        {
+            ctx.request_repaint();
+        }
+
+        // 在线下载中持续重绘
+        if self.version_manage_state.is_downloading {
+            ctx.request_repaint();
+        }
+
         // 酒馆配置下载中持续重绘
         if self.tavern_config_ui.gen_config_status.is_downloading() {
             ctx.request_repaint();
+        }
+
+        // 异步全局检测：实例路径是否被手动删除（后台线程，每 5s 一次，不卡 UI）
+        {
+            // 轮询上次检查结果
+            if let Some(rx) = &self.path_check_rx {
+                if let Ok(result) = rx.try_recv() {
+                    if result.should_clear_current {
+                        self.settings_state.sillytavern = None;
+                        self.settings_state.save();
+                    }
+                    if result.builtin_deleted {
+                        self.version_manage_state.online_installed_version = None;
+                    }
+                    if !result.dead_instance_indices.is_empty() {
+                        for idx in result.dead_instance_indices.iter().rev() {
+                            self.version_manage_state.local_instances.remove(*idx);
+                        }
+                        crate::pages::version_manage::save_local_instances(&self.version_manage_state.local_instances);
+                    }
+                    self.path_check_rx = None;
+                }
+            }
+
+            // 启动时检查一次实例路径（不重复检测，避免下载中误判）
+            let should_check = self.last_path_check.is_none();
+            if should_check && self.path_check_rx.is_none() {
+                self.last_path_check = Some(std::time::Instant::now());
+                let current = self.settings_state.sillytavern.clone();
+                let instance_paths: Vec<String> = self.version_manage_state
+                    .local_instances
+                    .iter()
+                    .map(|i| i.path.clone())
+                    .collect();
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.path_check_rx = Some(rx);
+                std::thread::spawn(move || {
+                    let mut should_clear_current = false;
+                    let mut dead_indices = Vec::new();
+                    let mut builtin_deleted = false;
+
+                    // 检查 builtin 实例（使用写死的路径）
+                    let builtin_path = crate::utils::app_paths().sillytavern_dir();
+                    if !builtin_path.join("package.json").exists() {
+                        builtin_deleted = true;
+                    }
+
+                    // 检查当前选中实例
+                    if let Some(ref curr) = current {
+                        let exists = match curr.instance_type.as_str() {
+                            "builtin" => !builtin_deleted,
+                            "local" => {
+                                if let Some(ref p) = curr.path {
+                                    !p.is_empty() && std::path::PathBuf::from(p).join("package.json").exists()
+                                } else {
+                                    false
+                                }
+                            }
+                            _ => true,
+                        };
+                        if !exists {
+                            should_clear_current = true;
+                        }
+                    }
+
+                    // 检查本地实例列表
+                    for (idx, path) in instance_paths.iter().enumerate() {
+                        if !std::path::PathBuf::from(path).join("package.json").exists() {
+                            dead_indices.push(idx);
+                        }
+                    }
+
+                    let _ = tx.send(PathCheckResult {
+                        should_clear_current,
+                        dead_instance_indices: dead_indices,
+                        builtin_deleted,
+                    });
+                });
+            }
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -514,11 +634,11 @@ impl eframe::App for MyApp {
                     ui.heading(lang::t("software_settings", &self.settings_state.language));
                     ui.separator();
 
-                    // 代理开关已开启 + 节点列表未加载 → 自动加载缓存数据
+                    // 代理开关已开启 + 节点列表未加载 → 自动加载
                     if self.settings_state.github_proxy_enabled
                         && matches!(
                             self.github_node_state,
-                            crate::core::settings::github_proxy::NodeLoadState::Idle
+                            crate::core::settings::github_proxy::NodeLoadState::Done(ref entries) if entries.is_empty()
                         )
                     {
                         self.on_refresh_nodes = true;

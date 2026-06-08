@@ -117,6 +117,9 @@ pub struct SettingsState {
     pub auto_start_tavern: bool,
     pub allow_tavern_background: bool,
 
+    // 控制台设置
+    pub show_startup_command: bool,
+
     pub npm_registry: NpmRegistry,
 
     // Github 设置
@@ -171,9 +174,10 @@ impl Default for SettingsState {
             auto_minimize: false,
             auto_start_tavern: false,
             allow_tavern_background: false,
+            show_startup_command: false,
             npm_registry: NpmRegistry::default(),
             github_proxy_enabled: false,
-            github_proxy_url: "https://ghfast.top/".to_string(),
+            github_proxy_url: "https://gt.astrabrew.cn/".to_string(),
             proxy_type: ProxyType::default(),
             custom_proxy: String::new(),
             sillytavern: None,
@@ -719,6 +723,26 @@ pub fn render(
                         }
                     });
 
+                    // 控制台设置
+                    setting_section(
+                        ui,
+                        egui_phosphor::regular::TERMINAL_WINDOW,
+                        lang::t("console_settings", &state.language),
+                        |ui| {
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::TERMINAL_WINDOW,
+                                lang::t("show_startup_command", &state.language),
+                                lang::t("show_startup_command_desc", &state.language),
+                                |ui| {
+                                    ui.add(crate::ui::switch::toggle(
+                                        &mut state.show_startup_command,
+                                    ));
+                                },
+                            );
+                        },
+                    );
+
                     // 环境依赖
                     {
                         let brew_installed = state.homebrew_version.is_some();
@@ -1046,98 +1070,65 @@ pub fn render(
                                 );
                             } else {
                                 match github_node_state {
-                                    crate::core::settings::github_proxy::NodeLoadState::Idle => {
-                                        ui.label(
-                                            egui::RichText::new(lang::t("click_refresh_to_load", &state.language))
-                                                .color(egui::Color32::GRAY),
-                                        );
-                                    }
                                     crate::core::settings::github_proxy::NodeLoadState::Loading => {
                                         ui.horizontal(|ui| {
                                             ui.spinner();
                                             ui.label(lang::t("loading_nodes", &state.language));
                                         });
                                     }
-                                    crate::core::settings::github_proxy::NodeLoadState::Error(e) => {
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "{} {e}",
-                                                lang::t("fetch_error", &state.language)
-                                            ))
-                                            .color(egui::Color32::RED),
-                                        );
-                                    }
-                                    crate::core::settings::github_proxy::NodeLoadState::Done(entries)
-                                    | crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(entries, _) => {
-                                        // 提取警告信息
-                                        let node_warning = match github_node_state {
-                                            crate::core::settings::github_proxy::NodeLoadState::DoneWithWarning(_, w) => Some(w.as_str()),
-                                            _ => None,
-                                        };
+                                    crate::core::settings::github_proxy::NodeLoadState::Done(entries) => {
 
-                                        // 显示降级警告
-                                        if let Some(w) = node_warning {
-                                            ui.label(
-                                                egui::RichText::new(format!("⚠ {w}"))
-                                                    .size(12.0)
-                                                    .color(egui::Color32::from_rgb(230, 180, 60)),
-                                            );
-                                            ui.add_space(6.0);
-                                        }
-
-                                        // 按实测延迟排序
+                                        // 排序：已认证节点优先，同组内按实测延迟排序
                                         let mut sorted_entries = entries.clone();
                                         sorted_entries.sort_by(|a, b| {
-                                            let a_ms = *a.measured_ms.lock().unwrap();
-                                            let b_ms = *b.measured_ms.lock().unwrap();
-                                            match (a_ms, b_ms) {
-                                                (None, None) => std::cmp::Ordering::Equal,
-                                                (None, _) => std::cmp::Ordering::Greater,
-                                                (_, None) => std::cmp::Ordering::Less,
-                                                (Some(None), Some(None)) => std::cmp::Ordering::Equal,
-                                                (Some(None), Some(Some(_))) => std::cmp::Ordering::Greater,
-                                                (Some(Some(_)), Some(None)) => std::cmp::Ordering::Less,
-                                                (Some(Some(a)), Some(Some(b))) => a.cmp(&b),
+                                            let a_dev = a.source == "开发者提供";
+                                            let b_dev = b.source == "开发者提供";
+                                            // 开发者优先
+                                            match (a_dev, b_dev) {
+                                                (true, false) => std::cmp::Ordering::Less,
+                                                (false, true) => std::cmp::Ordering::Greater,
+                                                _ => {
+                                                    let a_ms = *a.measured_ms.lock().unwrap();
+                                                    let b_ms = *b.measured_ms.lock().unwrap();
+                                                    match (a_ms, b_ms) {
+                                                        (None, None) => std::cmp::Ordering::Equal,
+                                                        (None, _) => std::cmp::Ordering::Greater,
+                                                        (_, None) => std::cmp::Ordering::Less,
+                                                        (Some(None), Some(None)) => std::cmp::Ordering::Equal,
+                                                        (Some(None), Some(Some(_))) => std::cmp::Ordering::Greater,
+                                                        (Some(Some(_)), Some(None)) => std::cmp::Ordering::Less,
+                                                        (Some(Some(a)), Some(Some(b))) => a.cmp(&b),
+                                                    }
+                                                }
                                             }
                                         });
 
-                                        // 节点表格 — 9 列，支持横向滚动
-                                        let avail_w = ui.available_width();
+                                        // 节点表格 — 4 列：选择 / 节点地址 / 实测延迟 / 来源
                                         let select_w: f32 = 50.0;
-                                        let url_w: f32 = 260.0;
-                                        let server_w: f32 = 120.0;
-                                        let ip_w: f32 = 130.0;
-                                        let loc_w: f32 = 90.0;
-                                        let api_latency_w: f32 = 90.0;
-                                        let latency_w: f32 = 90.0;
-                                        let speed_w: f32 = 90.0;
-                                        let tag_w: f32 = 100.0;
+                                        let latency_w: f32 = 100.0;
+                                        let tag_w: f32 = 150.0;
+                                        let url_min_w: f32 = 220.0;
                                         let spacing: f32 = 16.0;
-                                        let total_fixed: f32 = select_w
-                                            + server_w
-                                            + ip_w
-                                            + loc_w
-                                            + api_latency_w
-                                            + latency_w
-                                            + speed_w
-                                            + tag_w
-                                            + spacing * 8.0;
-                                        let url_calc: f32 = (avail_w - total_fixed).max(url_w);
 
                                         egui::ScrollArea::new(egui::Vec2b::TRUE)
                                             .id_salt("github_nodes_scroll")
                                             .max_height(400.0)
                                             .min_scrolled_height(400.0)
                                             .show(ui, |ui| {
+                                                let url_calc: f32 = (ui.available_width()
+                                                    - select_w - latency_w - tag_w - spacing * 3.0)
+                                                    .max(url_min_w);
                                                 egui::Grid::new("github_nodes_grid")
                                                     .striped(true)
-                                                    .num_columns(9)
+                                                    .num_columns(4)
                                                     .spacing(egui::vec2(spacing, 6.0))
                                                     .show(ui, |ui| {
+                                                        let centered = egui::Layout::centered_and_justified(egui::Direction::TopDown);
+
                                                         // 表头
                                                         ui.allocate_ui_with_layout(
                                                             egui::vec2(select_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            centered,
                                                             |ui| {
                                                                 ui.strong(lang::t("col_select", &state.language));
                                                             },
@@ -1150,52 +1141,17 @@ pub fn render(
                                                             },
                                                         );
                                                         ui.allocate_ui_with_layout(
-                                                            egui::vec2(server_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
-                                                            |ui| {
-                                                                ui.strong("Server");
-                                                            },
-                                                        );
-                                                        ui.allocate_ui_with_layout(
-                                                            egui::vec2(ip_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
-                                                            |ui| {
-                                                                ui.strong("IP");
-                                                            },
-                                                        );
-                                                        ui.allocate_ui_with_layout(
-                                                            egui::vec2(loc_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
-                                                            |ui| {
-                                                                ui.strong(lang::t("col_location", &state.language));
-                                                            },
-                                                        );
-                                                        ui.allocate_ui_with_layout(
-                                                            egui::vec2(api_latency_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
-                                                            |ui| {
-                                                                ui.strong("接口延迟");
-                                                            },
-                                                        );
-                                                        ui.allocate_ui_with_layout(
                                                             egui::vec2(latency_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            centered,
                                                             |ui| {
                                                                 ui.strong(lang::t("col_latency", &state.language));
                                                             },
                                                         );
                                                         ui.allocate_ui_with_layout(
-                                                            egui::vec2(speed_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
-                                                            |ui| {
-                                                                ui.strong(lang::t("col_speed", &state.language));
-                                                            },
-                                                        );
-                                                        ui.allocate_ui_with_layout(
                                                             egui::vec2(tag_w, 28.0),
-                                                            egui::Layout::top_down(egui::Align::Center),
+                                                            centered,
                                                             |ui| {
-                                                                ui.strong("Tag");
+                                                                ui.strong(lang::t("col_source", &state.language));
                                                             },
                                                         );
                                                         ui.end_row();
@@ -1207,7 +1163,7 @@ pub fn render(
                                                             // 选择列
                                                             ui.allocate_ui_with_layout(
                                                                 egui::vec2(select_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                centered,
                                                                 |ui| {
                                                                     let mut sel = is_selected;
                                                                     if ui.radio(sel, "").clicked() {
@@ -1219,7 +1175,7 @@ pub fn render(
                                                                     }
                                                                 },
                                                             );
-                                                            // URL
+                                                            // 节点地址
                                                             let url_display = entry
                                                                 .url
                                                                 .trim_start_matches("https://")
@@ -1235,60 +1191,6 @@ pub fn render(
                                                                             .color(ui.visuals().text_color()),
                                                                     )
                                                                     .on_hover_text(entry.url.clone());
-                                                                },
-                                                            );
-                                                            // Server
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(server_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
-                                                                |ui| {
-                                                                    ui.label(
-                                                                        egui::RichText::new(&entry.server)
-                                                                            .size(13.0),
-                                                                    );
-                                                                },
-                                                            );
-                                                            // IP
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(ip_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
-                                                                |ui| {
-                                                                    ui.label(
-                                                                        egui::RichText::new(&entry.ip)
-                                                                            .size(13.0),
-                                                                    );
-                                                                },
-                                                            );
-                                                            // 地区
-                                                            let loc = if entry.location.is_empty() {
-                                                                "-".to_string()
-                                                            } else {
-                                                                entry.location.clone()
-                                                            };
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(loc_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
-                                                                |ui| {
-                                                                    ui.label(
-                                                                        egui::RichText::new(&loc).size(13.0),
-                                                                    );
-                                                                },
-                                                            );
-                                                            // 接口延迟
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(api_latency_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
-                                                                |ui| {
-                                                                    ui.label(
-                                                                        egui::RichText::new(format!(
-                                                                            "{} ms",
-                                                                            entry.api_latency
-                                                                        ))
-                                                                        .size(13.0)
-                                                                        .color(egui::Color32::from_rgb(
-                                                                            140, 140, 140,
-                                                                        )),
-                                                                    );
                                                                 },
                                                             );
                                                             // 实测延迟
@@ -1319,7 +1221,7 @@ pub fn render(
                                                             };
                                                             ui.allocate_ui_with_layout(
                                                                 egui::vec2(latency_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                centered,
                                                                 |ui| {
                                                                     ui.label(
                                                                         egui::RichText::new(&latency_text)
@@ -1328,41 +1230,48 @@ pub fn render(
                                                                     );
                                                                 },
                                                             );
-                                                            // 速度
-                                                            let speed_str =
-                                                                if entry.speed >= 1000.0 {
-                                                                    format!(
-                                                                        "{:.1} MB/s",
-                                                                        entry.speed / 1024.0
-                                                                    )
-                                                                } else {
-                                                                    format!("{:.1} KB/s", entry.speed)
-                                                                };
-                                                            ui.allocate_ui_with_layout(
-                                                                egui::vec2(speed_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
-                                                                |ui| {
-                                                                    ui.label(
-                                                                        egui::RichText::new(&speed_str)
-                                                                            .size(13.0),
-                                                                    );
-                                                                },
-                                                            );
-                                                            // Tag
+                                                            // 来源
                                                             ui.allocate_ui_with_layout(
                                                                 egui::vec2(tag_w, 28.0),
-                                                                egui::Layout::top_down(egui::Align::Center),
+                                                                centered,
                                                                 |ui| {
-                                                                    let tag_display =
-                                                                        if entry.tag.is_empty() {
-                                                                            "-".to_string()
-                                                                        } else {
-                                                                            entry.tag.clone()
-                                                                        };
-                                                                    ui.label(
-                                                                        egui::RichText::new(&tag_display)
-                                                                            .size(13.0),
-                                                                    );
+                                                                    let is_dev = entry.source == "开发者提供";
+                                                                    let lang_key = state.language;
+                                                                    if is_dev {
+                                                                        ui.vertical_centered(|ui| {
+                                                                            ui.horizontal(|ui| {
+                                                                                ui.label(
+                                                                                    egui::RichText::new(format!(
+                                                                                        "✓ {}",
+                                                                                        lang::t("verified_badge", &lang_key)
+                                                                                    ))
+                                                                                    .size(12.0)
+                                                                                    .color(egui::Color32::from_rgb(0, 180, 80)),
+                                                                                );
+                                                                                let tag_text = if entry.tag.is_empty() { "-" } else { &entry.tag };
+                                                                                ui.label(
+                                                                                    egui::RichText::new(tag_text)
+                                                                                        .size(12.0)
+                                                                                        .color(egui::Color32::from_rgb(60, 160, 80)),
+                                                                                );
+                                                                            });
+                                                                        });
+                                                                    } else {
+                                                                        ui.vertical_centered(|ui| {
+                                                                            ui.horizontal(|ui| {
+                                                                                ui.label(
+                                                                                    egui::RichText::new(lang::t("source_third_party", &lang_key))
+                                                                                        .size(12.0)
+                                                                                        .color(egui::Color32::GRAY),
+                                                                                );
+                                                                                let tag_text = if entry.tag.is_empty() { "-" } else { &entry.tag };
+                                                                                ui.label(
+                                                                                    egui::RichText::new(tag_text)
+                                                                                        .size(12.0),
+                                                                                );
+                                                                            });
+                                                                        });
+                                                                    }
                                                                 },
                                                             );
                                                             ui.end_row();
@@ -1551,7 +1460,7 @@ pub fn render(
 
                     ui.add_space(20.0);
                 });
-        }
+            }
         SettingsTab::About => {
             ui.vertical_centered(|ui| {
                 ui.heading(lang::t("about_title", &state.language));
@@ -1736,6 +1645,18 @@ pub fn render(
                         );
                     });
 
+                    if has_accelerate {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(lang::t("accelerate_url", &state.language)).strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(&state.github_proxy_url)
+                                    .color(egui::Color32::LIGHT_BLUE),
+                            );
+                        });
+                    }
+
                     ui.separator();
 
                     if testing || !results.is_empty() {
@@ -1814,6 +1735,8 @@ pub fn render(
                                                                 } else {
                                                                     "异常"
                                                                 }
+                                                            } else if warn.contains("加速") {
+                                                                "受限"
                                                             } else {
                                                                 "异常"
                                                             };

@@ -3,6 +3,9 @@ name = "astrabrew-launcher-mac"
 version = "0.1.0"
 edition = "2024"
 
+[package.metadata.bundle]
+name = "AstraBrew Launcher"
+
 [dependencies]
 eframe = "0.33"
 egui = "0.33"

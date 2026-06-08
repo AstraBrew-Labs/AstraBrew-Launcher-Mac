@@ -49,12 +49,19 @@
 - **serde_yaml 0.9 不支持 `!tag:yaml.org,2002:null`** — 写 YAML null 用 `Value::Null`，不能用 tagged value，否则回读时解析失败 → 全默认值 → 保存覆盖原配置（数据丢失）
 - YAML 写入后要确保 serde_yaml 能回读
 
-## 控制台页面（2026-06-03）
-- `src/pages/console.rs`：ConsoleState（status + logs）+ render 函数
+## 控制台页面 + 进程管理（2026-06-03 初版 / 2026-06-08 进程对接）
+- `src/pages/console.rs`：ConsoleState（status + logs + process + instance_path + data_mode）+ render 函数
+- `src/core/tavern_process.rs`：TavernProcess — node server.js 子进程管理器
+  - 启动：独立模式 `node server.js`，全局模式 `node server.js --configPath <path> --dataRoot <path>`
+  - 停止：fork `kill <pid>`（SIGTERM），强制停止：`Child::kill()`（SIGKILL）
+  - 日志：后台线程 BufReader + mpsc channel → 主线程轮询
+  - Drop 时自动 kill 子进程（启动器关闭 → 酒馆也关闭）
+- ConsoleState 方法：`start/stop/force_kill/restart/poll/sync_with_settings/has_instance`
 - 状态栏（左右布局）+ 日志区（ScrollArea + stick_to_bottom）
-- 按钮组：启动/重启/停止/强行停止，按状态联动启用/禁用
+- 按钮组：启动/重启/停止/强行停止，按状态联动启用/禁用，start 需 has_instance()
 - 导航位于底部区域，在设置按钮上方（Page::Console）
-- 翻译键 `console*` 前缀，中英双语 18 个 key
+- 翻译键 `console**` 前缀，中英双语 22 个 key
+- main.rs 每帧同步 settings → console_state，每帧 poll()
 
 ## 一键启动主页（2026-06-04）
 - `src/pages/home.rs`：主页渲染函数 `render(ui, current_page, console_state, lang, version_info)`
