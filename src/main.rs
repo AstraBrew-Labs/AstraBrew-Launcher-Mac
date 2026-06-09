@@ -731,6 +731,10 @@ impl eframe::App for MyApp {
                         self.extension_manage_state.load_extensions(instance_path.as_deref());
                     }
 
+                    // 同步 GitHub 加速设置
+                    self.extension_manage_state.github_proxy_enabled = self.settings_state.github_proxy_enabled;
+                    self.extension_manage_state.github_proxy_url = self.settings_state.github_proxy_url.clone();
+
                     pages::extensions::render(ui, &mut self.extension_manage_state, &self.settings_state.language, instance_path.as_deref());
                 }
                 Page::ResourceManage => {

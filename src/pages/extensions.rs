@@ -10,6 +10,7 @@ use crate::lang;
 use crate::pages::settings::Language;
 use crate::utils;
 use crate::ui::switch::toggle;
+use std::io::{BufRead, BufReader};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ExtensionManifest {
@@ -66,6 +67,18 @@ pub struct ExtensionManageState {
     pub show_add_dialog: bool,
     pub add_dialog_tab: AddDialogTab,
     pub git_url: String,
+    pub git_branches: Vec<String>,
+    pub git_error: Option<String>,
+    last_git_url_change: Option<std::time::Instant>,
+    pub git_selected_branch: String,
+    pub is_fetching_branches: bool,
+    git_branches_rx: Option<Receiver<(Vec<String>, Option<String>)>>,
+    pub is_installing_git: bool,
+    pub git_install_log: String,
+    git_install_done: Option<bool>,
+    git_install_done_at: Option<std::time::Instant>,
+    git_install_rx: Option<Receiver<String>>,
+    last_fetched_git_url: String,
     pub offline_packages: Vec<OfflinePackage>,
     offline_check_rx: Option<Receiver<Vec<(usize, bool, Option<String>)>>>,
     pub is_checking_offline: bool,
@@ -77,6 +90,12 @@ pub struct ExtensionManageState {
     pub needs_refresh: bool,
     pub show_overwrite_confirm: bool,
     pub overwrite_packages: Vec<OfflinePackage>,
+    pub github_proxy_enabled: bool,
+    pub github_proxy_url: String,
+    pub show_force_install: bool,
+    pub force_install_url: String,
+    pub force_install_branch: String,
+    manifest_check_rx: Option<Receiver<bool>>,
 }
 
 impl ExtensionManageState {
@@ -89,6 +108,18 @@ impl ExtensionManageState {
             show_add_dialog: false,
             add_dialog_tab: AddDialogTab::Git,
             git_url: String::new(),
+            git_branches: Vec::new(),
+            git_error: None,
+            last_git_url_change: None,
+            git_selected_branch: String::new(),
+            is_fetching_branches: false,
+            git_branches_rx: None,
+            is_installing_git: false,
+            git_install_log: String::new(),
+            git_install_done: None,
+            git_install_done_at: None,
+            git_install_rx: None,
+            last_fetched_git_url: String::new(),
             offline_packages: Vec::new(),
             offline_check_rx: None,
             is_checking_offline: false,
@@ -100,6 +131,12 @@ impl ExtensionManageState {
             needs_refresh: false,
             show_overwrite_confirm: false,
             overwrite_packages: Vec::new(),
+            github_proxy_enabled: false,
+            github_proxy_url: String::new(),
+            show_force_install: false,
+            force_install_url: String::new(),
+            force_install_branch: String::new(),
+            manifest_check_rx: None,
         }
     }
 
@@ -242,6 +279,81 @@ impl ExtensionManageState {
                 self.offline_check_rx = None;
             }
         }
+
+        // 轮询 git 分支获取结果
+        if let Some(rx) = &self.git_branches_rx {
+            if let Ok((branches, error)) = rx.try_recv() {
+                self.git_branches = branches;
+                self.is_fetching_branches = false;
+                self.git_branches_rx = None;
+
+                if let Some(err) = error {
+                    self.git_error = Some(err);
+                }
+
+                // 默认选择 main/master/第一个
+                self.git_selected_branch = if self.git_branches.iter().any(|b| b == "main") {
+                    "main".to_string()
+                } else if self.git_branches.iter().any(|b| b == "master") {
+                    "master".to_string()
+                } else {
+                    self.git_branches.first().cloned().unwrap_or_default()
+                };
+            }
+        }
+
+        // 轮询 git 安装日志
+        if let Some(rx) = &self.git_install_rx {
+            let mut done = false;
+            while let Ok(line) = rx.try_recv() {
+                if line == "__DONE__" {
+                    self.is_installing_git = false;
+                    self.git_install_done = Some(true);
+                    self.git_install_done_at = Some(std::time::Instant::now());
+                    done = true;
+                } else if line == "__ERROR__" {
+                    self.is_installing_git = false;
+                    self.git_install_done = Some(false);
+                    done = true;
+                } else {
+                    self.git_install_log.push_str(&line);
+                    self.git_install_log.push('\n');
+                }
+            }
+            if done {
+                self.git_install_rx = None;
+            }
+        }
+
+        // 轮询 manifest API 检查结果
+        if let Some(rx) = &self.manifest_check_rx {
+            if let Ok(found) = rx.try_recv() {
+                self.manifest_check_rx = None;
+                self.is_installing_git = false;
+                if found {
+                    self.git_install_log = "✓ 检测到 manifest.json，开始克隆...".to_string();
+                    start_git_clone_thread(self);
+                } else {
+                    self.git_install_log = "✗ 未检测到 manifest.json".to_string();
+                    self.show_force_install = true;
+                }
+            }
+        }
+
+        // 安装成功后 3 秒自动关闭
+        if self.git_install_done == Some(true) {
+            if let Some(at) = self.git_install_done_at {
+                if at.elapsed().as_secs() >= 3 {
+                    self.show_add_dialog = false;
+                    self.git_install_done = None;
+                    self.git_install_done_at = None;
+                    self.is_installing_git = false;
+                    self.git_install_log.clear();
+                    self.git_install_rx = None;
+                    self.needs_refresh = true;
+                }
+            }
+        }
     }
 }
 
@@ -290,6 +402,11 @@ pub fn render(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Langua
         render_overwrite_confirm(ui, state, lang);
     }
 
+    // ---- 强制安装确认弹窗 ----
+    if state.show_force_install {
+        render_force_install_confirm(ui, state, lang);
+    }
+
     // 离线安装成功后触发刷新
     if state.needs_refresh {
         state.needs_refresh = false;
@@ -297,7 +414,21 @@ pub fn render(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Langua
     }
 
     // 离线包检查中持续重绘
-    if state.is_checking_offline {
+    if state.is_checking_offline || state.is_installing_git || state.is_fetching_branches || state.is_loading {
+        ui.ctx().request_repaint();
+    }
+
+    // 防抖等待中持续重绘
+    if state.last_git_url_change.is_some()
+        && !state.is_fetching_branches
+        && state.git_branches.is_empty()
+        && state.git_error.is_none()
+    {
+        ui.ctx().request_repaint();
+    }
+
+    // 安装成功后持续渲染（3 秒倒计时）
+    if state.git_install_done == Some(true) {
         ui.ctx().request_repaint();
     }
 
@@ -482,6 +613,7 @@ fn render_toolbar(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &La
             if ui.button(format!(" {}  {}", icon, lang::t("ext_add_extension", lang))).clicked() {
                 state.show_add_dialog = true;
                 state.git_url.clear();
+                state.git_error = None;
                 state.offline_packages.clear();
                 state.add_dialog_tab = AddDialogTab::Git;
             }
@@ -628,19 +760,119 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
             // ---- Tab 内容 ----
             match state.add_dialog_tab {
                 AddDialogTab::Git => {
+                    let input_disabled = state.is_installing_git || state.is_fetching_branches;
+
                     ui.label(lang::t("ext_add_git_url", lang));
                     ui.add_space(4.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.git_url)
+
+                    // Git URL 输入框（安装/获取分支中禁用）
+                    let mut url_changed = false;
+                    if input_disabled {
+                        ui.add_enabled(false, egui::TextEdit::singleline(&mut state.git_url)
                             .hint_text(lang::t("ext_add_git_placeholder", lang))
-                            .desired_width(f32::INFINITY),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(lang::t("ext_add_git_note", lang))
-                            .size(11.0)
-                            .color(egui::Color32::GRAY),
-                    );
+                            .desired_width(f32::INFINITY));
+                    } else {
+                        url_changed = ui.add(
+                            egui::TextEdit::singleline(&mut state.git_url)
+                                .hint_text(lang::t("ext_add_git_placeholder", lang))
+                                .desired_width(f32::INFINITY),
+                        ).changed();
+                    }
+
+                    // URL 变更时记录时间（防抖）
+                    if url_changed && !state.git_url.trim().is_empty() {
+                        state.git_branches.clear();
+                        state.git_selected_branch.clear();
+                        state.last_fetched_git_url.clear();
+                        state.git_error = None;
+                        state.last_git_url_change = Some(std::time::Instant::now());
+                    }
+
+                    // URL 审查 + 防抖 3 秒后触发获取
+                    let url_trimmed = state.git_url.trim();
+                    let is_valid_url = url_trimmed.starts_with("http://")
+                        || url_trimmed.starts_with("https://")
+                        || url_trimmed.starts_with("git@");
+
+                    if !url_trimmed.is_empty() && !is_valid_url {
+                        state.git_error = Some("请输入正确的 Git 仓库地址（http/https/git 协议）".to_string());
+                    } else {
+                        let elapsed = state.last_git_url_change
+                            .map(|t| t.elapsed().as_secs())
+                            .unwrap_or(0);
+                        let debounce_ready = elapsed >= 3;
+
+                        let need_fetch = !url_trimmed.is_empty()
+                            && is_valid_url
+                            && debounce_ready
+                            && state.last_fetched_git_url != state.git_url
+                            && !state.is_fetching_branches
+                            && state.git_branches.is_empty();
+
+                        if need_fetch {
+                            fetch_git_branches(state);
+                        }
+                    }
+
+                    // 错误提示（弹窗内）
+                    if let Some(ref err) = state.git_error {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(err).color(egui::Color32::RED).size(12.0),
+                        );
+                    }
+
+                    // 分支选择器
+                    if state.is_fetching_branches {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("正在获取分支列表...");
+                        });
+                    } else if !state.git_branches.is_empty() {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label("分支:");
+                            egui::ComboBox::from_id_salt("git_branch_selector")
+                                .selected_text(&state.git_selected_branch)
+                                .show_ui(ui, |ui| {
+                                    for branch in &state.git_branches.clone() {
+                                        ui.selectable_value(
+                                            &mut state.git_selected_branch,
+                                            branch.clone(),
+                                            branch,
+                                        );
+                                    }
+                                });
+                        });
+                    }
+
+                    // 安装日志区
+                    if state.is_installing_git || state.git_install_done.is_some() {
+                        ui.add_space(6.0);
+                        ui.separator();
+                        let status_text = if state.is_installing_git {
+                            "安装中..."
+                        } else if state.git_install_done == Some(true) {
+                            "安装成功！3秒后自动关闭..."
+                        } else {
+                            "安装失败"
+                        };
+                        ui.label(egui::RichText::new(status_text).size(12.0));
+
+                        let log_h = 100.0;
+                        egui::ScrollArea::vertical()
+                            .max_height(log_h)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut state.git_install_log)
+                                        .desired_width(f32::INFINITY)
+                                        .font(egui::TextStyle::Monospace)
+                                        .interactive(false),
+                                );
+                            });
+                    }
                 }
                 AddDialogTab::Offline => {
                     // 选择压缩包按钮
@@ -764,7 +996,7 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
                         .filter(|p| p.valid == Some(true))
                         .count();
                     let can_confirm = match state.add_dialog_tab {
-                        AddDialogTab::Git => !state.git_url.trim().is_empty(),
+                        AddDialogTab::Git => !state.git_url.trim().is_empty() && !state.is_installing_git,
                         AddDialogTab::Offline => valid_count > 0 && !state.is_checking_offline,
                     };
                     if ui.add_enabled(can_confirm, egui::Button::new(lang::t("ext_add_confirm", lang))).clicked() {
@@ -802,8 +1034,8 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
                             }
                             }
                         } else {
-                            // Git 添加逻辑（TODO）
-                            state.show_add_dialog = false;
+                            // Git 添加
+                            start_git_install(state);
                         }
                     }
                 });
@@ -813,9 +1045,15 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
     if !was_open || !state.show_add_dialog {
         state.show_add_dialog = false;
         state.git_url.clear();
+        state.git_branches.clear();
+        state.git_error = None;
+        state.git_selected_branch.clear();
+        state.git_install_log.clear();
+        state.git_install_done = None;
         state.offline_packages.clear();
         state.overwrite_packages.clear();
         state.show_overwrite_confirm = false;
+        state.show_force_install = false;
         state.add_dialog_tab = AddDialogTab::Git;
     }
 }
@@ -863,6 +1101,46 @@ fn render_overwrite_confirm(ui: &mut egui::Ui, state: &mut ExtensionManageState,
     if !was_open {
         state.show_overwrite_confirm = false;
         state.overwrite_packages.clear();
+    }
+}
+
+// ============ 强制安装确认弹窗 ============
+
+fn render_force_install_confirm(ui: &mut egui::Ui, state: &mut ExtensionManageState, _lang: &Language) {
+    let mut was_open = true;
+
+    egui::Window::new("强制安装")
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([400.0, 180.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut was_open)
+        .show(ui.ctx(), |ui| {
+            ui.label("未检测到 manifest.json，该仓库可能不是有效的扩展仓库。");
+            ui.label("是否要强制安装？");
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("注意：强制安装可能安装无效的扩展").size(11.0).color(egui::Color32::YELLOW));
+
+            ui.add_space(12.0);
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("取消").clicked() {
+                        state.show_force_install = false;
+                    }
+                    ui.add_space(8.0);
+                    if ui.button("强制安装").clicked() {
+                        state.show_force_install = false;
+                        state.git_install_log = "强制安装中（跳过 manifest.json 检查）...".to_string();
+                        start_git_clone_thread(state);
+                    }
+                });
+            });
+        });
+
+    if !was_open {
+        state.show_force_install = false;
     }
 }
 
@@ -1091,6 +1369,291 @@ fn get_extension_name_from_zip(zip_path: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn fetch_git_branches(state: &mut ExtensionManageState) {
+    let url = state.git_url.trim().to_string();
+    if url.is_empty() {
+        return;
+    }
+
+    state.last_fetched_git_url = url.clone();
+    state.is_fetching_branches = true;
+    state.git_branches.clear();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.git_branches_rx = Some(rx);
+
+    let proxy_url = state.github_proxy_url.clone();
+    let proxy_enabled = state.github_proxy_enabled;
+    let orig_url = url.clone();
+
+    std::thread::spawn(move || {
+        let result = try_fetch_branches(&orig_url, &proxy_url, proxy_enabled);
+        let _ = tx.send(result);
+    });
+}
+
+fn try_fetch_branches(url: &str, proxy: &str, proxy_enabled: bool) -> (Vec<String>, Option<String>) {
+    fn run_ls_remote(target_url: &str) -> (Vec<String>, bool) {
+        let mut branches = Vec::new();
+        let output = std::process::Command::new("git")
+            .args(["ls-remote", "--heads", target_url])
+            .output();
+        match output {
+            Ok(o) if o.status.success() => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                for line in stdout.lines() {
+                    if let Some(pos) = line.find("refs/heads/") {
+                        let branch = line[pos + 11..].trim().to_string();
+                        if !branch.is_empty() && !branch.contains(' ') {
+                            branches.push(branch);
+                        }
+                    }
+                }
+                (branches, true)
+            }
+            _ => (branches, false),
+        }
+    }
+
+    // 尝试加速地址
+    let proxied_url = if proxy_enabled && !proxy.is_empty() {
+        apply_github_proxy(url, proxy)
+    } else {
+        String::new()
+    };
+    let is_proxied = !proxied_url.is_empty() && proxied_url != url;
+
+    if is_proxied {
+        let (branches, ok) = run_ls_remote(&proxied_url);
+        if ok && !branches.is_empty() {
+            return (branches, None);
+        }
+        // 回退到原始地址
+        let (branches, ok) = run_ls_remote(url);
+        if ok {
+            return (branches, None);
+        }
+    } else {
+        let (branches, ok) = run_ls_remote(url);
+        if ok {
+            return (branches, None);
+        }
+    }
+
+    (Vec::new(), Some("无法获取分支列表，请检查网络或仓库地址".to_string()))
+}
+
+fn apply_github_proxy(url: &str, proxy: &str) -> String {
+    if proxy.is_empty() {
+        return url.to_string();
+    }
+    let lower = url.to_lowercase();
+    if lower.contains("github.com") {
+        format!("{}/{}", proxy.trim_end_matches('/'), url)
+    } else {
+        url.to_string()
+    }
+}
+
+fn extract_repo_name(url: &str) -> String {
+    let url = url.trim_end_matches('/').trim_end_matches(".git");
+    url.rsplit('/').next().unwrap_or("extension").to_string()
+}
+
+fn try_git_clone(
+    tx: &std::sync::mpsc::Sender<String>,
+    branch: &str,
+    orig_url: &str,
+    proxied_url: Option<&str>,
+    proxy_display: &str,
+    dest: &Path,
+) -> Option<String> {
+    fn run_clone_streamed(
+        tx: &std::sync::mpsc::Sender<String>,
+        branch: &str,
+        url: &str,
+        dest: &Path,
+    ) -> bool {
+        let _ = tx.send(format!("git clone --branch {} \"{}\" \"{}\"", branch, url, dest.display()));
+
+        let mut child = match std::process::Command::new("git")
+            .args(["clone", "--progress", "--branch", branch, url, dest.to_str().unwrap_or(".")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = tx.send(format!("错误：无法执行 git - {}", e));
+                return false;
+            }
+        };
+
+        if let Some(stderr) = child.stderr.take() {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines() {
+                if let Ok(line) = line {
+                    let trimmed = line.trim().to_string();
+                    if !trimmed.is_empty() {
+                        let _ = tx.send(trimmed);
+                    }
+                }
+            }
+        } else {
+            let _ = tx.send("(git clone stderr not available)".to_string());
+        }
+
+        let success = child.wait().map(|s| s.success()).unwrap_or(false);
+        if !success {
+            let _ = tx.send(format!("git clone 退出码异常").to_string());
+        }
+        success
+    }
+
+    if let Some(proxy) = proxied_url {
+        let _ = tx.send(format!("已使用 Github加速地址：{}", proxy_display));
+        if run_clone_streamed(tx, branch, proxy, dest) {
+            return None;
+        }
+        let _ = tx.send("加速地址失败，回退到原始地址重试...".to_string());
+
+        if dest.exists() {
+            let _ = fs::remove_dir_all(dest);
+        }
+
+        if run_clone_streamed(tx, branch, orig_url, dest) {
+            return None;
+        }
+    } else {
+        if run_clone_streamed(tx, branch, orig_url, dest) {
+            return None;
+        }
+    }
+
+    Some("克隆失败，请检查网络或仓库地址".to_string())
+}
+
+fn start_git_install(state: &mut ExtensionManageState) {
+    let url = state.git_url.trim().to_string();
+    let branch = state.git_selected_branch.clone();
+    if url.is_empty() {
+        return;
+    }
+
+    // GitHub API 检查 manifest.json（异步）
+    let check_url = url.clone();
+    let check_branch = if branch.is_empty() { "HEAD".to_string() } else { branch.clone() };
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.manifest_check_rx = Some(rx);
+    state.is_installing_git = false; // 先不进入安装状态
+    state.git_install_log.clear();
+    state.git_install_done = None;
+    state.git_install_done_at = None;
+
+    // 保存参数用于后续克隆
+    state.force_install_url = url.clone();
+    state.force_install_branch = branch.clone();
+
+    std::thread::spawn(move || {
+        let found = check_manifest_via_api(&check_url, &check_branch);
+        let _ = tx.send(found);
+    });
+
+    // 日志提示
+    state.git_install_log = "正在通过 GitHub API 检查 manifest.json...".to_string();
+    state.is_installing_git = true; // 复用此标志来禁用 UI
+}
+
+fn start_git_clone_thread(state: &mut ExtensionManageState) {
+    // 防止重复启动
+    if state.git_install_rx.is_some() {
+        return;
+    }
+
+    let url = state.force_install_url.clone();
+    let branch = state.force_install_branch.clone();
+    if url.is_empty() {
+        return;
+    }
+
+    let proxy_url = state.github_proxy_url.clone();
+    let proxy_enabled = state.github_proxy_enabled;
+    let proxied_url = if proxy_enabled && !proxy_url.is_empty() {
+        let p = apply_github_proxy(&url, &proxy_url);
+        if p != url { Some(p) } else { None }
+    } else {
+        None
+    };
+
+    let repo_name = extract_repo_name(&url);
+    let base_path = utils::app_paths().sillytavern_dir();
+    let dest_dir = base_path
+        .join("public")
+        .join("scripts")
+        .join("extensions")
+        .join("third-party")
+        .join(&repo_name);
+
+    if dest_dir.exists() {
+        let _ = fs::remove_dir_all(&dest_dir);
+    }
+
+    state.is_installing_git = true;
+    state.git_install_done = None;
+    state.git_install_done_at = None;
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.git_install_rx = Some(rx);
+
+    let prompt_branch = if branch.is_empty() { "HEAD".to_string() } else { branch };
+
+    std::thread::spawn(move || {
+        let result = try_git_clone(
+            &tx, &prompt_branch, &url,
+            proxied_url.as_deref(), &proxy_url, &dest_dir,
+        );
+        if let Some(err) = result {
+            let _ = tx.send(err);
+            let _ = tx.send("__ERROR__".to_string());
+        } else {
+            let _ = tx.send("__DONE__".to_string());
+        }
+        // 确保所有消息已发送完毕
+        drop(tx);
+    });
+}
+
+fn check_manifest_via_api(url: &str, branch: &str) -> bool {
+    let url = url.trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = url.split('/').collect();
+    if parts.len() < 5 || !url.contains("github.com") {
+        return false;
+    }
+    let owner = parts[parts.len() - 2];
+    let repo = parts[parts.len() - 1];
+
+    let api_url = format!(
+        "https://api.github.com/repos/{}/{}/contents/manifest.json?ref={}",
+        owner, repo, branch
+    );
+
+    let client = match reqwest::blocking::Client::builder()
+        .user_agent("AstraBrew-Launcher")
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return true, // 网络问题，允许继续
+    };
+
+    match client.head(&api_url).send() {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            status == 200 || status == 302
+        }
+        Err(_) => true, // 网络问题，允许继续
+    }
 }
 
 fn install_all_packages(state: &mut ExtensionManageState, packages: &[OfflinePackage]) {
