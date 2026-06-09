@@ -50,6 +50,14 @@ pub enum AddDialogTab {
     Offline,
 }
 
+#[derive(Clone, Debug)]
+pub struct OfflinePackage {
+    pub path: String,
+    pub name: String,
+    pub valid: Option<bool>,
+    pub error: Option<String>,
+}
+
 pub struct ExtensionManageState {
     pub extensions: Vec<ExtensionInfo>,
     pub is_loading: bool,
@@ -58,12 +66,17 @@ pub struct ExtensionManageState {
     pub show_add_dialog: bool,
     pub add_dialog_tab: AddDialogTab,
     pub git_url: String,
-    pub offline_path: String,
+    pub offline_packages: Vec<OfflinePackage>,
+    offline_check_rx: Option<Receiver<Vec<(usize, bool, Option<String>)>>>,
+    pub is_checking_offline: bool,
     pub selected_extensions: HashSet<String>,
     pub current_page: usize,
     pub page_size: usize,
     pub batch_mode: bool,
     pub show_system_extensions: bool,
+    pub needs_refresh: bool,
+    pub show_overwrite_confirm: bool,
+    pub overwrite_packages: Vec<OfflinePackage>,
 }
 
 impl ExtensionManageState {
@@ -76,12 +89,17 @@ impl ExtensionManageState {
             show_add_dialog: false,
             add_dialog_tab: AddDialogTab::Git,
             git_url: String::new(),
-            offline_path: String::new(),
+            offline_packages: Vec::new(),
+            offline_check_rx: None,
+            is_checking_offline: false,
             selected_extensions: HashSet::new(),
             current_page: 0,
             page_size: 10,
             batch_mode: false,
             show_system_extensions: false,
+            needs_refresh: false,
+            show_overwrite_confirm: false,
+            overwrite_packages: Vec::new(),
         }
     }
 
@@ -147,12 +165,19 @@ impl ExtensionManageState {
     }
 
     fn parse_extension(dir: &Path, is_official: bool) -> Option<ExtensionInfo> {
-        let manifest_path = dir.join("manifest.json");
-        if !manifest_path.exists() {
-            return None;
-        }
+        let json_path = dir.join("manifest.json");
+        let disabled_path = dir.join("manifest.json.disable");
 
-        let content = fs::read_to_string(&manifest_path).ok()?;
+        // 根据实际文件判断启用状态：.json 存在 = 启用，.disable 存在 = 禁用
+        let (read_path, is_enabled) = if json_path.exists() {
+            (json_path, true)
+        } else if disabled_path.exists() {
+            (disabled_path, false)
+        } else {
+            return None;
+        };
+
+        let content = fs::read_to_string(&read_path).ok()?;
         let mut manifest: ExtensionManifest = serde_json::from_str(&content).unwrap_or_else(|_| ExtensionManifest {
             display_name: dir.file_name().unwrap_or_default().to_string_lossy().to_string(),
             home_page: String::new(),
@@ -181,7 +206,7 @@ impl ExtensionManageState {
             path: dir.to_path_buf(),
             manifest,
             is_official,
-            is_enabled: true, // 默认开启
+            is_enabled,
             modified_at,
         })
     }
@@ -201,6 +226,20 @@ impl ExtensionManageState {
                     }
                 }
                 self.rx = None;
+            }
+        }
+
+        // 轮询离线包检查结果
+        if let Some(rx) = &self.offline_check_rx {
+            if let Ok(results) = rx.try_recv() {
+                for (index, valid, error) in results {
+                    if let Some(pkg) = self.offline_packages.get_mut(index) {
+                        pkg.valid = Some(valid);
+                        pkg.error = error;
+                    }
+                }
+                self.is_checking_offline = false;
+                self.offline_check_rx = None;
             }
         }
     }
@@ -242,6 +281,25 @@ pub fn render(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Langua
     // ---- 工具栏 ----
     render_toolbar(ui, state, lang, &visible_indices);
     ui.add_space(4.0);
+
+    // ---- 添加扩展弹窗（必须在所有 return 之前，确保弹窗始终可响应） ----
+    render_add_dialog(ui, state, lang);
+
+    // ---- 覆盖确认弹窗 ----
+    if state.show_overwrite_confirm {
+        render_overwrite_confirm(ui, state, lang);
+    }
+
+    // 离线安装成功后触发刷新
+    if state.needs_refresh {
+        state.needs_refresh = false;
+        state.load_extensions(instance_path);
+    }
+
+    // 离线包检查中持续重绘
+    if state.is_checking_offline {
+        ui.ctx().request_repaint();
+    }
 
     if state.is_loading {
         ui.centered_and_justified(|ui| {
@@ -297,6 +355,8 @@ pub fn render(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Langua
     let pagination_height = if total_pages > 1 { 32.0 } else { 0.0 };
     let scroll_height = (ui.available_height() - pagination_height).max(0.0);
 
+    let mut needs_refresh = false;
+
     egui::ScrollArea::vertical()
         .max_height(scroll_height)
         .auto_shrink([false, true])
@@ -329,19 +389,22 @@ pub fn render(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Langua
                                     ui, &mut state.extensions[idx], item_width, lang,
                                     &mut state.selected_extensions,
                                     state.batch_mode,
+                                    &mut needs_refresh,
                                 );
                             }
                         });
                 });
         });
 
+    // 删除扩展后标记需要刷新
+    if needs_refresh {
+        state.needs_refresh = true;
+    }
+
     // ---- 底部分页栏 ----
     if total_pages > 1 {
         render_pagination_bar(ui, state, total_visible);
     }
-
-    // ---- 添加扩展弹窗 ----
-    render_add_dialog(ui, state, lang);
 }
 
 // ============ 工具栏 ============
@@ -376,7 +439,8 @@ fn render_toolbar(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &La
 
             if ui.add_enabled(has_selection, egui::Button::new(lang::t("ext_batch_disable", lang))).clicked() {
                 for ext in state.extensions.iter_mut() {
-                    if state.selected_extensions.contains(&ext.id) {
+                    if state.selected_extensions.contains(&ext.id) && !ext.is_official {
+                        set_extension_enabled(&ext.path, false);
                         ext.is_enabled = false;
                     }
                 }
@@ -384,7 +448,8 @@ fn render_toolbar(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &La
 
             if ui.add_enabled(has_selection, egui::Button::new(lang::t("ext_batch_enable", lang))).clicked() {
                 for ext in state.extensions.iter_mut() {
-                    if state.selected_extensions.contains(&ext.id) {
+                    if state.selected_extensions.contains(&ext.id) && !ext.is_official {
+                        set_extension_enabled(&ext.path, true);
                         ext.is_enabled = true;
                     }
                 }
@@ -417,7 +482,7 @@ fn render_toolbar(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &La
             if ui.button(format!(" {}  {}", icon, lang::t("ext_add_extension", lang))).clicked() {
                 state.show_add_dialog = true;
                 state.git_url.clear();
-                state.offline_path.clear();
+                state.offline_packages.clear();
                 state.add_dialog_tab = AddDialogTab::Git;
             }
         });
@@ -578,30 +643,109 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
                     );
                 }
                 AddDialogTab::Offline => {
-                    ui.label(lang::t("ext_add_offline_hint", lang));
-                    ui.add_space(4.0);
+                    // 选择压缩包按钮
                     ui.horizontal(|ui| {
                         if ui.button(lang::t("ext_browse", lang)).clicked() {
-                            let title = lang::t("dialog_select_folder", lang);
-                            let picked = rfd::FileDialog::new().set_title(title).pick_folder();
-                            if let Some(path) = picked {
-                                state.offline_path = path.to_string_lossy().to_string();
+                            let title = lang::t("ext_add_offline_hint", lang);
+                            let picked = rfd::FileDialog::new()
+                                .set_title(title)
+                                .add_filter("压缩包", &["zip"])
+                                .pick_files();
+                            if let Some(paths) = picked {
+                                for path in paths {
+                                    let name = path
+                                        .file_name()
+                                        .map(|n| n.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    state.offline_packages.push(OfflinePackage {
+                                        path: path.to_string_lossy().to_string(),
+                                        name,
+                                        valid: None,
+                                        error: None,
+                                    });
+                                }
+                                // 异步批量检查
+                                start_offline_check(state);
                             }
                         }
                         ui.add_space(6.0);
-                        if state.offline_path.is_empty() {
-                            ui.label(
-                                egui::RichText::new(lang::t("ext_add_offline_hint", lang))
-                                    .color(egui::Color32::GRAY)
-                                    .size(12.0),
-                            );
-                        } else {
-                            ui.label(
-                                egui::RichText::new(&state.offline_path)
-                                    .size(12.0),
-                            );
+                        if state.is_checking_offline {
+                            ui.spinner();
+                            ui.label("检查中...");
                         }
                     });
+
+                    ui.add_space(6.0);
+
+                    // 包列表 + 状态
+                    if state.offline_packages.is_empty() {
+                        ui.label(
+                            egui::RichText::new(lang::t("ext_add_offline_hint", lang))
+                                .color(egui::Color32::GRAY)
+                                .size(12.0),
+                        );
+                    } else {
+                        let max_h = 140.0;
+                        egui::ScrollArea::vertical()
+                            .max_height(max_h)
+                            .show(ui, |ui| {
+                                // 移除按钮用到的索引
+                                let mut to_remove = Vec::new();
+                                for (i, pkg) in state.offline_packages.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        // 状态图标
+                                        match pkg.valid {
+                                            Some(true) => {
+                                                ui.label(
+                                                    egui::RichText::new("✓")
+                                                        .color(egui::Color32::from_rgb(80, 220, 80))
+                                                        .size(14.0),
+                                                );
+                                            }
+                                            Some(false) => {
+                                                ui.label(
+                                                    egui::RichText::new("✗")
+                                                        .color(egui::Color32::RED)
+                                                        .size(14.0),
+                                                );
+                                            }
+                                            None => {
+                                                ui.add(
+                                                    egui::Spinner::new()
+                                                        .size(12.0),
+                                                );
+                                            }
+                                        }
+
+                                        // 文件名
+                                        ui.label(
+                                            egui::RichText::new(&pkg.name)
+                                                .size(12.0),
+                                        );
+
+                                        // 错误信息
+                                        if let Some(ref err) = pkg.error {
+                                            ui.label(
+                                                egui::RichText::new(err)
+                                                    .color(egui::Color32::RED)
+                                                    .size(11.0),
+                                            );
+                                        }
+
+                                        // 移除按钮
+                                        if pkg.valid.is_some() {
+                                            if ui.button("✕").clicked() {
+                                                to_remove.push(i);
+                                            }
+                                        }
+                                    });
+                                }
+                                // 从后往前移除
+                                for i in to_remove.iter().rev() {
+                                    state.offline_packages.remove(*i);
+                                }
+                            });
+                    }
                 }
             }
 
@@ -616,23 +760,358 @@ fn render_add_dialog(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: 
                     }
                     ui.add_space(8.0);
 
+                    let valid_count = state.offline_packages.iter()
+                        .filter(|p| p.valid == Some(true))
+                        .count();
                     let can_confirm = match state.add_dialog_tab {
                         AddDialogTab::Git => !state.git_url.trim().is_empty(),
-                        AddDialogTab::Offline => !state.offline_path.is_empty(),
+                        AddDialogTab::Offline => valid_count > 0 && !state.is_checking_offline,
                     };
                     if ui.add_enabled(can_confirm, egui::Button::new(lang::t("ext_add_confirm", lang))).clicked() {
-                        // TODO: 执行添加扩展逻辑
-                        state.show_add_dialog = false;
+                        if state.add_dialog_tab == AddDialogTab::Offline {
+                            // 收集有效包
+                            let valid_pkgs: Vec<OfflinePackage> = state.offline_packages.iter()
+                                .filter(|p| p.valid == Some(true))
+                                .cloned()
+                                .collect();
+
+                            if valid_pkgs.is_empty() {
+                                // 不应到达这里（can_confirm 已保证 valid_count > 0）
+                            } else {
+
+                            // 检查是否有重复的扩展（已存在于 third-party 目录）
+                            let base_path = utils::app_paths().sillytavern_dir();
+                            let third_party = base_path
+                                .join("public").join("scripts").join("extensions").join("third-party");
+                            let mut conflicts: Vec<String> = Vec::new();
+                            for pkg in &valid_pkgs {
+                                if let Some(name) = get_extension_name_from_zip(&pkg.path) {
+                                    if third_party.join(&name).exists() {
+                                        conflicts.push(name);
+                                    }
+                                }
+                            }
+
+                            if conflicts.is_empty() {
+                                // 无重复，直接安装
+                                install_all_packages(state, &valid_pkgs);
+                            } else {
+                                // 有重复，弹出覆盖确认
+                                state.overwrite_packages = valid_pkgs;
+                                state.show_overwrite_confirm = true;
+                            }
+                            }
+                        } else {
+                            // Git 添加逻辑（TODO）
+                            state.show_add_dialog = false;
+                        }
+                    }
+                });
+            });
+        });
+
+    if !was_open || !state.show_add_dialog {
+        state.show_add_dialog = false;
+        state.git_url.clear();
+        state.offline_packages.clear();
+        state.overwrite_packages.clear();
+        state.show_overwrite_confirm = false;
+        state.add_dialog_tab = AddDialogTab::Git;
+    }
+}
+
+// ============ 覆盖确认弹窗 ============
+
+fn render_overwrite_confirm(ui: &mut egui::Ui, state: &mut ExtensionManageState, lang: &Language) {
+    let mut was_open = true;
+
+    egui::Window::new(lang::t("ext_overwrite_title", lang))
+        .collapsible(false)
+        .resizable(false)
+        .fixed_size([420.0, 200.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .open(&mut was_open)
+        .show(ui.ctx(), |ui| {
+            ui.label(lang::t("ext_overwrite_msg", lang));
+            ui.add_space(8.0);
+
+            // 列出将要覆盖的扩展
+            for pkg in &state.overwrite_packages {
+                if let Some(name) = get_extension_name_from_zip(&pkg.path) {
+                    ui.label(egui::RichText::new(format!("  • {}", name)).size(12.0));
+                }
+            }
+
+            ui.add_space(12.0);
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(lang::t("ext_overwrite_cancel", lang)).clicked() {
+                        state.show_overwrite_confirm = false;
+                    }
+                    ui.add_space(8.0);
+                    if ui.button(lang::t("ext_overwrite_confirm", lang)).clicked() {
+                        let packages: Vec<_> = state.overwrite_packages.clone();
+                        install_all_packages(state, &packages);
+                        state.show_overwrite_confirm = false;
                     }
                 });
             });
         });
 
     if !was_open {
+        state.show_overwrite_confirm = false;
+        state.overwrite_packages.clear();
+    }
+}
+
+// ============ 离线包异步检查 ============
+
+fn start_offline_check(state: &mut ExtensionManageState) {
+    let packages: Vec<_> = state.offline_packages.iter()
+        .enumerate()
+        .filter(|(_, p)| p.valid.is_none())
+        .map(|(i, p)| (i, p.path.clone()))
+        .collect();
+
+    if packages.is_empty() {
+        return;
+    }
+
+    state.is_checking_offline = true;
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.offline_check_rx = Some(rx);
+
+    std::thread::spawn(move || {
+        let mut results = Vec::new();
+        for (index, path) in packages {
+            let (valid, error) = check_zip_contains_manifest(&path);
+            results.push((index, valid, error));
+        }
+        let _ = tx.send(results);
+    });
+}
+
+fn check_zip_contains_manifest(path: &str) -> (bool, Option<String>) {
+    let file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => return (false, Some(format!("无法打开: {}", e))),
+    };
+
+    let reader = std::io::BufReader::new(file);
+    let mut archive = match zip::ZipArchive::new(reader) {
+        Ok(a) => a,
+        Err(e) => return (false, Some(format!("无法解压: {}", e))),
+    };
+
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let name = entry.name();
+            let path = Path::new(name);
+            if path.file_name().map(|f| f == "manifest.json").unwrap_or(false) {
+                return (true, None);
+            }
+        }
+    }
+
+    (false, Some("未找到 manifest.json".to_string()))
+}
+
+// ============ 启用/禁用扩展 ============
+
+/// 通过重命名 manifest.json / manifest.json.disable 来控制扩展启用状态
+fn set_extension_enabled(dir: &Path, enabled: bool) {
+    let json_path = dir.join("manifest.json");
+    let disabled_path = dir.join("manifest.json.disable");
+
+    if enabled {
+        // 启用：manifest.json.disable → manifest.json
+        if disabled_path.exists() && !json_path.exists() {
+            let _ = fs::rename(&disabled_path, &json_path);
+        }
+    } else {
+        // 禁用：manifest.json → manifest.json.disable
+        if json_path.exists() {
+            let _ = fs::rename(&json_path, &disabled_path);
+        }
+    }
+}
+
+// ============ 离线安装扩展 ============
+
+fn install_offline_extension(zip_path: &str) -> Result<(), String> {
+    use std::io::Read;
+    use std::io::Write;
+
+    let zip_path = Path::new(zip_path);
+    let file = fs::File::open(zip_path)
+        .map_err(|e| format!("无法打开压缩包: {}", e))?;
+
+    let reader = std::io::BufReader::new(file);
+    let mut archive = zip::ZipArchive::new(reader)
+        .map_err(|e| format!("无法解压: {}", e))?;
+
+    // 查找 manifest.json，确定扩展名称
+    let mut extension_name: Option<String> = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)
+            .map_err(|e| format!("读取压缩包条目失败: {}", e))?;
+        let name = entry.name().to_string();
+
+        // 匹配根级别或一级子目录中的 manifest.json
+        let path = Path::new(&name);
+        if path.file_name().map(|f| f == "manifest.json").unwrap_or(false) {
+            // 确定扩展名称：
+            // 如果 manifest.json 在根级别 → 用压缩包文件名
+            // 如果在一级子目录里 → 用子目录名
+            extension_name = if let Some(parent) = path.parent() {
+                let parent_str = parent.to_string_lossy();
+                if parent_str.is_empty() || parent_str == "." || parent_str == "/" {
+                    // 根级别 manifest.json
+                    zip_path.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                } else {
+                    // 子目录中
+                    parent.iter().next()
+                        .map(|p| p.to_string_lossy().to_string())
+                }
+            } else {
+                zip_path.file_stem().map(|s| s.to_string_lossy().to_string())
+            };
+            break;
+        }
+    }
+
+    let ext_name = extension_name.ok_or("请选择正确的扩展压缩包，需包含 manifest.json".to_string())?;
+
+    // 确保名称合法（去掉路径分隔符）
+    let ext_name = ext_name.replace(['/', '\\'], "_").trim().to_string();
+    if ext_name.is_empty() {
+        return Err("无法确定扩展名称".to_string());
+    }
+
+    // 计算目标目录
+    let base_path = utils::app_paths().sillytavern_dir();
+    let third_party = base_path
+        .join("public")
+        .join("scripts")
+        .join("extensions")
+        .join("third-party");
+    let dest_dir = third_party.join(&ext_name);
+
+    // 已存在则先删除
+    if dest_dir.exists() {
+        fs::remove_dir_all(&dest_dir)
+            .map_err(|e| format!("无法删除旧版本: {}", e))?;
+    }
+    fs::create_dir_all(&dest_dir)
+        .map_err(|e| format!("无法创建扩展目录: {}", e))?;
+
+    // 确定 manifest.json 所在的前缀路径（需要去掉的公共前缀）
+    let mut common_prefix = String::new();
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let name = entry.name().to_string();
+            if name.ends_with("manifest.json") {
+                let p = Path::new(&name);
+                if let Some(parent) = p.parent() {
+                    common_prefix = parent.to_string_lossy().to_string();
+                    if common_prefix != "." && !common_prefix.is_empty() {
+                        if !common_prefix.ends_with('/') && !common_prefix.ends_with('\\') {
+                            common_prefix.push('/');
+                        }
+                    } else {
+                        common_prefix = String::new();
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    // 解压所有文件
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)
+            .map_err(|e| format!("读取条目失败: {}", e))?;
+        let name = entry.name().to_string();
+
+        // 计算相对路径（去掉公共前缀）
+        let relative = if name.starts_with(&common_prefix) && !common_prefix.is_empty() {
+            name[common_prefix.len()..].to_string()
+        } else {
+            name.clone()
+        };
+
+        if relative.is_empty() || relative == "." {
+            continue;
+        }
+
+        let target_path = dest_dir.join(&relative);
+
+        if entry.is_dir() {
+            fs::create_dir_all(&target_path).ok();
+        } else {
+            if let Some(parent) = target_path.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            let mut content = Vec::new();
+            entry.read_to_end(&mut content)
+                .map_err(|e| format!("读取文件失败: {}", e))?;
+            let mut out = fs::File::create(&target_path)
+                .map_err(|e| format!("创建文件失败: {}", e))?;
+            out.write_all(&content)
+                .map_err(|e| format!("写入文件失败: {}", e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn get_extension_name_from_zip(zip_path: &str) -> Option<String> {
+    let file = fs::File::open(zip_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let mut archive = zip::ZipArchive::new(reader).ok()?;
+
+    for i in 0..archive.len() {
+        if let Ok(entry) = archive.by_index(i) {
+            let name = entry.name().to_string();
+            let path = Path::new(&name);
+            if path.file_name().map(|f| f == "manifest.json").unwrap_or(false) {
+                if let Some(parent) = path.parent() {
+                    let parent_str = parent.to_string_lossy();
+                    if parent_str.is_empty() || parent_str == "." || parent_str == "/" {
+                        return Path::new(zip_path).file_stem().map(|s| s.to_string_lossy().to_string());
+                    } else {
+                        return parent.iter().next().map(|p| p.to_string_lossy().to_string());
+                    }
+                }
+                return Path::new(zip_path).file_stem().map(|s| s.to_string_lossy().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn install_all_packages(state: &mut ExtensionManageState, packages: &[OfflinePackage]) {
+    let mut all_ok = true;
+    for pkg in packages {
+        match install_offline_extension(&pkg.path) {
+            Ok(_) => {}
+            Err(err) => {
+                for p in &mut state.offline_packages {
+                    if p.path == pkg.path {
+                        p.error = Some(err);
+                        break;
+                    }
+                }
+                all_ok = false;
+            }
+        }
+    }
+    if all_ok {
         state.show_add_dialog = false;
-        state.git_url.clear();
-        state.offline_path.clear();
-        state.add_dialog_tab = AddDialogTab::Git;
+        state.needs_refresh = true;
     }
 }
 
@@ -645,6 +1124,7 @@ fn render_extension_card(
     lang: &Language,
     selected_extensions: &mut HashSet<String>,
     batch_mode: bool,
+    needs_refresh: &mut bool,
 ) {
     let is_selected = selected_extensions.contains(&ext.id);
 
@@ -700,10 +1180,16 @@ fn render_extension_card(
                             .size(14.0)
                     );
 
-                    // 靠右：按钮组 | 分割线 | 开关
+                    // 靠右：按钮组 | 分割线 | 开关（系统扩展不显示开关）
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // 开关
-                        ui.add(toggle(&mut ext.is_enabled));
+                        // 开关（系统扩展不可禁用）
+                        if !ext.is_official {
+                            let mut enabled = ext.is_enabled;
+                            if ui.add(toggle(&mut enabled)).changed() {
+                                set_extension_enabled(&ext.path, enabled);
+                                ext.is_enabled = enabled;
+                            }
+                        }
 
                         // 垂直分割线
                         ui.add(
@@ -724,7 +1210,8 @@ fn render_extension_card(
                                     egui::RichText::new(egui_phosphor::regular::TRASH).size(icon_size),
                                 ),
                             ).on_hover_text(lang::t("ext_delete", lang)).clicked() {
-                                // TODO: 删除扩展
+                                let _ = fs::remove_dir_all(&ext.path);
+                                *needs_refresh = true;
                             }
                         }
 
@@ -819,15 +1306,6 @@ fn render_extension_card(
                                 lang::t("off", lang)
                             };
                             ui.label(egui::RichText::new(text).size(12.0));
-                        }));
-                    }
-
-                    // 主页
-                    let hp = &ext.manifest.home_page;
-                    if !hp.is_empty() && hp != "https://github.com/SillyTavern/SillyTavern" && hp != "None" {
-                        let url = hp.clone();
-                        add_item(ui, lang::t("ext_homepage", lang), Box::new(move |ui| {
-                            ui.hyperlink_to(lang::t("ext_view", lang), url);
                         }));
                     }
 
