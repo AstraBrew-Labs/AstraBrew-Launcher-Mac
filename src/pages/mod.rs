@@ -1,4 +1,5 @@
 pub mod console;
+pub mod extensions;
 pub mod home;
 pub mod settings;
 pub mod tavern_config;

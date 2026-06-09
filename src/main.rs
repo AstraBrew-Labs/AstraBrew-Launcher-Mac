@@ -127,6 +127,8 @@ struct MyApp {
 
     // 版本管理状态
     version_manage_state: pages::version_manage::VersionManageState,
+    // 扩展管理状态
+    extension_manage_state: pages::extensions::ExtensionManageState,
     // 酒馆配置 UI 状态
     tavern_config_ui: TavernConfigUI,
     // 控制台状态
@@ -178,6 +180,7 @@ impl MyApp {
                 state.local_instances = pages::version_manage::load_local_instances();
                 state
             },
+            extension_manage_state: pages::extensions::ExtensionManageState::new(),
             tavern_config_ui: TavernConfigUI::new(
                 crate::core::settings::tavern::ConfigMode::Current,
                 None,
@@ -714,9 +717,21 @@ impl eframe::App for MyApp {
                     pages::version_manage::render(ui, &mut self.version_manage_state, &mut self.settings_state);
                 }
                 Page::ExtensionManage => {
-                    ui.heading(lang::t("extension_manage", &self.settings_state.language));
-                    ui.separator();
-                    ui.label("这里是扩展管理页面的内容...");
+                    let inst = self.settings_state.sillytavern.as_ref();
+                    let instance_path = inst.map(|i| {
+                        match i.instance_type.as_str() {
+                            "builtin" => crate::utils::app_paths().sillytavern_dir().to_string_lossy().to_string(),
+                            "local" => i.path.clone().unwrap_or_default(),
+                            _ => String::new(),
+                        }
+                    });
+                    
+                    // 如果扩展列表为空且没有在加载，触发一次加载
+                    if self.extension_manage_state.extensions.is_empty() && !self.extension_manage_state.is_loading {
+                        self.extension_manage_state.load_extensions(instance_path.as_deref());
+                    }
+
+                    pages::extensions::render(ui, &mut self.extension_manage_state, &self.settings_state.language, instance_path.as_deref());
                 }
                 Page::ResourceManage => {
                     ui.heading(lang::t("resource_manage", &self.settings_state.language));
