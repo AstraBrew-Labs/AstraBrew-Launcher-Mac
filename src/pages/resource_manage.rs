@@ -78,6 +78,7 @@ pub struct ResourceManageState {
     pub data_mode: TavernDataMode,
     // 详情弹窗
     pub selected_char_idx: Option<usize>,
+    pub worldbook_page: usize,
 }
 
 impl Default for ResourceManageState {
@@ -90,6 +91,7 @@ impl Default for ResourceManageState {
             instance_path: String::new(),
             data_mode: TavernDataMode::Current,
             selected_char_idx: None,
+            worldbook_page: 0,
         }
     }
 }
@@ -784,6 +786,7 @@ fn render_character_cards(
                             }
                             if let Some(idx) = to_select {
                                 state.selected_char_idx = Some(idx);
+                                state.worldbook_page = 0;
                             }
                         });
                 });
@@ -793,9 +796,11 @@ fn render_character_cards(
     if let Some(idx) = state.selected_char_idx {
         if idx < state.characters.len() {
             let card = state.characters[idx].clone();
-            let close = render_character_detail_popup(ui.ctx(), &card, language);
+            let close =
+                render_character_detail_popup(ui.ctx(), &card, language, &mut state.worldbook_page);
             if close {
                 state.selected_char_idx = None;
+                state.worldbook_page = 0;
             }
         } else {
             state.selected_char_idx = None;
@@ -901,10 +906,118 @@ fn render_info_row(ui: &mut egui::Ui, items: &[(&str, String)]) {
     });
 }
 
+/// 渲染世界书条目卡片
+fn render_world_entry_card(
+    ui: &mut egui::Ui,
+    entry: &WorldEntry,
+    language: &Language,
+    card_w: f32,
+    card_h: f32,
+) {
+    let (card_rect, _response) = ui.allocate_exact_size(
+        egui::vec2(card_w, card_h),
+        egui::Sense::hover(),
+    );
+
+    // 卡片背景
+    let bg = ui.visuals().faint_bg_color;
+    ui.painter().rect_filled(card_rect, 6.0, bg);
+
+    // 内边距
+    let inner_rect = card_rect.shrink(8.0);
+    let mut content_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    content_ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+
+    // 第一行：状态指示器 + 触发词
+    content_ui.horizontal(|ui| {
+        let status_color = if entry.enabled {
+            egui::Color32::from_rgb(80, 200, 80)
+        } else {
+            egui::Color32::GRAY
+        };
+        ui.label(egui::RichText::new("●").color(status_color).size(10.0));
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(lang::t("rm_detail_wb_keys", language))
+                .color(egui::Color32::GRAY)
+                .size(11.0),
+        );
+        if !entry.keys.is_empty() {
+            let keys_text = entry.keys.join(", ");
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.label(
+                egui::RichText::new(keys_text)
+                    .size(12.0)
+                    .strong(),
+            );
+        }
+    });
+
+    // 第二行：备注
+    if !entry.comment.is_empty() {
+        content_ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(lang::t("rm_detail_wb_comment", language))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+            ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            ui.label(
+                egui::RichText::new(&entry.comment)
+                    .size(11.0)
+                    .color(egui::Color32::from_gray(180)),
+            );
+        });
+    }
+
+    // 第三行起：内容（标签 + 可滚动文本区域）
+    if !entry.content.is_empty() {
+        content_ui.add_space(2.0);
+
+        // 内容标签
+        content_ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(lang::t("rm_detail_wb_content", language))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+        });
+
+        // 可滚动内容区域
+        let content_max_h = 60.0;
+        egui::ScrollArea::vertical()
+            .max_height(content_max_h)
+            .auto_shrink([false, true])
+            .show(&mut content_ui, |ui| {
+                ui.set_max_width(inner_rect.width() - 14.0);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                // 通过左边距实现缩进
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new(&entry.content)
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(200)),
+                    );
+                });
+            });
+    }
+}
+
 fn render_character_detail_popup(
     ctx: &egui::Context,
     card: &CharacterCardInfo,
     language: &Language,
+    worldbook_page: &mut usize,
 ) -> bool {
     let mut close = false;
 
@@ -1055,73 +1168,111 @@ fn render_character_detail_popup(
 
         match &card.world_info {
             Some(wb) => {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: {}",
-                        lang::t("rm_detail_wb_name", language),
-                        wb.name
-                    ))
-                    .size(13.0),
-                );
-                ui.add_space(4.0);
+                if wb.entries.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}: {}",
+                            lang::t("rm_detail_wb_name", language),
+                            wb.name
+                        ))
+                        .size(13.0),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(lang::t("rm_detail_no_worldbook", language))
+                            .color(egui::Color32::GRAY)
+                            .size(13.0),
+                    );
+                } else {
+                    let cols: usize = 2;
+                    let page_size = cols; // 每页 2 个条目（一行）
+                    let total_pages = (wb.entries.len() + page_size - 1) / page_size;
 
-                egui::ScrollArea::vertical()
-                    .max_height(180.0)
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        for entry in &wb.entries {
-                            let frame = egui::Frame::NONE
-                                .fill(ui.visuals().faint_bg_color)
-                                .corner_radius(4.0)
-                                .inner_margin(egui::Margin::symmetric(8, 6));
+                    // 超出范围时修正页码
+                    if *worldbook_page >= total_pages {
+                        *worldbook_page = total_pages.saturating_sub(1);
+                    }
 
-                            frame.show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let status_color = if entry.enabled {
-                                        egui::Color32::from_rgb(80, 200, 80)
-                                    } else {
-                                        egui::Color32::GRAY
-                                    };
-                                    ui.label(
-                                        egui::RichText::new("●").color(status_color).size(10.0),
-                                    );
+                    // 世界书名称 + 分页组件（同一行，分页靠右）
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}: {}",
+                                lang::t("rm_detail_wb_name", language),
+                                wb.name
+                            ))
+                            .size(13.0),
+                        );
 
-                                    if !entry.keys.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new(entry.keys.join(", "))
-                                                .size(12.0)
-                                                .strong(),
-                                        );
-                                    }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // 下一页按钮
+                            if ui
+                                .add_sized(
+                                    [22.0, 20.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("▶").size(12.0),
+                                    ),
+                                )
+                                .clicked()
+                                && *worldbook_page + 1 < total_pages
+                            {
+                                *worldbook_page += 1;
+                            }
 
-                                    if !entry.comment.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new(&entry.comment)
-                                                .size(11.0)
-                                                .color(egui::Color32::GRAY),
-                                        );
-                                    }
-                                });
+                            // 页数
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / {}",
+                                    *worldbook_page + 1,
+                                    total_pages
+                                ))
+                                .size(12.0),
+                            );
 
-                                if !entry.content.is_empty() {
-                                    ui.add_space(2.0);
-                                    let preview: String =
-                                        entry.content.chars().take(100).collect();
-                                    let preview = if entry.content.len() > 100 {
-                                        format!("{}...", preview)
-                                    } else {
-                                        preview
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(&preview)
-                                            .size(11.0)
-                                            .color(egui::Color32::from_gray(160)),
-                                    );
-                                }
-                            });
-                            ui.add_space(3.0);
-                        }
+                            // 上一页按钮
+                            if ui
+                                .add_sized(
+                                    [22.0, 20.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("◀").size(12.0),
+                                    ),
+                                )
+                                .clicked()
+                                && *worldbook_page > 0
+                            {
+                                *worldbook_page -= 1;
+                            }
+                        });
                     });
+
+                    ui.add_space(8.0);
+
+                    // 2 列网格，仅渲染当前页
+                    let available_w = ui.available_width();
+                    let grid_spacing = 10.0;
+                    let card_w = ((available_w - grid_spacing * (cols as f32 - 1.0))
+                        / cols as f32)
+                        .floor()
+                        .max(200.0);
+                    let card_h = 135.0;
+
+                    let start = *worldbook_page * page_size;
+                    let end = (start + page_size).min(wb.entries.len());
+
+                    egui::Grid::new("world_entries_grid")
+                        .spacing([grid_spacing, grid_spacing])
+                        .min_col_width(card_w)
+                        .max_col_width(card_w)
+                        .show(ui, |ui| {
+                            for (col, entry) in wb.entries[start..end].iter().enumerate() {
+                                ui.push_id(start + col, |ui| {
+                                    render_world_entry_card(
+                                        ui, entry, language, card_w, card_h,
+                                    );
+                                });
+                            }
+                        });
+                }
             }
             None => {
                 ui.add_space(16.0);

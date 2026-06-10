@@ -492,6 +492,9 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rm_detail_worldbook" => "Bound World Book",
         "rm_detail_wb_name" => "World Book Name",
         "rm_detail_no_worldbook" => "No world book bound to this character",
+        "rm_detail_wb_keys" => "Trigger Words",
+        "rm_detail_wb_content" => "Content",
+        "rm_detail_wb_comment" => "Comment",
 
         // File/Folder Dialogs
         "dialog_select_package_json" => "Select SillyTavern package.json",

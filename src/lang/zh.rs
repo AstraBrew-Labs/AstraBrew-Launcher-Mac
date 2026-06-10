@@ -492,6 +492,9 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rm_detail_worldbook" => "绑定世界书",
         "rm_detail_wb_name" => "世界书名称",
         "rm_detail_no_worldbook" => "当前角色卡未绑定世界书",
+        "rm_detail_wb_keys" => "触发词",
+        "rm_detail_wb_content" => "内容",
+        "rm_detail_wb_comment" => "备注",
 
         // 文件/文件夹对话框
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
