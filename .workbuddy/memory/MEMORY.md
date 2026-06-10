@@ -85,3 +85,15 @@
   - 酒馆配置模板：`data/default/sillytavern/config.yaml`（`tavern_template_file()`）
   - 本地实例列表：`root/data/local_instances.json`（`instances_file()`）
   - GitHub 缓存：`caches/github_proxy_cache.json`
+
+## 聊天记录管理页面（2026-06-11）
+- `src/pages/resource_manage.rs` 聊天记录 Tab 完整实现
+- 数据来源：`chats/{角色名}/*.jsonl`（独立/全局模式路径不同）
+- 文件命名格式：`角色名 - YYYY-M-D @HHh MMm SSs SSSms.jsonl`
+- `ChatFileInfo`：filename/filepath/display_time/sort_key
+- `ChatGroup`：folder_name/files/expanded/page
+- `ChatMessage`：name/is_user/send_date/content（解析自 jsonl 每行 JSON）
+- UI：`CollapsingHeader` 可折叠面板（标题=角色文件夹名），面板内 3 列网格，10条/页，新→旧排序
+- 点击文件日期 → 弹出聊天查看器（微信/QQ 风格气泡，用户右蓝/角色左灰，30条/页）
+- 新增翻译：`ch_viewer_title`, `ch_viewer_messages`
+- `CornerRadius` 字段类型是 `u8` 不是 `f32`

@@ -79,6 +79,38 @@ pub struct CharacterCardInfo {
 }
 
 // ============================================================================
+// 聊天记录数据结构
+// ============================================================================
+
+/// 单个聊天记录文件信息
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct ChatFileInfo {
+    pub filename: String,
+    pub filepath: PathBuf,
+    pub display_time: String, // "2023-5-12 @21h 32m 29s 224ms"
+    /// 排序用的时间戳 (毫秒级)，基于文件名解析
+    pub sort_key: u64,
+}
+
+/// 聊天记录分组 (每个角色文件夹)
+pub struct ChatGroup {
+    pub folder_name: String, // 文件夹名 = 角色名
+    pub files: Vec<ChatFileInfo>,
+    pub expanded: bool, // 折叠面板展开状态
+    pub page: usize,    // 当前页码 (0-based)
+}
+
+/// 单条聊天消息 (解析自 jsonl)
+#[derive(Clone)]
+pub struct ChatMessage {
+    pub name: String,
+    pub is_user: bool,
+    pub send_date: String,
+    pub content: String,
+}
+
+// ============================================================================
 // 页面状态
 // ============================================================================
 
@@ -92,6 +124,10 @@ pub struct ResourceManageState {
     pub world_books: Vec<WorldBookInfo>,
     pub world_books_loaded: bool,
     pub is_loading_wb: bool,
+    // 聊天记录
+    pub chat_groups: Vec<ChatGroup>,
+    pub chats_loaded: bool,
+    pub is_loading_chats: bool,
     // 实例信息
     pub instance_path: String,
     pub data_mode: TavernDataMode,
@@ -101,6 +137,10 @@ pub struct ResourceManageState {
     // 世界书详情弹窗
     pub selected_wb_idx: Option<usize>,
     pub wb_detail_page: usize,
+    // 聊天查看器弹窗
+    pub selected_chat_path: Option<(String, PathBuf)>, // (显示标题, 文件路径)
+    pub chat_messages: Vec<ChatMessage>,
+    pub chat_viewer_page: usize,
 }
 
 impl Default for ResourceManageState {
@@ -113,12 +153,18 @@ impl Default for ResourceManageState {
             world_books: Vec::new(),
             world_books_loaded: false,
             is_loading_wb: false,
+            chat_groups: Vec::new(),
+            chats_loaded: false,
+            is_loading_chats: false,
             instance_path: String::new(),
             data_mode: TavernDataMode::Current,
             selected_char_idx: None,
             worldbook_page: 0,
             selected_wb_idx: None,
             wb_detail_page: 0,
+            selected_chat_path: None,
+            chat_messages: Vec::new(),
+            chat_viewer_page: 0,
         }
     }
 }
@@ -431,6 +477,176 @@ impl ResourceManageState {
         self.is_loading_wb = false;
     }
 
+    /// 获取聊天记录目录路径
+    fn chats_dir(&self) -> Option<PathBuf> {
+        if self.instance_path.is_empty() {
+            return None;
+        }
+        match self.data_mode {
+            TavernDataMode::Current => Some(
+                PathBuf::from(&self.instance_path)
+                    .join("data")
+                    .join("default-user")
+                    .join("chats"),
+            ),
+            TavernDataMode::Global => Some(
+                utils::app_paths()
+                    .default_global_data_dir()
+                    .join("default-user")
+                    .join("chats"),
+            ),
+        }
+    }
+
+    /// 解析聊天记录文件名: "Seraphina - 2023-5-12 @21h 32m 29s 224ms.jsonl"
+    /// 返回 (角色名, 显示时间字符串, 排序键)
+    fn parse_chat_filename(filename: &str) -> Option<(String, String, u64)> {
+        let name = filename.strip_suffix(".jsonl")?;
+        // 按 " - " 分割一次
+        let sep_pos = name.find(" - ")?;
+        let char_name = name[..sep_pos].to_string();
+        let datetime_str = name[sep_pos + 3..].to_string();
+
+        // 解析日期时间用于排序
+        // 格式: "2023-5-12 @21h 32m 29s 224ms"
+        let sort_key = Self::parse_chat_datetime(&datetime_str)?;
+
+        Some((char_name, datetime_str, sort_key))
+    }
+
+    /// 解析 chat datetime 字符串为排序键 (毫秒级 Unix 时间戳近似值)
+    fn parse_chat_datetime(s: &str) -> Option<u64> {
+        // "2023-5-12 @21h 32m 29s 224ms"
+        let at_pos = s.find('@')?;
+        let date_part = s[..at_pos].trim(); // "2023-5-12"
+        let time_part = s[at_pos + 1..].trim(); // "21h 32m 29s 224ms"
+
+        // 解析日期: YYYY-M-D
+        let mut date_parts = date_part.split('-');
+        let year: u64 = date_parts.next()?.parse().ok()?;
+        let month: u64 = date_parts.next()?.parse().ok()?;
+        let day: u64 = date_parts.next()?.parse().ok()?;
+
+        // 解析时间: HHh MMm SSs SSSms
+        let time_part_clean = time_part
+            .replace("h ", " ")
+            .replace("m ", " ")
+            .replace("s ", " ")
+            .replace("ms", "");
+        let mut time_parts = time_part_clean.split_whitespace();
+        let hour: u64 = time_parts.next()?.parse().ok()?;
+        let minute: u64 = time_parts.next()?.parse().ok()?;
+        let second: u64 = time_parts.next()?.parse().ok()?;
+        let ms: u64 = time_parts.next().unwrap_or("0").parse().ok()?;
+
+        // 近似计算 (忽略闰年，仅用于排序)
+        let days_before_month: &[u64] = &[0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        let month_idx = (month as usize).saturating_sub(1).min(11);
+        let day_of_year = days_before_month[month_idx] + day - 1;
+        let total_days = (year - 1970) * 365 + day_of_year;
+
+        let total_seconds = total_days * 86400 + hour * 3600 + minute * 60 + second;
+        Some(total_seconds * 1000 + ms)
+    }
+
+    /// 加载聊天记录列表
+    pub fn load_chats(&mut self) {
+        if self.chats_loaded || self.is_loading_chats {
+            return;
+        }
+        self.is_loading_chats = true;
+        self.chat_groups.clear();
+
+        let dir = match self.chats_dir() {
+            Some(d) => d,
+            None => {
+                self.chats_loaded = true;
+                self.is_loading_chats = false;
+                return;
+            }
+        };
+
+        if !dir.exists() {
+            self.chats_loaded = true;
+            self.is_loading_chats = false;
+            return;
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => {
+                self.chats_loaded = true;
+                self.is_loading_chats = false;
+                return;
+            }
+        };
+
+        // 遍历角色文件夹
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let folder_name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let mut files = Vec::new();
+
+            // 读取文件夹内的 .jsonl 文件
+            if let Ok(file_entries) = fs::read_dir(&path) {
+                for fe in file_entries.flatten() {
+                    let fp = fe.path();
+                    if !fp.is_file() {
+                        continue;
+                    }
+                    let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext.to_lowercase() != "jsonl" {
+                        continue;
+                    }
+                    let fname = fp
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    if let Some((_char_name, display_time, sort_key)) =
+                        Self::parse_chat_filename(&fname)
+                    {
+                        files.push(ChatFileInfo {
+                            filename: fname,
+                            filepath: fp,
+                            display_time,
+                            sort_key,
+                        });
+                    }
+                }
+            }
+
+            if files.is_empty() {
+                continue;
+            }
+
+            // 按时间从新到旧排序
+            files.sort_by(|a, b| b.sort_key.cmp(&a.sort_key));
+
+            self.chat_groups.push(ChatGroup {
+                folder_name,
+                files,
+                expanded: false,
+                page: 0,
+            });
+        }
+
+        // 按文件夹名排序
+        self.chat_groups.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
+
+        self.chats_loaded = true;
+        self.is_loading_chats = false;
+    }
+
     /// 重新加载
     pub fn refresh(&mut self) {
         self.characters_loaded = false;
@@ -440,6 +656,10 @@ impl ResourceManageState {
         self.is_loading_wb = false;
         self.selected_wb_idx = None;
         self.wb_detail_page = 0;
+        self.chats_loaded = false;
+        self.is_loading_chats = false;
+        self.selected_chat_path = None;
+        self.chat_messages.clear();
     }
 }
 
@@ -914,7 +1134,7 @@ pub fn render(
     match state.tab {
         ResourceManageTab::CharacterCards => render_character_cards(ui, state, language),
         ResourceManageTab::WorldBooks => render_world_books(ui, state, language),
-        ResourceManageTab::ChatHistory => render_chat_history(ui, language),
+        ResourceManageTab::ChatHistory => render_chat_history(ui, state, language),
     }
 }
 
@@ -2016,14 +2236,30 @@ fn render_world_book_detail_popup(
 }
 
 // ============================================================================
-// 聊天记录管理 Tab (占位)
+// 聊天记录管理 Tab
 // ============================================================================
 
-fn render_chat_history(ui: &mut egui::Ui, language: &Language) {
+/// 每个折叠面板内的文件展示列数 / 每页条目数
+const CHAT_COLS: usize = 3;
+const CHAT_PAGE_SIZE: usize = 10; // 每页最多 10 个文件
+
+fn render_chat_history(
+    ui: &mut egui::Ui,
+    state: &mut ResourceManageState,
+    language: &Language,
+) {
+    state.load_chats();
+
+    // 计算总文件数
+    let total_files: usize = state.chat_groups.iter().map(|g| g.files.len()).sum();
+
+    // 顶部操作栏
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(lang::t("rm_count", language).replace("{n}", "0"))
-                .size(13.0),
+            egui::RichText::new(
+                lang::t("rm_count", language).replace("{n}", &total_files.to_string()),
+            )
+            .size(13.0),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
@@ -2033,16 +2269,570 @@ fn render_chat_history(ui: &mut egui::Ui, language: &Language) {
                         egui::RichText::new(lang::t("rm_refresh", language)).size(12.0),
                     ),
                 )
-                .clicked() {}
+                .clicked()
+            {
+                state.chats_loaded = false;
+                state.is_loading_chats = false;
+                state.selected_chat_path = None;
+                state.chat_messages.clear();
+            }
         });
     });
     ui.separator();
-    ui.add_space(40.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new(lang::t("rm_empty_chats", language))
-                .color(egui::Color32::GRAY)
-                .size(13.0),
+    ui.add_space(6.0);
+
+    // 加载中
+    if state.is_loading_chats {
+        ui.add_space(60.0);
+        ui.vertical_centered(|ui| {
+            ui.spinner();
+            ui.label(
+                egui::RichText::new(lang::t("rm_loading", language))
+                    .size(13.0)
+                    .color(egui::Color32::GRAY),
+            );
+        });
+        return;
+    }
+
+    // 空状态
+    if state.chat_groups.is_empty() {
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new(lang::t("rm_empty_chats", language))
+                    .color(egui::Color32::GRAY)
+                    .size(13.0),
+            );
+        });
+        return;
+    }
+
+    // 可滚动区域
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // 需要复制 groups 以避免借用冲突
+            let groups_snapshot: Vec<(String, Vec<ChatFileInfo>, bool, usize)> = state
+                .chat_groups
+                .iter()
+                .map(|g| {
+                    (
+                        g.folder_name.clone(),
+                        g.files.clone(),
+                        g.expanded,
+                        g.page,
+                    )
+                })
+                .collect();
+
+            let available_w = ui.available_width();
+
+            // 用于记录点击事件
+            let mut to_open: Option<(String, PathBuf)> = None;
+
+            for (group_idx, (folder_name, files, expanded_toggle, page)) in
+                groups_snapshot.iter().enumerate()
+            {
+                let header_id = ui.make_persistent_id(format!("chat_group_{}", folder_name));
+                let header = egui::CollapsingHeader::new(
+                    egui::RichText::new(folder_name.as_str()).size(15.0).strong(),
+                )
+                .default_open(*expanded_toggle)
+                .id_salt(header_id);
+
+                let header_response = header.show(ui, |ui| {
+                    let total_pages =
+                        (files.len() + CHAT_PAGE_SIZE - 1) / CHAT_PAGE_SIZE;
+                    let page = *page.min(&total_pages.saturating_sub(1));
+
+                    let start = page * CHAT_PAGE_SIZE;
+                    let end = (start + CHAT_PAGE_SIZE).min(files.len());
+                    let page_files = &files[start..end];
+
+                    let col_w = ((available_w - 24.0 - 8.0 * (CHAT_COLS as f32 - 1.0))
+                        / CHAT_COLS as f32)
+                        .floor()
+                        .max(100.0);
+
+                    // 3 列网格
+                    egui::Grid::new(format!("chat_grid_{}", folder_name))
+                        .spacing([8.0, 6.0])
+                        .min_col_width(col_w)
+                        .max_col_width(col_w)
+                        .show(ui, |ui| {
+                            for (col, file_info) in page_files.iter().enumerate() {
+                                if col > 0 && col % CHAT_COLS == 0 {
+                                    ui.end_row();
+                                }
+                                let clicked = render_chat_file_button(
+                                    ui,
+                                    &file_info.display_time,
+                                    col_w,
+                                );
+                                if clicked {
+                                    to_open = Some((
+                                        format!(
+                                            "{} - {}",
+                                            folder_name, file_info.display_time
+                                        ),
+                                        file_info.filepath.clone(),
+                                    ));
+                                }
+                            }
+                        });
+
+                    // 分页控件 (仅当超过一页时显示)
+                    if total_pages > 1 {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let prev_btn = egui::Button::new(
+                                        egui::RichText::new("\u{25C0}").size(12.0),
+                                    );
+                                    let next_btn = egui::Button::new(
+                                        egui::RichText::new("\u{25B6}").size(12.0),
+                                    );
+
+                                    if ui
+                                        .add_sized([24.0, 20.0], next_btn)
+                                        .clicked()
+                                        && page + 1 < total_pages
+                                    {
+                                        if group_idx < state.chat_groups.len() {
+                                            state.chat_groups[group_idx].page = page + 1;
+                                        }
+                                    }
+
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} / {}",
+                                            page + 1,
+                                            total_pages
+                                        ))
+                                        .size(12.0),
+                                    );
+
+                                    if ui
+                                        .add_sized([24.0, 20.0], prev_btn)
+                                        .clicked()
+                                        && page > 0
+                                    {
+                                        if group_idx < state.chat_groups.len() {
+                                            state.chat_groups[group_idx].page = page - 1;
+                                        }
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+
+                // 同步折叠状态
+                if header_response.fully_open() != *expanded_toggle {
+                    if group_idx < state.chat_groups.len() {
+                        state.chat_groups[group_idx].expanded =
+                            header_response.fully_open();
+                    }
+                }
+            }
+
+            // 处理点击打开弹窗
+            if let Some((title, path)) = to_open {
+                state.selected_chat_path = Some((title, path));
+                state.chat_messages.clear();
+                state.chat_viewer_page = 0;
+            }
+        });
+
+    // 聊天查看器弹窗
+    if let Some((ref title, ref path)) = state.selected_chat_path.clone() {
+        let close = render_chat_viewer(
+            ui.ctx(),
+            title,
+            path,
+            state,
+            language,
         );
-    });
+        if close {
+            state.selected_chat_path = None;
+            state.chat_messages.clear();
+        }
+    }
+}
+
+/// 单个聊天文件按钮 (显示时间)，返回是否被点击
+fn render_chat_file_button(ui: &mut egui::Ui, display_time: &str, btn_w: f32) -> bool {
+    let btn_h = 28.0;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(btn_w, btn_h),
+        egui::Sense::click(),
+    );
+
+    let bg = if response.hovered() {
+        ui.visuals().selection.bg_fill
+    } else {
+        ui.visuals().faint_bg_color
+    };
+    let corner_r = 4.0;
+    ui.painter().rect_filled(rect, corner_r, bg);
+
+    // 图标 + 文字居中
+    let text_pos = rect.center();
+    let galley = ui.painter().layout_no_wrap(
+        format!("\u{1F4AC} {}", display_time),
+        egui::FontId::proportional(12.0),
+        ui.visuals().text_color(),
+    );
+    ui.painter().galley(
+        egui::pos2(
+            rect.min.x + (btn_w - galley.size().x).max(0.0) / 2.0,
+            text_pos.y - galley.size().y / 2.0,
+        ),
+        galley,
+        egui::Color32::PLACEHOLDER,
+    );
+
+    response.clicked()
+}
+
+// ============================================================================
+// 聊天查看器弹窗 — 微信/QQ 风格聊天界面
+// ============================================================================
+
+const CHAT_VIEWER_PAGE_SIZE: usize = 30; // 每页最多 30 条消息
+
+fn load_chat_messages(path: &PathBuf) -> Vec<ChatMessage> {
+    let data = match fs::read_to_string(path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut messages = Vec::new();
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let obj = match parsed.as_object() {
+            Some(o) => o,
+            None => continue,
+        };
+
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let is_user = obj
+            .get("is_user")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let send_date = obj
+            .get("send_date")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let content = obj
+            .get("mes")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if content.is_empty() {
+            continue;
+        }
+
+        messages.push(ChatMessage {
+            name,
+            is_user,
+            send_date,
+            content,
+        });
+    }
+
+    messages
+}
+
+fn render_chat_viewer(
+    ctx: &egui::Context,
+    title: &str,
+    path: &PathBuf,
+    state: &mut ResourceManageState,
+    language: &Language,
+) -> bool {
+    let mut close = false;
+
+    // 延迟加载消息内容
+    if state.chat_messages.is_empty() {
+        state.chat_messages = load_chat_messages(path);
+    }
+
+    let total_messages = state.chat_messages.len();
+    let total_pages = (total_messages + CHAT_VIEWER_PAGE_SIZE - 1) / CHAT_VIEWER_PAGE_SIZE;
+
+    // 修正越界页码
+    if state.chat_viewer_page >= total_pages {
+        state.chat_viewer_page = total_pages.saturating_sub(1);
+    }
+
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([620.0, 520.0])
+        .min_size([400.0, 320.0])
+        .show(ctx, |ui| {
+            // 顶部标题栏
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ch_viewer_title", language))
+                        .size(14.0)
+                        .strong(),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} {}",
+                                total_messages,
+                                lang::t("ch_viewer_messages", language)
+                            ))
+                            .size(11.0)
+                            .color(egui::Color32::GRAY),
+                        );
+                    },
+                );
+            });
+            ui.separator();
+            ui.add_space(4.0);
+
+            // 分页 (顶部)
+            if total_pages > 1 {
+                ui.horizontal(|ui| {
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add_sized(
+                                    [22.0, 20.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{25B6}").size(12.0),
+                                    ),
+                                )
+                                .clicked()
+                                && state.chat_viewer_page + 1 < total_pages
+                            {
+                                state.chat_viewer_page += 1;
+                            }
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / {}",
+                                    state.chat_viewer_page + 1,
+                                    total_pages
+                                ))
+                                .size(12.0),
+                            );
+                            if ui
+                                .add_sized(
+                                    [22.0, 20.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("\u{25C0}").size(12.0),
+                                    ),
+                                )
+                                .clicked()
+                                && state.chat_viewer_page > 0
+                            {
+                                state.chat_viewer_page -= 1;
+                            }
+                        },
+                    );
+                });
+                ui.add_space(4.0);
+            }
+
+            // 消息区域
+            let msg_area_available = ui.available_height() - 40.0;
+
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(msg_area_available)
+                .show(ui, |ui| {
+                    let start = state.chat_viewer_page * CHAT_VIEWER_PAGE_SIZE;
+                    let end = (start + CHAT_VIEWER_PAGE_SIZE).min(total_messages);
+                    let page_messages = &state.chat_messages[start..end];
+
+                    let avail_w = ui.available_width();
+                    let max_bubble_w = (avail_w * 0.7).max(200.0);
+
+                    for msg in page_messages {
+                        render_chat_bubble(ui, msg, max_bubble_w);
+                    }
+                });
+
+            // 底部关闭按钮
+            ui.add_space(8.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                if ui.button(lang::t("rm_close", language)).clicked() {
+                    close = true;
+                }
+            });
+        });
+
+    close
+}
+
+/// 渲染单条聊天气泡
+fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32) {
+    let is_user = msg.is_user;
+    let avail_w = ui.available_width();
+    let bubble_max_w = max_bubble_w.min(avail_w - 48.0);
+    let pad_x: f32 = 10.0;
+    let pad_y: f32 = 8.0;
+
+    let bubble_bg = if is_user {
+        egui::Color32::from_rgb(70, 140, 255)
+    } else {
+        ui.visuals().faint_bg_color
+    };
+    let text_color = if is_user {
+        egui::Color32::WHITE
+    } else {
+        ui.visuals().text_color()
+    };
+    let time_color = if is_user {
+        egui::Color32::from_rgba_premultiplied(255, 255, 255, 160)
+    } else {
+        egui::Color32::GRAY
+    };
+
+    // 简洁时间
+    let time_str = if msg.send_date.is_empty() {
+        String::new()
+    } else if let Some(at_pos) = msg.send_date.find('@') {
+        msg.send_date[at_pos + 1..].trim().to_string()
+    } else {
+        msg.send_date.clone()
+    };
+
+    // 预布局文本
+    let galley = ui.painter().layout(
+        msg.content.clone(),
+        egui::FontId::proportional(13.0),
+        text_color,
+        bubble_max_w - pad_x * 2.0,
+    );
+
+    let text_content_w = galley.size().x; // 实际文本宽
+    let text_content_h = galley.size().y;
+
+    let time_w = if time_str.is_empty() {
+        0.0
+    } else {
+        ui.painter()
+            .layout_no_wrap(
+                time_str.clone(),
+                egui::FontId::proportional(9.0),
+                time_color,
+            )
+            .size()
+            .x
+    };
+
+    // 气泡内容宽度 = max(文本, 时间) + 内边距
+    let content_w = (text_content_w.max(time_w) + pad_x * 2.0).max(60.0);
+
+    if is_user {
+        // 用户消息 — 手动绘制精确气泡，右对齐
+        let time_h: f32 = if time_str.is_empty() { 0.0 } else { 18.0 };
+        let bubble_h = text_content_h + pad_y * 2.0 + time_h + 4.0;
+        let row_h = bubble_h + 6.0;
+        let bubble_x = avail_w - content_w - 8.0;
+
+        let (alloc_rect, _) =
+            ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::hover());
+
+        let bubble_rect = egui::Rect::from_min_size(
+            egui::pos2(bubble_x, alloc_rect.min.y),
+            egui::vec2(content_w, bubble_h),
+        );
+
+        let painter = ui.painter();
+        painter.rect_filled(
+            bubble_rect,
+            egui::CornerRadius { nw: 12, ne: 12, sw: 12, se: 2 },
+            bubble_bg,
+        );
+
+        // 文本
+        painter.galley(
+            egui::pos2(bubble_rect.min.x + pad_x, bubble_rect.min.y + pad_y),
+            galley,
+            egui::Color32::PLACEHOLDER,
+        );
+
+        // 时间
+        if time_h > 0.0 {
+            let time_galley = ui.painter().layout_no_wrap(
+                time_str,
+                egui::FontId::proportional(9.0),
+                time_color,
+            );
+            painter.galley(
+                egui::pos2(
+                    bubble_rect.max.x - time_galley.size().x - pad_x,
+                    bubble_rect.max.y - time_galley.size().y - 4.0,
+                ),
+                time_galley,
+                egui::Color32::PLACEHOLDER,
+            );
+        }
+    } else {
+        // 角色消息 — Frame 左对齐，自适应内容宽度
+        ui.horizontal(|ui| {
+            ui.add_sized([32.0, 1.0], egui::Label::new(""));
+            ui.vertical(|ui| {
+                if !msg.name.is_empty() {
+                    ui.label(
+                        egui::RichText::new(&msg.name)
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(100, 180, 255)),
+                    );
+                }
+                egui::Frame::new()
+                    .fill(bubble_bg)
+                    .corner_radius(egui::CornerRadius { nw: 12, ne: 12, sw: 2, se: 12 })
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_max_width(bubble_max_w);
+                        ui.label(
+                            egui::RichText::new(&msg.content)
+                                .size(13.0)
+                                .color(text_color),
+                        );
+                        if !time_str.is_empty() {
+                            ui.add_space(2.0);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(&time_str)
+                                            .size(9.0)
+                                            .color(time_color),
+                                    );
+                                },
+                            );
+                        }
+                    });
+            });
+        });
+    }
+
+    ui.add_space(4.0);
 }

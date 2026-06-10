@@ -504,6 +504,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "wb_entry_count" => "{n} 个条目",
         "wb_scroll_entries" => "更多条目请滚动查看",
 
+        // 聊天记录
+        "ch_viewer_title" => "聊天记录查看",
+        "ch_viewer_messages" => "条消息",
+
         // 文件/文件夹对话框
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
         "dialog_select_folder" => "选择文件夹",

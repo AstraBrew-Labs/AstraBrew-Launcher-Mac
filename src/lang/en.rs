@@ -504,6 +504,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "wb_entry_count" => "{n} entries",
         "wb_scroll_entries" => "Scroll to see more entries",
 
+        // Chat History
+        "ch_viewer_title" => "Chat History",
+        "ch_viewer_messages" => "messages",
+
         // File/Folder Dialogs
         "dialog_select_package_json" => "Select SillyTavern package.json",
         "dialog_select_folder" => "Select Folder",
