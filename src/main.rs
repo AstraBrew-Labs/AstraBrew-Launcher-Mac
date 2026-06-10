@@ -66,6 +66,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             setup_fonts(&cc.egui_ctx);
+            // 安装图像加载器，支持 PNG/JPEG/GIF 等格式
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             Ok(Box::new(MyApp::new(settings)))
         }),
     )
@@ -116,6 +118,7 @@ mod utils;
 use core::desktop_webview::DesktopWebView;
 use pages::console::ConsoleState;
 use pages::settings::{SettingsState, SettingsTab, StartMode, Theme};
+use pages::resource_manage::ResourceManageState;
 use pages::tavern_config::TavernConfigUI;
 
 struct MyApp {
@@ -133,6 +136,8 @@ struct MyApp {
     tavern_config_ui: TavernConfigUI,
     // 控制台状态
     console_state: ConsoleState,
+    // 资源管理状态
+    resource_manage_state: ResourceManageState,
     // brew 任务状态
     homebrew_update_state: pages::settings::BrewTaskState,
     git_install_state: pages::settings::BrewTaskState,
@@ -187,6 +192,7 @@ impl MyApp {
                 global_data_path,
             ),
             console_state: ConsoleState::new(),
+            resource_manage_state: ResourceManageState::new(),
             homebrew_update_state: pages::settings::BrewTaskState::new(),
             git_install_state: pages::settings::BrewTaskState::new(),
             nodejs_install_state: pages::settings::BrewTaskState::new(),
@@ -738,9 +744,24 @@ impl eframe::App for MyApp {
                     pages::extensions::render(ui, &mut self.extension_manage_state, &self.settings_state.language, instance_path.as_deref());
                 }
                 Page::ResourceManage => {
-                    ui.heading(lang::t("resource_manage", &self.settings_state.language));
-                    ui.separator();
-                    ui.label("这里是资源管理页面的内容...");
+                    let inst = self.settings_state.sillytavern.as_ref();
+                    let instance_path = inst.map(|i| {
+                        match i.instance_type.as_str() {
+                            "builtin" => crate::utils::app_paths().sillytavern_dir().to_string_lossy().to_string(),
+                            "local" => i.path.clone().unwrap_or_default(),
+                            _ => String::new(),
+                        }
+                    }).unwrap_or_default();
+
+                    self.resource_manage_state.instance_path = instance_path;
+                    self.resource_manage_state.data_mode = self.settings_state.data_mode.clone();
+
+                    // 如果角色卡列表为空且没在加载，触发自动加载
+                    if self.resource_manage_state.characters.is_empty() && !self.resource_manage_state.is_loading {
+                        self.resource_manage_state.characters_loaded = false;
+                    }
+
+                    pages::resource_manage::render(ui, &mut self.resource_manage_state, &self.settings_state.language);
                 }
                 Page::Console => {
                     pages::console::render(ui, &mut self.console_state, &self.settings_state.language);
