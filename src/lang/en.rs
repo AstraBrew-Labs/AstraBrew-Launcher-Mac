@@ -496,6 +496,14 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rm_detail_wb_content" => "Content",
         "rm_detail_wb_comment" => "Comment",
 
+        // World Book Management
+        "wb_detail_title" => "World Book Detail",
+        "wb_click_detail" => "Click to view entries",
+        "wb_author" => "Author",
+        "wb_created" => "Created",
+        "wb_entry_count" => "{n} entries",
+        "wb_scroll_entries" => "Scroll to see more entries",
+
         // File/Folder Dialogs
         "dialog_select_package_json" => "Select SillyTavern package.json",
         "dialog_select_folder" => "Select Folder",

@@ -496,6 +496,14 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rm_detail_wb_content" => "内容",
         "rm_detail_wb_comment" => "备注",
 
+        // 世界书管理
+        "wb_detail_title" => "世界书详情",
+        "wb_click_detail" => "点击查看条目",
+        "wb_author" => "作者",
+        "wb_created" => "创建时间",
+        "wb_entry_count" => "{n} 个条目",
+        "wb_scroll_entries" => "更多条目请滚动查看",
+
         // 文件/文件夹对话框
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
         "dialog_select_folder" => "选择文件夹",

@@ -760,6 +760,10 @@ impl eframe::App for MyApp {
                     if self.resource_manage_state.characters.is_empty() && !self.resource_manage_state.is_loading {
                         self.resource_manage_state.characters_loaded = false;
                     }
+                    // 如果世界书列表为空且没在加载，触发自动加载
+                    if self.resource_manage_state.world_books.is_empty() && !self.resource_manage_state.is_loading_wb {
+                        self.resource_manage_state.world_books_loaded = false;
+                    }
 
                     pages::resource_manage::render(ui, &mut self.resource_manage_state, &self.settings_state.language);
                 }

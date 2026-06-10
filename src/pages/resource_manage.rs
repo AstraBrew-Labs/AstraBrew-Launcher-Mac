@@ -39,6 +39,21 @@ pub struct EmbeddedWorldInfo {
     pub entries: Vec<WorldEntry>,
 }
 
+/// 独立世界书信息
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct WorldBookInfo {
+    pub filename: String,
+    pub filepath: PathBuf,
+    pub name: String,
+    pub author: String,
+    pub created_secs: u64,
+    pub entry_count: usize,
+    pub entries: Vec<WorldEntry>,
+    pub file_size: u64,
+    pub modified_secs: u64,
+}
+
 /// 角色卡完整信息
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -73,12 +88,19 @@ pub struct ResourceManageState {
     pub characters: Vec<CharacterCardInfo>,
     pub characters_loaded: bool,
     pub is_loading: bool,
+    // 世界书
+    pub world_books: Vec<WorldBookInfo>,
+    pub world_books_loaded: bool,
+    pub is_loading_wb: bool,
     // 实例信息
     pub instance_path: String,
     pub data_mode: TavernDataMode,
     // 详情弹窗
     pub selected_char_idx: Option<usize>,
     pub worldbook_page: usize,
+    // 世界书详情弹窗
+    pub selected_wb_idx: Option<usize>,
+    pub wb_detail_page: usize,
 }
 
 impl Default for ResourceManageState {
@@ -88,10 +110,15 @@ impl Default for ResourceManageState {
             characters: Vec::new(),
             characters_loaded: false,
             is_loading: false,
+            world_books: Vec::new(),
+            world_books_loaded: false,
+            is_loading_wb: false,
             instance_path: String::new(),
             data_mode: TavernDataMode::Current,
             selected_char_idx: None,
             worldbook_page: 0,
+            selected_wb_idx: None,
+            wb_detail_page: 0,
         }
     }
 }
@@ -240,11 +267,179 @@ impl ResourceManageState {
         self.is_loading = false;
     }
 
+    /// 获取世界书目录路径
+    pub fn worlds_dir(&self) -> Option<PathBuf> {
+        if self.instance_path.is_empty() {
+            return None;
+        }
+        match self.data_mode {
+            TavernDataMode::Current => Some(
+                PathBuf::from(&self.instance_path)
+                    .join("data")
+                    .join("default-user")
+                    .join("worlds"),
+            ),
+            TavernDataMode::Global => Some(
+                utils::app_paths()
+                    .default_global_data_dir()
+                    .join("default-user")
+                    .join("worlds"),
+            ),
+        }
+    }
+
+    /// 加载世界书列表
+    pub fn load_world_books(&mut self) {
+        if self.world_books_loaded || self.is_loading_wb {
+            return;
+        }
+        self.is_loading_wb = true;
+        self.world_books.clear();
+
+        let dir = match self.worlds_dir() {
+            Some(d) => d,
+            None => {
+                self.world_books_loaded = true;
+                self.is_loading_wb = false;
+                return;
+            }
+        };
+
+        if !dir.exists() {
+            self.world_books_loaded = true;
+            self.is_loading_wb = false;
+            return;
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => {
+                self.world_books_loaded = true;
+                self.is_loading_wb = false;
+                return;
+            }
+        };
+
+        let mut books = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.to_lowercase() != "json" {
+                continue;
+            }
+
+            let meta = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let file_size = meta.len();
+            let modified_secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            // 从 JSON 解析世界书
+            let data = match fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let parsed: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let obj = match parsed.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let name = obj
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let author = obj
+                .get("author")
+                .or_else(|| obj.get("creator"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let created_secs = obj
+                .get("createdAt")
+                .or_else(|| obj.get("created"))
+                .or_else(|| obj.get("created_at"))
+                .and_then(|v| v.as_u64().or_else(|| v.as_f64().map(|f| f as u64)))
+                .unwrap_or(modified_secs);
+
+            // entries: 可能是数组或对象（ID-keyed）
+            let entries_val = obj.get("entries");
+            let parsed_entries: Vec<WorldEntry> = match entries_val {
+                Some(serde_json::Value::Array(arr)) => arr
+                    .iter()
+                    .filter_map(|e| e.as_object())
+                    .map(|e| parse_world_book_entry(e))
+                    .collect(),
+                Some(serde_json::Value::Object(map)) => map
+                    .values()
+                    .filter_map(|v| v.as_object())
+                    .map(|e| parse_world_book_entry(e))
+                    .collect(),
+                _ => Vec::new(),
+            };
+
+            let display_name = if name.is_empty() {
+                path.file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string()
+            } else {
+                name
+            };
+
+            books.push(WorldBookInfo {
+                filename,
+                filepath: path,
+                name: display_name,
+                author,
+                created_secs,
+                entry_count: parsed_entries.len(),
+                entries: parsed_entries,
+                file_size,
+                modified_secs,
+            });
+        }
+
+        // 按修改时间倒序
+        books.sort_by(|a, b| b.modified_secs.cmp(&a.modified_secs));
+
+        self.world_books = books;
+        self.world_books_loaded = true;
+        self.is_loading_wb = false;
+    }
+
     /// 重新加载
     pub fn refresh(&mut self) {
         self.characters_loaded = false;
         self.is_loading = false;
         self.selected_char_idx = None;
+        self.world_books_loaded = false;
+        self.is_loading_wb = false;
+        self.selected_wb_idx = None;
+        self.wb_detail_page = 0;
     }
 }
 
@@ -528,6 +723,65 @@ fn extract_world_book(parsed: &serde_json::Value) -> Option<EmbeddedWorldInfo> {
     })
 }
 
+/// 从 JSON 对象解析世界书条目（同时支持 keys/key/disable/enabled）
+fn parse_world_book_entry(obj: &serde_json::Map<String, serde_json::Value>) -> WorldEntry {
+    // 触发词：支持 "keys"（数组）和 "key"或"primaryKeys"（单个字符串解析为数组）
+    let keys: Vec<String> = obj
+        .get("keys")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .or_else(|| {
+            obj.get("key").or_else(|| obj.get("primaryKeys")).map(|v| {
+                if let Some(arr) = v.as_array() {
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                        .collect()
+                } else if let Some(s) = v.as_str() {
+                    s.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            })
+        })
+        .unwrap_or_default();
+
+    let content = obj
+        .get("content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let comment = obj
+        .get("comment")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let enabled = obj
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .or_else(|| {
+            obj.get("disable")
+                .and_then(|v| v.as_bool())
+                .map(|d| !d)
+        })
+        .unwrap_or(true);
+
+    WorldEntry {
+        keys,
+        content,
+        comment,
+        enabled,
+    }
+}
+
 /// Base64 解码并解析为 JSON
 fn decode_base64_to_json(input: &str) -> Result<serde_json::Value, ()> {
     let cleaned: String = input.chars().filter(|c| !c.is_whitespace()).collect();
@@ -659,7 +913,7 @@ pub fn render(
 
     match state.tab {
         ResourceManageTab::CharacterCards => render_character_cards(ui, state, language),
-        ResourceManageTab::WorldBooks => render_world_books(ui, language),
+        ResourceManageTab::WorldBooks => render_world_books(ui, state, language),
         ResourceManageTab::ChatHistory => render_chat_history(ui, language),
     }
 }
@@ -1299,25 +1553,32 @@ fn render_character_detail_popup(
 }
 
 // ============================================================================
-// 世界书管理 Tab (占位)
+// 世界书管理 Tab — 3 列卡片网格
 // ============================================================================
 
-fn render_world_books(ui: &mut egui::Ui, language: &Language) {
+const WB_CARD_COLUMNS: usize = 3;
+const WB_CARD_SPACING: f32 = 12.0;
+const WB_CARD_HEIGHT: f32 = 120.0;
+const WB_CARD_NAME_HEIGHT: f32 = 56.0;
+const WB_CARD_INFO_HEIGHT: f32 = 56.0;
+
+fn render_world_books(
+    ui: &mut egui::Ui,
+    state: &mut ResourceManageState,
+    language: &Language,
+) {
+    state.load_world_books();
+
+    // 顶部操作栏
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(lang::t("rm_count", language).replace("{n}", "0"))
-                .size(13.0),
+            egui::RichText::new(
+                lang::t("rm_count", language)
+                    .replace("{n}", &state.world_books.len().to_string()),
+            )
+            .size(13.0),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_sized(
-                    [70.0, 24.0],
-                    egui::Button::new(
-                        egui::RichText::new(lang::t("rm_new", language)).size(12.0),
-                    ),
-                )
-                .clicked() {}
-            ui.add_space(8.0);
             if ui
                 .add_sized(
                     [70.0, 24.0],
@@ -1325,18 +1586,433 @@ fn render_world_books(ui: &mut egui::Ui, language: &Language) {
                         egui::RichText::new(lang::t("rm_refresh", language)).size(12.0),
                     ),
                 )
-                .clicked() {}
+                .clicked()
+            {
+                state.refresh();
+            }
         });
     });
     ui.separator();
-    ui.add_space(40.0);
-    ui.vertical_centered(|ui| {
+    ui.add_space(6.0);
+
+    // 加载中
+    if state.is_loading_wb {
+        ui.add_space(60.0);
+        ui.vertical_centered(|ui| {
+            ui.spinner();
+            ui.label(
+                egui::RichText::new(lang::t("rm_loading", language))
+                    .size(13.0)
+                    .color(egui::Color32::GRAY),
+            );
+        });
+        return;
+    }
+
+    // 空状态
+    if state.world_books.is_empty() {
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new(lang::t("rm_empty_worlds", language))
+                    .color(egui::Color32::GRAY)
+                    .size(13.0),
+            );
+        });
+        return;
+    }
+
+    // 卡片网格
+    let available_w = ui.available_width();
+    let card_w = ((available_w - WB_CARD_SPACING * (WB_CARD_COLUMNS as f32 - 1.0))
+        / WB_CARD_COLUMNS as f32)
+        .floor()
+        .max(160.0);
+
+    let book_count = state.world_books.len();
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(0, 4))
+                .show(ui, |ui| {
+                    egui::Grid::new("world_books_grid")
+                        .spacing([WB_CARD_SPACING, WB_CARD_SPACING])
+                        .min_col_width(card_w)
+                        .max_col_width(card_w)
+                        .show(ui, |ui| {
+                            let mut to_select: Option<usize> = None;
+                            for idx in 0..book_count {
+                                if idx > 0 && idx % WB_CARD_COLUMNS == 0 {
+                                    ui.end_row();
+                                }
+                                let wb_name = state.world_books[idx].name.clone();
+                                let wb_author = state.world_books[idx].author.clone();
+                                let wb_created = state.world_books[idx].created_secs;
+                                let wb_count = state.world_books[idx].entry_count;
+                                let hover_text =
+                                    lang::t("wb_click_detail", language).to_string();
+                                if render_world_book_card(
+                                    ui,
+                                    &wb_name,
+                                    &wb_author,
+                                    wb_created,
+                                    wb_count,
+                                    &hover_text,
+                                    card_w,
+                                    language,
+                                    idx,
+                                ) {
+                                    to_select = Some(idx);
+                                }
+                            }
+                            if let Some(idx) = to_select {
+                                state.selected_wb_idx = Some(idx);
+                                state.wb_detail_page = 0;
+                            }
+                        });
+                });
+        });
+
+    // 详情弹窗
+    if let Some(idx) = state.selected_wb_idx {
+        if idx < state.world_books.len() {
+            let book = state.world_books[idx].clone();
+            let close = render_world_book_detail_popup(
+                ui.ctx(),
+                &book,
+                language,
+                &mut state.wb_detail_page,
+            );
+            if close {
+                state.selected_wb_idx = None;
+                state.wb_detail_page = 0;
+            }
+        } else {
+            state.selected_wb_idx = None;
+        }
+    }
+}
+
+/// 单个世界书卡片渲染，返回是否被点击
+fn render_world_book_card(
+    ui: &mut egui::Ui,
+    name: &str,
+    author: &str,
+    created_secs: u64,
+    entry_count: usize,
+    hover_text: &str,
+    card_w: f32,
+    language: &Language,
+    _idx: usize,
+) -> bool {
+    let card_h = WB_CARD_HEIGHT;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::click());
+
+    // 卡片背景
+    let bg = ui.visuals().faint_bg_color;
+    ui.painter().rect_filled(rect, 8.0, bg);
+
+    // --- 上部：世界书名称 ---
+    let name_rect = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(card_w, WB_CARD_NAME_HEIGHT),
+    );
+
+    // 名称区域背景（略深色以区分上下两部分）
+    let header_bg = ui.visuals().extreme_bg_color.linear_multiply(0.5);
+    ui.painter()
+        .rect_filled(name_rect, egui::CornerRadius::same(4), header_bg);
+
+    // 世界书名称
+    let name_inner = name_rect.shrink2(egui::vec2(10.0, 4.0));
+    let mut name_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(name_inner)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    name_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    name_ui.set_max_height(WB_CARD_NAME_HEIGHT - 12.0);
+    name_ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+    name_ui.label(
+        egui::RichText::new(name)
+            .size(15.0)
+            .strong(),
+    );
+
+    // --- 下部：信息栏 ---
+    let info_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, rect.min.y + WB_CARD_NAME_HEIGHT),
+        egui::vec2(card_w, WB_CARD_INFO_HEIGHT - 8.0),
+    );
+    let info_inner = info_rect.shrink2(egui::vec2(10.0, 4.0));
+    let mut info_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(info_inner)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    info_ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+
+    // 作者
+    if !author.is_empty() {
+        info_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(format!("{}:", lang::t("wb_author", language)))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+            ui.label(egui::RichText::new(author).size(11.0));
+        });
+    }
+
+    // 创建时间
+    if created_secs > 0 {
+        info_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(format!("{}:", lang::t("wb_created", language)))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+            ui.label(
+                egui::RichText::new(format_timestamp(created_secs))
+                    .size(11.0),
+            );
+        });
+    }
+
+    // 条目数
+    info_ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
         ui.label(
-            egui::RichText::new(lang::t("rm_empty_worlds", language))
-                .color(egui::Color32::GRAY)
-                .size(13.0),
+            egui::RichText::new(
+                lang::t("wb_entry_count", language).replace("{n}", &entry_count.to_string()),
+            )
+            .size(11.0),
         );
     });
+
+    // 悬停遮罩
+    if response.hovered() {
+        let hover_bg = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+        ui.painter().rect_filled(rect, 8.0, hover_bg);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            hover_text,
+            egui::FontId::proportional(14.0),
+            egui::Color32::WHITE,
+        );
+    }
+
+    response.clicked()
+}
+
+// ============================================================================
+// 世界书详情弹窗 — 每页 6 个条目（3 列 × 2 行）
+// ============================================================================
+
+fn render_world_book_detail_popup(
+    ctx: &egui::Context,
+    book: &WorldBookInfo,
+    language: &Language,
+    detail_page: &mut usize,
+) -> bool {
+    let mut close = false;
+
+    egui::Window::new(format!(
+        "{} - {}",
+        lang::t("wb_detail_title", language),
+        book.name
+    ))
+    .collapsible(false)
+    .resizable(true)
+    .default_size([760.0, 600.0])
+    .min_size([500.0, 400.0])
+    .show(ctx, |ui| {
+        // 上半部分：基本信息
+        ui.horizontal(|ui| {
+            // 左侧：世界书图标占位
+            let icon_size = 80.0;
+            let (icon_rect, _response) = ui.allocate_exact_size(
+                egui::vec2(icon_size, icon_size),
+                egui::Sense::hover(),
+            );
+
+            let icon_bg = ui.visuals().faint_bg_color;
+            ui.painter().rect_filled(icon_rect, 8.0, icon_bg);
+
+            // 世界书图标
+            let icon_center = icon_rect.center();
+            ui.painter().text(
+                icon_center,
+                egui::Align2::CENTER_CENTER,
+                egui_phosphor::regular::BOOK_OPEN,
+                egui::FontId::proportional(36.0),
+                ui.visuals().text_color(),
+            );
+
+            ui.add_space(16.0);
+
+            // 右侧：基本信息
+            ui.vertical(|ui| {
+                // 世界书名称
+                ui.label(egui::RichText::new(&book.name).size(20.0).strong());
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+
+                // 信息行（每行最多 3 项）
+                let entry_count_str =
+                    lang::t("wb_entry_count", language).replace("{n}", &book.entry_count.to_string());
+                let mut items: Vec<(&str, String)> = Vec::new();
+                if !book.author.is_empty() {
+                    items.push((lang::t("wb_author", language), book.author.clone()));
+                }
+                let size_str = format_size(book.file_size);
+                items.push((lang::t("rm_detail_size", language), size_str));
+                if book.created_secs > 0 {
+                    items.push((
+                        lang::t("wb_created", language),
+                        format_timestamp(book.created_secs),
+                    ));
+                }
+                items.push((&entry_count_str, String::new()));
+
+                let items_per_row = 3;
+                let mut row: Vec<(&str, String)> = Vec::new();
+                for item in items {
+                    row.push(item);
+                    if row.len() >= items_per_row {
+                        render_info_row(ui, &row);
+                        row.clear();
+                    }
+                }
+                if !row.is_empty() {
+                    render_info_row(ui, &row);
+                }
+            });
+        });
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // 下半部分：条目列表
+        if book.entries.is_empty() {
+            ui.add_space(16.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("rm_detail_no_worldbook", language))
+                        .color(egui::Color32::GRAY)
+                        .size(13.0),
+                );
+            });
+        } else {
+            let cols: usize = 3;
+            let rows_per_page: usize = 2;
+            let page_size = cols * rows_per_page; // 每页 6 个条目
+            let total_pages = (book.entries.len() + page_size - 1) / page_size;
+
+            // 超出范围时修正页码
+            if *detail_page >= total_pages {
+                *detail_page = total_pages.saturating_sub(1);
+            }
+
+            // 分页组件（靠右）
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // 下一页
+                    if ui
+                        .add_sized(
+                            [22.0, 20.0],
+                            egui::Button::new(egui::RichText::new("▶").size(12.0)),
+                        )
+                        .clicked()
+                        && *detail_page + 1 < total_pages
+                    {
+                        *detail_page += 1;
+                    }
+
+                    // 页码
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} / {}",
+                            *detail_page + 1,
+                            total_pages
+                        ))
+                        .size(12.0),
+                    );
+
+                    // 上一页
+                    if ui
+                        .add_sized(
+                            [22.0, 20.0],
+                            egui::Button::new(egui::RichText::new("◀").size(12.0)),
+                        )
+                        .clicked()
+                        && *detail_page > 0
+                    {
+                        *detail_page -= 1;
+                    }
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // 计算可用宽度并扣除右侧的边距，以防窗口滑动条挡住卡片
+            let available_w = ui.available_width() - 8.0;
+            let grid_spacing = 10.0;
+            let card_w = ((available_w - grid_spacing * (cols as f32 - 1.0))
+                / cols as f32)
+                .floor()
+                .max(160.0);
+            let card_h = 140.0;
+
+            let start = *detail_page * page_size;
+            let end = (start + page_size).min(book.entries.len());
+            let page_entries: Vec<&WorldEntry> = book.entries[start..end].iter().collect();
+
+            // 3 列 × 2 行网格
+            egui::Grid::new("wb_detail_entries_grid")
+                .spacing([grid_spacing, grid_spacing])
+                .min_col_width(card_w)
+                .max_col_width(card_w)
+                .show(ui, |ui| {
+                    for (col, entry) in page_entries.iter().enumerate() {
+                        if col > 0 && col % cols == 0 {
+                            ui.end_row();
+                        }
+                        ui.push_id(start + col, |ui| {
+                            render_world_entry_card(
+                                ui, entry, language, card_w, card_h,
+                            );
+                        });
+                    }
+                });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(lang::t("wb_scroll_entries", language))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+        }
+
+        // 关闭按钮
+        ui.add_space(12.0);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+            if ui.button(lang::t("rm_close", language)).clicked() {
+                close = true;
+            }
+        });
+    });
+
+    close
 }
 
 // ============================================================================
