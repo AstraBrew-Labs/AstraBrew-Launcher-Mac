@@ -512,6 +512,30 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "dialog_select_package_json" => "Select SillyTavern package.json",
         "dialog_select_folder" => "Select Folder",
 
+        // Reverse Proxy
+        "rp_title" => "Reverse Proxy",
+        "rp_manage" => "Manage",
+        "rp_manage_desc" => "Configure reverse proxy domain, port, and SSL certificate",
+        "rp_popup_title" => "Reverse Proxy Settings",
+        "rp_master_switch" => "Enable Reverse Proxy",
+        "rp_tab_basic" => "Basic Settings",
+        "rp_tab_ssl" => "SSL Settings",
+        "rp_domain" => "Domain Binding",
+        "rp_domain_desc" => "Enter the domain to bind, e.g. tavern.example.com",
+        "rp_domain_hint" => "Enter domain...",
+        "rp_port" => "Proxy Port",
+        "rp_port_desc" => "Port number for the reverse proxy to listen on",
+        "rp_target" => "Target Address",
+        "rp_target_desc" => "The backend service address to forward requests to",
+        "rp_target_hint" => "e.g. http://localhost:8000",
+        "rp_ssl_enabled" => "Enable SSL",
+        "rp_ssl_force_https" => "Force HTTPS",
+        "rp_ssl_force_https_desc" => "Automatically redirect HTTP requests to HTTPS",
+        "rp_ssl_cert" => "SSL Certificate",
+        "rp_ssl_cert_hint" => "Paste PEM-format SSL certificate content...",
+        "rp_ssl_key" => "SSL Private Key",
+        "rp_ssl_key_hint" => "Paste PEM-format private key content...",
+
         // Fallback
         _ => key,
     }

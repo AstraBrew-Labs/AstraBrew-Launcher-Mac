@@ -97,3 +97,15 @@
 - 点击文件日期 → 弹出聊天查看器（微信/QQ 风格气泡，用户右蓝/角色左灰，30条/页）
 - 新增翻译：`ch_viewer_title`, `ch_viewer_messages`
 - `CornerRadius` 字段类型是 `u8` 不是 `f32`
+
+## 反向代理弹窗（2026-06-12）
+- `src/pages/reverse_proxy_popup.rs`：反向代理设置弹窗
+- 入口：设置页面 → 服务器模式开启 + 互联网模式 → "反向代理"行 + "管理"按钮
+- 弹窗结构：
+  - 顶部总开关 `reverse_proxy_enabled`
+  - Tab 1「基本设置」：域名绑定/代理端口/目标地址
+  - Tab 2「SSL 设置」：SSL 开关 + 强制 HTTPS 开关 + 左右分栏证书/私钥多行输入框
+- 状态：`REVERSE_PROXY_POPUP` 全局静态 `LazyLock<Mutex<ReverseProxyPopupState>>`
+- SettingsState 新增 8 个字段：`reverse_proxy_enabled/domain/port/target/ssl_enabled/ssl_force_https/ssl_cert/ssl_key`
+- 翻译键 `rp_*` 前缀，中英双语 22 个 key
+- 与 Github 测试弹窗相同的 borrow 模式：先提取值 → 渲染 → 后同步回锁

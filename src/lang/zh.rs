@@ -512,6 +512,30 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
         "dialog_select_folder" => "选择文件夹",
 
+        // 反向代理
+        "rp_title" => "反向代理",
+        "rp_manage" => "管理",
+        "rp_manage_desc" => "配置反向代理域名、端口和 SSL 证书",
+        "rp_popup_title" => "反向代理设置",
+        "rp_master_switch" => "启用反向代理",
+        "rp_tab_basic" => "基本设置",
+        "rp_tab_ssl" => "SSL 设置",
+        "rp_domain" => "绑定域名",
+        "rp_domain_desc" => "输入要绑定的域名，例如 tavern.example.com",
+        "rp_domain_hint" => "输入域名...",
+        "rp_port" => "代理端口",
+        "rp_port_desc" => "反向代理监听的端口号",
+        "rp_target" => "目标地址",
+        "rp_target_desc" => "反向代理转发到的目标服务地址",
+        "rp_target_hint" => "例如 http://localhost:8000",
+        "rp_ssl_enabled" => "启用 SSL",
+        "rp_ssl_force_https" => "强制 HTTPS",
+        "rp_ssl_force_https_desc" => "自动将 HTTP 请求重定向到 HTTPS",
+        "rp_ssl_cert" => "SSL 证书",
+        "rp_ssl_cert_hint" => "粘贴 PEM 格式的 SSL 证书内容...",
+        "rp_ssl_key" => "SSL 私钥",
+        "rp_ssl_key_hint" => "粘贴 PEM 格式的私钥内容...",
+
         // Fallback
         _ => key,
     }

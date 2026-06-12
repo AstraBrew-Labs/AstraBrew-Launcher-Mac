@@ -133,6 +133,24 @@ pub struct SettingsState {
     pub proxy_type: ProxyType,
     pub custom_proxy: String,
 
+    // 反向代理设置
+    #[serde(default)]
+    pub reverse_proxy_enabled: bool,
+    #[serde(default)]
+    pub reverse_proxy_domain: String,
+    #[serde(default = "default_reverse_proxy_port")]
+    pub reverse_proxy_port: String,
+    #[serde(default = "default_reverse_proxy_target")]
+    pub reverse_proxy_target: String,
+    #[serde(default)]
+    pub reverse_proxy_ssl_enabled: bool,
+    #[serde(default)]
+    pub reverse_proxy_ssl_force_https: bool,
+    #[serde(default)]
+    pub reverse_proxy_ssl_cert: String,
+    #[serde(default)]
+    pub reverse_proxy_ssl_key: String,
+
     // 当前版本实例
     #[serde(default)]
     pub sillytavern: Option<CurrentInstance>,
@@ -165,6 +183,14 @@ fn default_auto_stop() -> bool {
     true
 }
 
+fn default_reverse_proxy_port() -> String {
+    "443".to_string()
+}
+
+fn default_reverse_proxy_target() -> String {
+    "http://localhost:8000".to_string()
+}
+
 impl Default for SettingsState {
     fn default() -> Self {
         Self {
@@ -189,6 +215,14 @@ impl Default for SettingsState {
             github_proxy_url: "https://gt.astrabrew.cn/".to_string(),
             proxy_type: ProxyType::default(),
             custom_proxy: String::new(),
+            reverse_proxy_enabled: false,
+            reverse_proxy_domain: String::new(),
+            reverse_proxy_port: default_reverse_proxy_port(),
+            reverse_proxy_target: default_reverse_proxy_target(),
+            reverse_proxy_ssl_enabled: false,
+            reverse_proxy_ssl_force_https: false,
+            reverse_proxy_ssl_cert: String::new(),
+            reverse_proxy_ssl_key: String::new(),
             sillytavern: None,
             nodejs_version: String::new(),
             homebrew_version: None,
@@ -699,6 +733,24 @@ pub fn render(
                                     );
                                 },
                             );
+                        }
+
+                        // 反向代理（仅服务器模式 + 互联网时显示）
+                        if state.server_mode_enabled && state.server_service_mode == ServerServiceMode::Internet {
+                            ui.add_space(10.0);
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::ARROWS_LEFT_RIGHT,
+                                lang::t("rp_title", &state.language),
+                                lang::t("rp_manage_desc", &state.language),
+                                |ui| {
+                                    if ui.button(lang::t("rp_manage", &state.language)).clicked() {
+                                        let mut popup = crate::pages::reverse_proxy_popup::REVERSE_PROXY_POPUP.lock().unwrap();
+                                        popup.show = true;
+                                    }
+                                },
+                            );
+                            ui.add_space(10.0);
                         }
 
                         let data_mode_desc = match state.data_mode {
@@ -1882,4 +1934,11 @@ pub fn render(
             popup_state.results = results;
         }
     }
+
+    // === 反向代理弹窗 ===
+    crate::pages::reverse_proxy_popup::render_reverse_proxy_popup(
+        ui.ctx(),
+        state,
+        &state.language.clone(),
+    );
 }
