@@ -507,6 +507,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // Chat History
         "ch_viewer_title" => "Chat History",
         "ch_viewer_messages" => "messages",
+        "ch_checkpoint" => "Checkpoint {n}",
 
         // File/Folder Dialogs
         "dialog_select_package_json" => "Select SillyTavern package.json",

@@ -91,6 +91,8 @@ pub struct ChatFileInfo {
     pub display_time: String, // "2023-5-12 @21h 32m 29s 224ms"
     /// 排序用的时间戳 (毫秒级)，基于文件名解析
     pub sort_key: u64,
+    /// 检查点序号 (如 "1", "2"), 对应文件名中 "- Checkpoint #N"
+    pub checkpoint_num: Option<String>,
 }
 
 /// 聊天记录分组 (每个角色文件夹)
@@ -499,19 +501,30 @@ impl ResourceManageState {
     }
 
     /// 解析聊天记录文件名: "Seraphina - 2023-5-12 @21h 32m 29s 224ms.jsonl"
-    /// 返回 (角色名, 显示时间字符串, 排序键)
-    fn parse_chat_filename(filename: &str) -> Option<(String, String, u64)> {
+    /// 也支持检查点文件: "Seraphina - 2023-5-12 @21h 32m 29s 224ms - Checkpoint #1.jsonl"
+    /// 返回 (角色名, 显示时间字符串, 排序键, 检查点标记)
+    fn parse_chat_filename(filename: &str) -> Option<(String, String, u64, Option<String>)> {
         let name = filename.strip_suffix(".jsonl")?;
-        // 按 " - " 分割一次
+        // 按第一个 " - " 分割角色名和日期时间部分
         let sep_pos = name.find(" - ")?;
         let char_name = name[..sep_pos].to_string();
-        let datetime_str = name[sep_pos + 3..].to_string();
+        let full_str = &name[sep_pos + 3..];
+
+        // 找到 "ms" 位置，分离基础时间戳和后缀
+        // 基础格式: "2023-5-12 @21h 32m 29s 224ms"
+        let ms_pos = full_str.rfind("ms")?;
+        let base_ts = full_str[..=ms_pos + 1].trim().to_string();
+        let suffix = full_str[ms_pos + 2..].trim();
 
         // 解析日期时间用于排序
-        // 格式: "2023-5-12 @21h 32m 29s 224ms"
-        let sort_key = Self::parse_chat_datetime(&datetime_str)?;
+        let sort_key = Self::parse_chat_datetime(&base_ts)?;
 
-        Some((char_name, datetime_str, sort_key))
+        // 检查是否为检查点文件: 后缀格式 " - Checkpoint #N"
+        let checkpoint_num = suffix
+            .strip_prefix("- Checkpoint #")
+            .map(|n| n.trim().to_string());
+
+        Some((char_name, base_ts, sort_key, checkpoint_num))
     }
 
     /// 解析 chat datetime 字符串为排序键 (毫秒级 Unix 时间戳近似值)
@@ -612,7 +625,7 @@ impl ResourceManageState {
                         .to_string_lossy()
                         .to_string();
 
-                    if let Some((_char_name, display_time, sort_key)) =
+                    if let Some((_char_name, display_time, sort_key, checkpoint_num)) =
                         Self::parse_chat_filename(&fname)
                     {
                         files.push(ChatFileInfo {
@@ -620,6 +633,7 @@ impl ResourceManageState {
                             filepath: fp,
                             display_time,
                             sort_key,
+                            checkpoint_num,
                         });
                     }
                 }
@@ -2368,7 +2382,9 @@ fn render_chat_history(
                                 let clicked = render_chat_file_button(
                                     ui,
                                     &file_info.display_time,
+                                    file_info.checkpoint_num.as_deref(),
                                     col_w,
+                                    language,
                                 );
                                 if clicked {
                                     to_open = Some((
@@ -2463,8 +2479,15 @@ fn render_chat_history(
     }
 }
 
-/// 单个聊天文件按钮 (显示时间)，返回是否被点击
-fn render_chat_file_button(ui: &mut egui::Ui, display_time: &str, btn_w: f32) -> bool {
+/// 单个聊天文件按钮 (显示时间 + 检查点标记)，返回是否被点击
+fn render_chat_file_button(
+    ui: &mut egui::Ui,
+    display_time: &str,
+    checkpoint_num: Option<&str>,
+    btn_w: f32,
+    language: &Language,
+) -> bool {
+    let has_checkpoint = checkpoint_num.is_some();
     let btn_h = 28.0;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(btn_w, btn_h),
@@ -2479,21 +2502,59 @@ fn render_chat_file_button(ui: &mut egui::Ui, display_time: &str, btn_w: f32) ->
     let corner_r = 4.0;
     ui.painter().rect_filled(rect, corner_r, bg);
 
-    // 图标 + 文字居中
-    let text_pos = rect.center();
-    let galley = ui.painter().layout_no_wrap(
-        format!("\u{1F4AC} {}", display_time),
-        egui::FontId::proportional(12.0),
-        ui.visuals().text_color(),
-    );
-    ui.painter().galley(
-        egui::pos2(
-            rect.min.x + (btn_w - galley.size().x).max(0.0) / 2.0,
-            text_pos.y - galley.size().y / 2.0,
-        ),
-        galley,
-        egui::Color32::PLACEHOLDER,
-    );
+    if has_checkpoint {
+        // 单行水平布局: 时间左对齐，检查点标签右对齐
+        let text_galley = ui.painter().layout_no_wrap(
+            format!("\u{1F4AC} {}", display_time),
+            egui::FontId::proportional(12.0),
+            ui.visuals().text_color(),
+        );
+        let tag_text = lang::t("ch_checkpoint", language)
+            .replace("{n}", checkpoint_num.unwrap_or(""));
+        let tag_galley = ui.painter().layout_no_wrap(
+            tag_text,
+            egui::FontId::proportional(10.0),
+            egui::Color32::from_rgb(255, 180, 60),
+        );
+
+        let text_size = text_galley.size();
+        let tag_size = tag_galley.size();
+        let gap = 12.0;
+        let total_w = text_size.x + gap + tag_size.x;
+        let pad = (btn_w - total_w).max(0.0);
+        let y_center = rect.center().y;
+
+        // 时间（左对齐，带均匀间距）
+        let text_x = rect.min.x + pad / 2.0;
+        ui.painter().galley(
+            egui::pos2(text_x, y_center - text_size.y / 2.0),
+            text_galley,
+            egui::Color32::PLACEHOLDER,
+        );
+
+        // 检查点标签（右对齐，带均匀间距）
+        let tag_x = text_x + text_size.x + gap;
+        ui.painter().galley(
+            egui::pos2(tag_x, y_center - tag_size.y / 2.0),
+            tag_galley,
+            egui::Color32::PLACEHOLDER,
+        );
+    } else {
+        // 单行居中
+        let galley = ui.painter().layout_no_wrap(
+            format!("\u{1F4AC} {}", display_time),
+            egui::FontId::proportional(12.0),
+            ui.visuals().text_color(),
+        );
+        ui.painter().galley(
+            egui::pos2(
+                rect.min.x + (btn_w - galley.size().x).max(0.0) / 2.0,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            egui::Color32::PLACEHOLDER,
+        );
+    }
 
     response.clicked()
 }

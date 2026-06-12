@@ -507,6 +507,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // 聊天记录
         "ch_viewer_title" => "聊天记录查看",
         "ch_viewer_messages" => "条消息",
+        "ch_checkpoint" => "检查点 {n}",
 
         // 文件/文件夹对话框
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
