@@ -2729,11 +2729,11 @@ fn render_chat_viewer(
                     let end = (start + CHAT_VIEWER_PAGE_SIZE).min(total_messages);
                     let page_messages = &state.chat_messages[start..end];
 
-                    let avail_w = ui.available_width();
-                    let max_bubble_w = (avail_w * 0.7).max(200.0);
+                    let container_w = ui.available_width();
+                    let max_bubble_w = (container_w * 0.7).max(200.0);
 
                     for msg in page_messages {
-                        render_chat_bubble(ui, msg, max_bubble_w);
+                        render_chat_bubble(ui, msg, max_bubble_w, container_w);
                     }
                 });
 
@@ -2749,11 +2749,13 @@ fn render_chat_viewer(
     close
 }
 
-/// 渲染单条聊天气泡
-fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32) {
+/// 渲染单条聊天气泡（统一使用固定容器宽度，左右对齐）
+fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32, container_w: f32) {
     let is_user = msg.is_user;
-    let avail_w = ui.available_width();
-    let bubble_max_w = max_bubble_w.min(avail_w - 48.0);
+    // bubble_max_w: 气泡内容区可用宽度（容器宽 - 两侧留白）
+    let left_margin: f32 = 32.0; // 头像占位
+    let right_margin: f32 = 8.0;
+    let bubble_max_w = max_bubble_w.min(container_w - left_margin - right_margin);
     let pad_x: f32 = 10.0;
     let pad_y: f32 = 8.0;
 
@@ -2790,7 +2792,7 @@ fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32) {
         bubble_max_w - pad_x * 2.0,
     );
 
-    let text_content_w = galley.size().x; // 实际文本宽
+    let text_content_w = galley.size().x;
     let text_content_h = galley.size().y;
 
     let time_w = if time_str.is_empty() {
@@ -2809,22 +2811,29 @@ fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32) {
     // 气泡内容宽度 = max(文本, 时间) + 内边距
     let content_w = (text_content_w.max(time_w) + pad_x * 2.0).max(60.0);
 
-    if is_user {
-        // 用户消息 — 手动绘制精确气泡，右对齐
-        let time_h: f32 = if time_str.is_empty() { 0.0 } else { 18.0 };
-        let bubble_h = text_content_h + pad_y * 2.0 + time_h + 4.0;
-        let row_h = bubble_h + 6.0;
-        let bubble_x = avail_w - content_w - 8.0;
+    let time_h: f32 = if time_str.is_empty() { 0.0 } else { 18.0 };
+    let bubble_h = text_content_h + pad_y * 2.0 + time_h + 4.0;
 
-        let (alloc_rect, _) =
-            ui.allocate_exact_size(egui::vec2(avail_w, row_h), egui::Sense::hover());
+    // AI 消息额外显示名字
+    let name_label_h = if !is_user && !msg.name.is_empty() { 18.0 } else { 0.0 };
+    let row_h = bubble_h + name_label_h + 6.0;
+
+    // 统一分配容器宽度行，确保所有气泡在同一容器内对齐
+    let (alloc_rect, _) =
+        ui.allocate_exact_size(egui::vec2(container_w, row_h), egui::Sense::hover());
+
+    let painter = ui.painter();
+    let container_left = alloc_rect.min.x;
+
+    if is_user {
+        // 用户消息 — 右对齐：气泡右边缘贴容器右边缘
+        let bubble_x = container_left + container_w - content_w - right_margin;
 
         let bubble_rect = egui::Rect::from_min_size(
             egui::pos2(bubble_x, alloc_rect.min.y),
             egui::vec2(content_w, bubble_h),
         );
 
-        let painter = ui.painter();
         painter.rect_filled(
             bubble_rect,
             egui::CornerRadius { nw: 12, ne: 12, sw: 12, se: 2 },
@@ -2855,44 +2864,58 @@ fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32) {
             );
         }
     } else {
-        // 角色消息 — Frame 左对齐，自适应内容宽度
-        ui.horizontal(|ui| {
-            ui.add_sized([32.0, 1.0], egui::Label::new(""));
-            ui.vertical(|ui| {
-                if !msg.name.is_empty() {
-                    ui.label(
-                        egui::RichText::new(&msg.name)
-                            .size(11.0)
-                            .color(egui::Color32::from_rgb(100, 180, 255)),
-                    );
-                }
-                egui::Frame::new()
-                    .fill(bubble_bg)
-                    .corner_radius(egui::CornerRadius { nw: 12, ne: 12, sw: 2, se: 12 })
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        ui.set_max_width(bubble_max_w);
-                        ui.label(
-                            egui::RichText::new(&msg.content)
-                                .size(13.0)
-                                .color(text_color),
-                        );
-                        if !time_str.is_empty() {
-                            ui.add_space(2.0);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(&time_str)
-                                            .size(9.0)
-                                            .color(time_color),
-                                    );
-                                },
-                            );
-                        }
-                    });
-            });
-        });
+        // AI 消息 — 左对齐：从容器左边缘开始
+        let bubble_left = container_left + left_margin;
+        let bubble_top = alloc_rect.min.y + name_label_h;
+
+        // 名字标签
+        if name_label_h > 0.0 {
+            let name_galley = ui.painter().layout_no_wrap(
+                msg.name.clone(),
+                egui::FontId::proportional(11.0),
+                egui::Color32::from_rgb(100, 180, 255),
+            );
+            painter.galley(
+                egui::pos2(bubble_left, alloc_rect.min.y),
+                name_galley,
+                egui::Color32::PLACEHOLDER,
+            );
+        }
+
+        let bubble_rect = egui::Rect::from_min_size(
+            egui::pos2(bubble_left, bubble_top),
+            egui::vec2(content_w, bubble_h),
+        );
+
+        painter.rect_filled(
+            bubble_rect,
+            egui::CornerRadius { nw: 12, ne: 12, sw: 2, se: 12 },
+            bubble_bg,
+        );
+
+        // 文本
+        painter.galley(
+            egui::pos2(bubble_rect.min.x + pad_x, bubble_rect.min.y + pad_y),
+            galley,
+            egui::Color32::PLACEHOLDER,
+        );
+
+        // 时间
+        if time_h > 0.0 {
+            let time_galley = ui.painter().layout_no_wrap(
+                time_str,
+                egui::FontId::proportional(9.0),
+                time_color,
+            );
+            painter.galley(
+                egui::pos2(
+                    bubble_rect.max.x - time_galley.size().x - pad_x,
+                    bubble_rect.max.y - time_galley.size().y - 4.0,
+                ),
+                time_galley,
+                egui::Color32::PLACEHOLDER,
+            );
+        }
     }
 
     ui.add_space(4.0);
