@@ -524,11 +524,11 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_domain" => "Domain Binding",
         "rp_domain_desc" => "Enter the domain to bind, e.g. tavern.example.com",
         "rp_domain_hint" => "Enter domain...",
-        "rp_port" => "Proxy Port",
-        "rp_port_desc" => "Port number for the reverse proxy to listen on",
-        "rp_target" => "Target Address",
-        "rp_target_desc" => "The backend service address to forward requests to",
-        "rp_target_hint" => "e.g. http://localhost:8000",
+        "rp_http_port" => "HTTP Port",
+        "rp_http_port_desc" => "HTTP reverse proxy listen port, default 80",
+        "rp_https_port" => "HTTPS Port",
+        "rp_https_port_desc" => "HTTPS reverse proxy listen port, default 443",
+
         "rp_ssl_enabled" => "Enable SSL",
         "rp_ssl_force_https" => "Force HTTPS",
         "rp_ssl_force_https_desc" => "Automatically redirect HTTP requests to HTTPS",
@@ -536,6 +536,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_ssl_cert_hint" => "Paste PEM-format SSL certificate content...",
         "rp_ssl_key" => "SSL Private Key",
         "rp_ssl_key_hint" => "Paste PEM-format private key content...",
+        "rp_select_file" => "Select File",
 
         // Fallback
         _ => key,

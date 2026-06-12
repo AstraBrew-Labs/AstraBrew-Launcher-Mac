@@ -524,11 +524,11 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_domain" => "绑定域名",
         "rp_domain_desc" => "输入要绑定的域名，例如 tavern.example.com",
         "rp_domain_hint" => "输入域名...",
-        "rp_port" => "代理端口",
-        "rp_port_desc" => "反向代理监听的端口号",
-        "rp_target" => "目标地址",
-        "rp_target_desc" => "反向代理转发到的目标服务地址",
-        "rp_target_hint" => "例如 http://localhost:8000",
+        "rp_http_port" => "HTTP 端口",
+        "rp_http_port_desc" => "HTTP 协议反向代理监听端口，默认 80",
+        "rp_https_port" => "HTTPS 端口",
+        "rp_https_port_desc" => "HTTPS 协议反向代理监听端口，默认 443",
+
         "rp_ssl_enabled" => "启用 SSL",
         "rp_ssl_force_https" => "强制 HTTPS",
         "rp_ssl_force_https_desc" => "自动将 HTTP 请求重定向到 HTTPS",
@@ -536,6 +536,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_ssl_cert_hint" => "粘贴 PEM 格式的 SSL 证书内容...",
         "rp_ssl_key" => "SSL 私钥",
         "rp_ssl_key_hint" => "粘贴 PEM 格式的私钥内容...",
+        "rp_select_file" => "选择文件",
 
         // Fallback
         _ => key,

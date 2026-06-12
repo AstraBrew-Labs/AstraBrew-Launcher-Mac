@@ -138,10 +138,11 @@ pub struct SettingsState {
     pub reverse_proxy_enabled: bool,
     #[serde(default)]
     pub reverse_proxy_domain: String,
-    #[serde(default = "default_reverse_proxy_port")]
-    pub reverse_proxy_port: String,
-    #[serde(default = "default_reverse_proxy_target")]
-    pub reverse_proxy_target: String,
+    #[serde(default = "default_reverse_proxy_http_port")]
+    pub reverse_proxy_http_port: String,
+    #[serde(default = "default_reverse_proxy_https_port")]
+    pub reverse_proxy_https_port: String,
+
     #[serde(default)]
     pub reverse_proxy_ssl_enabled: bool,
     #[serde(default)]
@@ -183,12 +184,12 @@ fn default_auto_stop() -> bool {
     true
 }
 
-fn default_reverse_proxy_port() -> String {
-    "443".to_string()
+fn default_reverse_proxy_http_port() -> String {
+    "80".to_string()
 }
 
-fn default_reverse_proxy_target() -> String {
-    "http://localhost:8000".to_string()
+fn default_reverse_proxy_https_port() -> String {
+    "443".to_string()
 }
 
 impl Default for SettingsState {
@@ -217,8 +218,9 @@ impl Default for SettingsState {
             custom_proxy: String::new(),
             reverse_proxy_enabled: false,
             reverse_proxy_domain: String::new(),
-            reverse_proxy_port: default_reverse_proxy_port(),
-            reverse_proxy_target: default_reverse_proxy_target(),
+            reverse_proxy_http_port: default_reverse_proxy_http_port(),
+            reverse_proxy_https_port: default_reverse_proxy_https_port(),
+
             reverse_proxy_ssl_enabled: false,
             reverse_proxy_ssl_force_https: false,
             reverse_proxy_ssl_cert: String::new(),
