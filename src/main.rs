@@ -496,6 +496,7 @@ impl eframe::App for MyApp {
                 self.settings_state.show_startup_command,
                 self.settings_state.auto_stop_tavern_on_webview_close,
                 self.settings_state.start_mode == StartMode::Desktop,
+                self.settings_state.allow_tavern_background,
             );
         }
 

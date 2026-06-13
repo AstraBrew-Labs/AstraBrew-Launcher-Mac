@@ -45,6 +45,17 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "console_log_killed" => "服务已被强行终止",
         "console_log_cleared" => "日志已清空",
         "console_log_no_instance" => "未选择酒馆实例，请先前往版本管理选择",
+
+        // PM2 控制台消息
+        "pm2_starting" => "[PM2] 正在启动酒馆进程...",
+        "pm2_started" => "[PM2] 酒馆进程已启动",
+        "pm2_stopping" => "[PM2] 正在停止酒馆进程...",
+        "pm2_stopped" => "[PM2] 酒馆进程已停止",
+        "pm2_restarted" => "[PM2] 酒馆进程已重启",
+        "pm2_killed" => "[PM2] 酒馆进程已被强制终止",
+        "pm2_restarting" => "[PM2] 正在重启酒馆进程...",
+        "pm2_mode_active" => "PM2已托管",
+        "pm2_mode_active_desc" => "酒馆由 PM2 管理，关闭启动器不影响服务运行",
         
         // Settings Tab
         "general_settings" => "基本设置",

@@ -1,3 +1,4 @@
+use crate::core::settings::pm2::Pm2Manager;
 use crate::core::tavern_process::TavernProcess;
 use crate::lang;
 use crate::pages::settings::{Language, ProxyType, TavernDataMode};
@@ -18,6 +19,20 @@ pub struct ConsoleState {
 
     // 进程管理
     process: TavernProcess,
+    /// PM2 管理器（当 allow_tavern_background 启用时使用）
+    pm2_manager: Pm2Manager,
+    /// 是否使用 PM2 模式
+    use_pm2: bool,
+    /// PM2 日志读取偏移量（已消费的行数）
+    pm2_log_offset: usize,
+    /// 上次 PM2 轮询时间（节流用，避免每帧调用 pm2 CLI 导致 UI 卡顿）
+    last_pm2_poll: std::time::Instant,
+    /// PM2 可用性缓存（避免每帧检测 pm2 --version）
+    pm2_available_cache: bool,
+    /// 上次检测 PM2 可用性的时间
+    last_pm2_check: std::time::Instant,
+    /// PM2 状态是否已从进程中恢复（启动器重新打开时恢复 PM2 托管状态）
+    pm2_state_restored: bool,
     /// 重启标志：停止完成后自动启动
     restart_pending: bool,
     /// 酒馆实例工作目录
@@ -54,6 +69,13 @@ impl ConsoleState {
             status: ConsoleStatus::Stopped,
             logs: vec![String::from("[系统] 控制台已就绪")],
             process: TavernProcess::new(),
+            pm2_manager: Pm2Manager::new(),
+            use_pm2: false,
+            pm2_log_offset: 0,
+            last_pm2_poll: std::time::Instant::now(),
+            pm2_available_cache: Pm2Manager::is_installed(),
+            last_pm2_check: std::time::Instant::now(),
+            pm2_state_restored: false,
             restart_pending: false,
             instance_path: String::new(),
             instance_type: String::new(),
@@ -84,6 +106,7 @@ impl ConsoleState {
         show_startup_command: bool,
         desktop_auto_stop: bool,
         is_desktop_mode: bool,
+        allow_tavern_background: bool,
     ) {
         self.instance_path = instance_path;
         self.instance_type = instance_type;
@@ -95,6 +118,36 @@ impl ConsoleState {
         self.show_startup_command = show_startup_command;
         self.desktop_auto_stop = desktop_auto_stop;
         self.is_desktop_mode = is_desktop_mode;
+
+        // 当 allow_tavern_background 启用且 PM2 已安装时，切换到 PM2 模式
+        // PM2 可用性缓存：每 30 秒检测一次，避免每帧执行 pm2 --version
+        let now = std::time::Instant::now();
+        let check_interval = std::time::Duration::from_secs(30);
+        if now.duration_since(self.last_pm2_check) > check_interval {
+            self.pm2_available_cache = Pm2Manager::is_installed();
+            self.last_pm2_check = now;
+        }
+        let new_use_pm2 = allow_tavern_background && self.pm2_available_cache;
+
+        // 处理模式切换
+        if new_use_pm2 != self.use_pm2 {
+            self.use_pm2 = new_use_pm2;
+            if new_use_pm2 {
+                // 切换到 PM2 模式：如果直接进程在运行，先杀掉
+                if self.process.is_running() {
+                    self.add_log("[系统] 切换到 PM2 后台模式，正在关闭直接进程...");
+                    self.process.kill();
+                    self.status = ConsoleStatus::Stopped;
+                }
+                // 标记需要恢复 PM2 状态（启动器重新打开时也走这里）
+                self.pm2_state_restored = false;
+                self.add_log("[系统] 已切换到 PM2 后台模式，关闭启动器不影响服务运行");
+            } else {
+                // 切换回直接模式：PM2 进程保持运行（用户手动切换回直接模式）
+                self.add_log("[系统] 已切换回直接进程模式");
+                self.status = ConsoleStatus::Stopped;
+            }
+        }
     }
 
     /// 是否有已选择的酒馆实例
@@ -129,6 +182,12 @@ impl ConsoleState {
             self.add_log("[错误] 未选择酒馆实例，请先前往版本管理选择");
             return;
         }
+
+        if self.use_pm2 {
+            self.start_with_pm2(lang);
+            return;
+        }
+
         if self.process.is_running() {
             self.add_log("[警告] 酒馆已在运行中");
             return;
@@ -162,7 +221,8 @@ impl ConsoleState {
             self.resolve_proxy()
         };
         if let Some(ref addr) = proxy {
-            self.add_log(&format!("[系统] 代理已应用: {}", addr));
+            let normalized = crate::core::tavern_process::normalize_proxy_url(addr);
+            self.add_log(&format!("[系统] 代理已应用: {}", normalized));
         }
         if let Some(ref gh_proxy) = github_proxy {
             self.add_log(&format!("[系统] GitHub 加速已启用: {}", gh_proxy));
@@ -195,8 +255,126 @@ impl ConsoleState {
         }
     }
 
+    /// PM2 模式启动
+    fn start_with_pm2(&mut self, lang: &Language) {
+        // 先清空 PM2 日志文件，再清空内存日志（避免下一帧 poll 拉回旧日志）
+        let _ = self.pm2_manager.clear_logs();
+        self.logs.clear();
+        self.tavern_url = None;
+        self.webview_auto_opened = false;
+        self.pm2_log_offset = 0;
+
+        self.status = ConsoleStatus::Starting;
+        self.add_log(&lang::t("pm2_starting", lang));
+
+        // GitHub 加速
+        let github_proxy = if self.github_proxy_url.is_some() {
+            if crate::core::tavern_process::node_supports_import() {
+                self.github_proxy_url.clone()
+            } else {
+                self.add_log("[警告] 当前 Node.js 版本不支持 GitHub 加速拦截器（需要 >= 19），已自动关闭加速");
+                None
+            }
+        } else {
+            None
+        };
+
+        let proxy = if github_proxy.is_some() {
+            None
+        } else {
+            self.resolve_proxy()
+        };
+
+        // 准备拦截器文件
+        let interceptor_path = github_proxy.as_ref().and_then(|_| {
+            match crate::core::tavern_process::prepare_interceptor() {
+                Ok(p) => {
+                    self.add_log(&format!(
+                        "[系统] GitHub 加速已启用: {}",
+                        self.github_proxy_url.as_deref().unwrap_or("")
+                    ));
+                    Some(p.to_string_lossy().to_string())
+                }
+                Err(e) => {
+                    self.add_log(&format!("[警告] GitHub 拦截器准备失败: {}", e));
+                    None
+                }
+            }
+        });
+
+        if let Some(ref addr) = proxy {
+            let normalized = crate::core::tavern_process::normalize_proxy_url(addr);
+            self.add_log(&format!("[系统] 代理已应用: {}", normalized));
+        }
+
+        // 显示启动命令
+        if self.show_startup_command {
+            let proxy_display = proxy.as_ref().map(|p| crate::core::tavern_process::normalize_proxy_url(p));
+
+            let mut parts: Vec<String> = vec![format!("pm2 start server.js --name {}", crate::core::settings::pm2::PM2_PROCESS_NAME)];
+            if let Some(ref interceptor) = interceptor_path {
+                parts.push(format!("--node-args \"--import {}\"", interceptor));
+            }
+            // 构建脚本参数（复用 build_startup_command 的逻辑）
+            if self.is_desktop_mode {
+                parts.push("--browserLaunchEnabled false".to_string());
+            }
+            if self.data_mode == TavernDataMode::Global {
+                let paths = crate::utils::app_paths();
+                parts.push(format!("--configPath {}", paths.global_tavern_config_file().display()));
+                parts.push(format!("--dataRoot {}", paths.default_global_data_dir().display()));
+            }
+            if let Some(ref pd) = proxy_display {
+                parts.push("--requestProxyEnabled true".to_string());
+                parts.push(format!("--requestProxyUrl {}", pd));
+                parts.push("--requestProxyBypass \"localhost 127.0.0.1 ::1\"".to_string());
+            }
+            if github_proxy.is_some() {
+                parts.push(format!(
+                    "(env GITHUB_PROXY_URL={})",
+                    github_proxy.as_ref().unwrap()
+                ));
+            }
+            if let Some(ref pd) = proxy_display {
+                parts.push(format!("(env HTTP_PROXY={})", pd));
+            }
+            self.add_log(&format!("[启动命令] {}", parts.join(" ")));
+        }
+
+        match self.pm2_manager.start(
+            &self.instance_path,
+            &self.data_mode,
+            proxy.as_deref(),
+            github_proxy.as_deref(),
+            self.is_desktop_mode,
+            interceptor_path.as_deref(),
+        ) {
+            Ok(()) => {
+                self.status = ConsoleStatus::Running;
+                self.add_log(&lang::t("pm2_started", lang));
+            }
+            Err(e) => {
+                self.status = ConsoleStatus::Stopped;
+                self.add_log(&format!("[错误] PM2 启动失败: {}", e));
+            }
+        }
+    }
+
     /// 优雅停止酒馆
     pub fn stop(&mut self, lang: &Language) {
+        if self.use_pm2 {
+            match self.pm2_manager.stop() {
+                Ok(()) => {
+                    self.status = ConsoleStatus::Stopping;
+                    self.add_log(&lang::t("pm2_stopping", lang));
+                }
+                Err(e) => {
+                    self.add_log(&format!("[错误] PM2 停止失败: {}", e));
+                }
+            }
+            return;
+        }
+
         if !self.process.is_running() {
             self.status = ConsoleStatus::Stopped;
             return;
@@ -209,6 +387,20 @@ impl ConsoleState {
 
     /// 强制停止酒馆
     pub fn force_kill(&mut self, lang: &Language) {
+        if self.use_pm2 {
+            match self.pm2_manager.delete() {
+                Ok(()) => {
+                    self.status = ConsoleStatus::Stopped;
+                    self.restart_pending = false;
+                    self.add_log(&lang::t("pm2_killed", lang));
+                }
+                Err(e) => {
+                    self.add_log(&format!("[错误] PM2 强制停止失败: {}", e));
+                }
+            }
+            return;
+        }
+
         if !self.process.is_running() {
             self.status = ConsoleStatus::Stopped;
             return;
@@ -222,6 +414,54 @@ impl ConsoleState {
 
     /// 重启酒馆
     pub fn restart(&mut self, lang: &Language) {
+        if self.use_pm2 {
+            // 清空 PM2 日志文件 + 内存日志
+            let _ = self.pm2_manager.clear_logs();
+            self.logs.clear();
+            self.pm2_log_offset = 0;
+
+            self.add_log(&lang::t("pm2_restarting", lang));
+
+            // GitHub 加速
+            let github_proxy = if self.github_proxy_url.is_some() {
+                if crate::core::tavern_process::node_supports_import() {
+                    self.github_proxy_url.clone()
+                } else {
+                    self.add_log("[警告] 当前 Node.js 版本不支持 GitHub 加速拦截器（需要 >= 19），已自动关闭加速");
+                    None
+                }
+            } else {
+                None
+            };
+
+            let proxy = if github_proxy.is_some() { None } else { self.resolve_proxy() };
+
+            if let Some(ref addr) = proxy {
+                let normalized = crate::core::tavern_process::normalize_proxy_url(addr);
+                self.add_log(&format!("[系统] 代理已应用: {}", normalized));
+            }
+            if let Some(ref gh_proxy) = github_proxy {
+                self.add_log(&format!("[系统] GitHub 加速已启用: {}", gh_proxy));
+            }
+            if self.show_startup_command {
+                self.add_log(&format!(
+                    "[启动命令] pm2 restart {}",
+                    crate::core::settings::pm2::PM2_PROCESS_NAME
+                ));
+            }
+
+            match self.pm2_manager.restart() {
+                Ok(()) => {
+                    self.status = ConsoleStatus::Running;
+                    self.add_log(&lang::t("pm2_restarted", lang));
+                }
+                Err(e) => {
+                    self.add_log(&format!("[错误] PM2 重启失败: {}", e));
+                }
+            }
+            return;
+        }
+
         if !self.process.is_running() {
             // 未运行则直接启动
             self.start(lang);
@@ -238,6 +478,146 @@ impl ConsoleState {
 
     /// 每帧调用：拉取日志、检测进程退出、处理重启逻辑
     pub fn poll(&mut self, lang: &Language) {
+        if self.use_pm2 {
+            self.poll_pm2(lang);
+            return;
+        }
+        self.poll_direct(lang);
+    }
+
+    /// PM2 模式轮询：获取状态和日志
+    /// 注意：pm2 CLI 是同步阻塞调用，节流到 ~1 秒一次，避免每帧调用导致 UI 卡顿
+    fn poll_pm2(&mut self, lang: &Language) {
+        // 节流：最多每秒轮询一次 PM2（状态恢复时首次立即轮询）
+        let now = std::time::Instant::now();
+        let poll_interval = std::time::Duration::from_millis(1000);
+        if !self.pm2_state_restored {
+            // 启动器重新打开，需要立即恢复 PM2 托管状态
+        } else if now.duration_since(self.last_pm2_poll) < poll_interval {
+            return;
+        }
+        self.last_pm2_poll = now;
+        let pm2_status = self.pm2_manager.get_status();
+
+        // 状态恢复：启动器重新打开时，从 PM2 恢复实际运行状态
+        if !self.pm2_state_restored {
+            self.pm2_state_restored = true;
+            match pm2_status {
+                crate::core::settings::pm2::Pm2Status::Online => {
+                    if self.status != ConsoleStatus::Running {
+                        self.status = ConsoleStatus::Running;
+                        self.add_log("[系统] 检测到 PM2 托管进程正在运行，已恢复控制");
+                        // 拉取当前日志
+                        let existing_logs = self.pm2_manager.get_logs(200);
+                        for line in &existing_logs {
+                            let cleaned = strip_osc(line);
+                            if self.tavern_url.is_none() {
+                                let plain = strip_ansi(&cleaned);
+                                if let Some(url) = extract_tavern_url(&plain) {
+                                    self.tavern_url = Some(url);
+                                }
+                            }
+                            self.add_log(&cleaned);
+                        }
+                        self.pm2_log_offset = existing_logs.len();
+                    }
+                    return;
+                }
+                crate::core::settings::pm2::Pm2Status::Stopped => {
+                    // PM2 中存在记录但已停止 → 状态一致，不需要额外操作
+                }
+                crate::core::settings::pm2::Pm2Status::Errored => {
+                    self.add_log("[系统] PM2 托管进程处于错误状态");
+                }
+                crate::core::settings::pm2::Pm2Status::Launching => {
+                    self.status = ConsoleStatus::Starting;
+                    self.add_log("[系统] PM2 托管进程正在启动中...");
+                    return;
+                }
+                crate::core::settings::pm2::Pm2Status::Stopping => {
+                    self.status = ConsoleStatus::Stopping;
+                    self.add_log("[系统] PM2 托管进程正在停止中...");
+                    return;
+                }
+                crate::core::settings::pm2::Pm2Status::NotStarted
+                | crate::core::settings::pm2::Pm2Status::Unknown => {
+                    // PM2 中无此进程记录，保持 Stopped 状态
+                }
+            }
+            // 首次恢复完成，后续走正常轮询
+        }
+
+        // 同步状态
+        match pm2_status {
+            crate::core::settings::pm2::Pm2Status::Online => {
+                // 如果之前是 Starting，现在变成 Online → 启动成功
+                if self.status == ConsoleStatus::Starting {
+                    self.status = ConsoleStatus::Running;
+                    self.add_log(&lang::t("pm2_started", lang));
+                }
+            }
+            crate::core::settings::pm2::Pm2Status::Stopped => {
+                // 如果之前是 Stopping，现在变成 Stopped → 停止成功
+                if self.status == ConsoleStatus::Stopping {
+                    self.status = ConsoleStatus::Stopped;
+                    self.add_log(&lang::t("pm2_stopped", lang));
+                } else if self.status == ConsoleStatus::Running {
+                    // 异常退出
+                    self.status = ConsoleStatus::Stopped;
+                    self.add_log("[系统] PM2 酒馆进程已停止");
+                }
+            }
+            crate::core::settings::pm2::Pm2Status::Errored => {
+                if self.status != ConsoleStatus::Stopped {
+                    self.status = ConsoleStatus::Stopped;
+                    self.add_log("[系统] PM2 酒馆进程异常退出（errored）");
+                }
+            }
+            crate::core::settings::pm2::Pm2Status::Launching => {
+                if self.status != ConsoleStatus::Starting {
+                    self.status = ConsoleStatus::Starting;
+                }
+            }
+            crate::core::settings::pm2::Pm2Status::Stopping => {
+                if self.status != ConsoleStatus::Stopping {
+                    self.status = ConsoleStatus::Stopping;
+                }
+            }
+            crate::core::settings::pm2::Pm2Status::NotStarted | crate::core::settings::pm2::Pm2Status::Unknown => {
+                if self.status == ConsoleStatus::Running || self.status == ConsoleStatus::Starting {
+                    self.status = ConsoleStatus::Stopped;
+                    self.add_log("[系统] PM2 酒馆进程未找到");
+                }
+            }
+        }
+
+        // 拉取 PM2 日志（仅在运行或启动时）
+        if self.status == ConsoleStatus::Running
+            || self.status == ConsoleStatus::Starting
+        {
+            let new_logs = self.pm2_manager.get_logs(200);
+            // 只取偏移量之后的新行
+            if new_logs.len() > self.pm2_log_offset {
+                for line in &new_logs[self.pm2_log_offset..] {
+                    let cleaned = strip_osc(line);
+
+                    // 解析酒馆访问地址
+                    if self.tavern_url.is_none() {
+                        let plain = strip_ansi(&cleaned);
+                        if let Some(url) = extract_tavern_url(&plain) {
+                            self.tavern_url = Some(url);
+                        }
+                    }
+
+                    self.add_log(&cleaned);
+                }
+                self.pm2_log_offset = new_logs.len();
+            }
+        }
+    }
+
+    /// 直接进程模式轮询（原逻辑）
+    fn poll_direct(&mut self, lang: &Language) {
         // 拉取新日志
         let new_logs = self.process.poll_logs();
         for line in new_logs {
@@ -317,10 +697,21 @@ impl ConsoleState {
                     self.resolve_proxy()
                 };
                 if let Some(ref addr) = proxy {
-                    self.add_log(&format!("[系统] 代理已应用: {}", addr));
+                    let normalized = crate::core::tavern_process::normalize_proxy_url(addr);
+                    self.add_log(&format!("[系统] 代理已应用: {}", normalized));
                 }
                 if let Some(ref gh_proxy) = github_proxy {
                     self.add_log(&format!("[系统] GitHub 加速已启用: {}", gh_proxy));
+                }
+                if self.show_startup_command {
+                    let cmd = crate::core::tavern_process::build_startup_command(
+                        &self.instance_path,
+                        &self.data_mode,
+                        proxy.as_deref(),
+                        github_proxy.as_deref(),
+                        self.is_desktop_mode,
+                    );
+                    self.add_log(&format!("[启动命令] {}", cmd));
                 }
                 match self.process.start(
                     &self.instance_path,
@@ -709,6 +1100,28 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                 egui::Label::new(RichText::new(status_title).size(18.0).strong())
                                     .selectable(false),
                             );
+                            // PM2 模式标记
+                            if state.use_pm2 {
+                                ui.add_space(8.0);
+                                let pm2_badge = egui::Frame::NONE
+                                    .fill(Color32::from_rgb(40, 100, 180))
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(6, 2));
+                                pm2_badge.show(ui, |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(format!(
+                                                "{} {}",
+                                                egui_phosphor::regular::CLOUD,
+                                                lang::t("pm2_mode_active", lang)
+                                            ))
+                                            .size(11.0)
+                                            .color(Color32::WHITE),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
                             // 访问/打开酒馆链接（运行中 + URL 已捕获时显示）
                             // - 正常模式/服务器模式 → 显示"访问酒馆"（浏览器打开）
                             // - 桌面模式 + 不自动停止 → 显示"打开酒馆"（重新唤出 WebView）
@@ -902,6 +1315,12 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                         .clicked()
                     {
                         state.logs.clear();
+                        state.pm2_log_offset = 0;
+                        if state.use_pm2 {
+                            if let Err(e) = state.pm2_manager.clear_logs() {
+                                state.add_log(&format!("[错误] PM2 清空日志失败: {}", e));
+                            }
+                        }
                         state.add_log(lang::t("console_log_cleared", lang));
                     }
                 });

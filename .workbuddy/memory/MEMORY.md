@@ -109,3 +109,23 @@
 - SettingsState 新增 8 个字段：`reverse_proxy_enabled/domain/port/target/ssl_enabled/ssl_force_https/ssl_cert/ssl_key`
 - 翻译键 `rp_*` 前缀，中英双语 22 个 key
 - 与 Github 测试弹窗相同的 borrow 模式：先提取值 → 渲染 → 后同步回锁
+
+## PM2 管理模块（2026-06-13）
+- `src/core/pm2.rs`：Pm2Manager 封装 PM2 CLI
+  - 方法：start/stop/restart/delete/get_status/get_logs/clear_logs/update_config
+  - Pm2Status 枚举：NotStarted/Online/Stopped/Launching/Stopping/Errored/Unknown
+  - pm2 jlist JSON 简易解析（无 serde 依赖），pm2 logs --nostream --raw 获取日志
+  - 支持 --node-args "--import interceptor.js" 传递 GitHub 拦截器
+  - 支持 HTTP_PROXY 环境变量、--configPath/--dataRoot（全局模式）、--browserLaunchEnabled false（桌面模式）
+- `src/pages/console.rs`：ConsoleState 新增 PM2 模式
+  - 新增字段：pm2_manager/Pm2Manager、use_pm2/bool、pm2_log_offset/usize
+  - `sync_with_settings` 新增 `allow_tavern_background` 参数，检测 PM2 可用性自动切换模式
+  - 模式切换时：直接→PM2 会 kill 直接进程；PM2→直接会重置状态
+  - start/stop/restart/force_kill 优先走 PM2（use_pm2=true 时）
+  - poll_pm2：每帧获取 pm2 jlist 状态 + 增量拉取 pm2 logs
+  - 清空按钮同时调用 pm2 flush + 重置偏移量
+  - 状态栏 PM2 模式蓝色徽章（CLOUD 图标）
+- `src/lang/zh.rs` + `en.rs`：新增 8 个 pm2_* 翻译键
+- `src/core/mod.rs`：新增 `pub mod pm2`
+- `src/core/tavern_process.rs`：normalize_proxy_url / prepare_interceptor 改为 pub
+- `src/main.rs`：sync_with_settings 传入 `allow_tavern_background`

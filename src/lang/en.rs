@@ -45,6 +45,17 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "console_log_killed" => "Service forcefully terminated",
         "console_log_cleared" => "Log cleared",
         "console_log_no_instance" => "No instance selected, please go to Version Management first",
+
+        // PM2 Console Messages
+        "pm2_starting" => "[PM2] Starting tavern process...",
+        "pm2_started" => "[PM2] Tavern process started",
+        "pm2_stopping" => "[PM2] Stopping tavern process...",
+        "pm2_stopped" => "[PM2] Tavern process stopped",
+        "pm2_restarted" => "[PM2] Tavern process restarted",
+        "pm2_killed" => "[PM2] Tavern process forcefully terminated",
+        "pm2_restarting" => "[PM2] Restarting tavern process...",
+        "pm2_mode_active" => "PM2 Managed",
+        "pm2_mode_active_desc" => "Tavern is managed by PM2, closing the launcher will not stop the service",
         
         // Settings Tab
         "general_settings" => "General",

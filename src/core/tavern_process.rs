@@ -177,7 +177,7 @@ console.log('[GitHub Proxy] URL interceptor loaded, proxy:', PROXY_URL);
 
 /// 在临时目录生成 GitHub 代理拦截器文件，返回其绝对路径。
 /// 每次启动时重新写入，确保内容始终与二进制内嵌版本一致。
-fn prepare_interceptor() -> std::io::Result<PathBuf> {
+pub fn prepare_interceptor() -> std::io::Result<PathBuf> {
     let dir = &crate::utils::app_paths().temp;
     std::fs::create_dir_all(dir)?;
     let path = dir.join("github-proxy-interceptor.js");
@@ -208,7 +208,7 @@ pub fn node_supports_import() -> bool {
 }
 
 /// 确保代理地址带协议前缀（默认 http://）
-fn normalize_proxy_url(proxy: &str) -> String {
+pub fn normalize_proxy_url(proxy: &str) -> String {
     if proxy.starts_with("http://")
         || proxy.starts_with("https://")
         || proxy.starts_with("socks5://")
