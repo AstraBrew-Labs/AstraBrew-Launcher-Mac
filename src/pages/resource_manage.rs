@@ -17,6 +17,7 @@ pub enum ResourceManageTab {
     CharacterCards,
     WorldBooks,
     ChatHistory,
+    Presets,
 }
 
 // ============================================================================
@@ -52,6 +53,44 @@ pub struct WorldBookInfo {
     pub entries: Vec<WorldEntry>,
     pub file_size: u64,
     pub modified_secs: u64,
+}
+
+/// 预设提示词条目
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct PresetPrompt {
+    pub name: String,
+    pub identifier: String,
+    pub system_prompt: bool,
+    pub enabled: bool,
+    pub role: String,           // "system" | "user" | "assistant"
+    pub content: String,
+    pub injection_position: i64, // 0=relative, 1=in chat
+    pub injection_depth: i64,
+    pub injection_order: i64,
+    pub forbid_overrides: bool,
+    pub marker: bool,
+}
+
+/// 预设信息
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct PresetInfo {
+    pub filename: String,
+    pub filepath: PathBuf,
+    pub name: String,
+    pub chat_completion_source: String,
+    pub openai_model: String,
+    pub claude_model: String,
+    pub max_context_unlocked: bool,
+    pub openai_max_context: i64,
+    pub openai_max_tokens: i64,
+    pub stream_openai: bool,
+    pub prompt_count: usize,
+    pub prompts: Vec<PresetPrompt>,
+    pub file_size: u64,
+    pub modified_secs: u64,
+    pub has_spreset: bool,
 }
 
 /// 角色卡完整信息
@@ -143,6 +182,12 @@ pub struct ResourceManageState {
     pub selected_chat_path: Option<(String, PathBuf)>, // (显示标题, 文件路径)
     pub chat_messages: Vec<ChatMessage>,
     pub chat_viewer_page: usize,
+    // 预设管理
+    pub presets: Vec<PresetInfo>,
+    pub presets_loaded: bool,
+    pub is_loading_presets: bool,
+    pub selected_preset_idx: Option<usize>,
+    pub preset_detail_page: usize,
 }
 
 impl Default for ResourceManageState {
@@ -167,6 +212,11 @@ impl Default for ResourceManageState {
             selected_chat_path: None,
             chat_messages: Vec::new(),
             chat_viewer_page: 0,
+            presets: Vec::new(),
+            presets_loaded: false,
+            is_loading_presets: false,
+            selected_preset_idx: None,
+            preset_detail_page: 0,
         }
     }
 }
@@ -479,6 +529,243 @@ impl ResourceManageState {
         self.is_loading_wb = false;
     }
 
+    /// 加载预设列表
+    pub fn load_presets(&mut self) {
+        if self.presets_loaded || self.is_loading_presets {
+            return;
+        }
+        self.is_loading_presets = true;
+        self.presets.clear();
+
+        let dir = match self.presets_dir() {
+            Some(d) => d,
+            None => {
+                self.presets_loaded = true;
+                self.is_loading_presets = false;
+                return;
+            }
+        };
+
+        if !dir.exists() {
+            self.presets_loaded = true;
+            self.is_loading_presets = false;
+            return;
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => {
+                self.presets_loaded = true;
+                self.is_loading_presets = false;
+                return;
+            }
+        };
+
+        let mut presets = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if ext.to_lowercase() != "json" {
+                continue;
+            }
+
+            let meta = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            let filename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let file_size = meta.len();
+            let modified_secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            let data = match fs::read_to_string(&path) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+
+            let parsed: serde_json::Value = match serde_json::from_str(&data) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
+            let obj = match parsed.as_object() {
+                Some(o) => o,
+                None => continue,
+            };
+
+            let display_name = path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            let chat_completion_source = obj
+                .get("chat_completion_source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let openai_model = obj
+                .get("openai_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let claude_model = obj
+                .get("claude_model")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let max_context_unlocked = obj
+                .get("max_context_unlocked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            let openai_max_context = obj
+                .get("openai_max_context")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let openai_max_tokens = obj
+                .get("openai_max_tokens")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+
+            let stream_openai = obj
+                .get("stream_openai")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+
+            // 检查 extensions.SPreset
+            let has_spreset = obj
+                .get("extensions")
+                .and_then(|v| v.as_object())
+                .map(|ext| ext.contains_key("SPreset"))
+                .unwrap_or(false);
+
+            // 解析 prompts
+            let prompts: Vec<PresetPrompt> = obj
+                .get("prompts")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_object())
+                        .map(|p| PresetPrompt {
+                            name: p
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            identifier: p
+                                .get("identifier")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            system_prompt: p
+                                .get("system_prompt")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            enabled: p
+                                .get("enabled")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true),
+                            role: p
+                                .get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            content: p
+                                .get("content")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            injection_position: p
+                                .get("injection_position")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            injection_depth: p
+                                .get("injection_depth")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            injection_order: p
+                                .get("injection_order")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(0),
+                            forbid_overrides: p
+                                .get("forbid_overrides")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                            marker: p
+                                .get("marker")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let prompt_count = prompts.len();
+
+            presets.push(PresetInfo {
+                filename,
+                filepath: path,
+                name: display_name,
+                chat_completion_source,
+                openai_model,
+                claude_model,
+                max_context_unlocked,
+                openai_max_context,
+                openai_max_tokens,
+                stream_openai,
+                prompt_count,
+                prompts,
+                file_size,
+                modified_secs,
+                has_spreset,
+            });
+        }
+
+        presets.sort_by(|a, b| b.modified_secs.cmp(&a.modified_secs));
+
+        self.presets = presets;
+        self.presets_loaded = true;
+        self.is_loading_presets = false;
+    }
+
+    /// 获取预设目录路径
+    pub fn presets_dir(&self) -> Option<PathBuf> {
+        if self.instance_path.is_empty() {
+            return None;
+        }
+        match self.data_mode {
+            TavernDataMode::Current => Some(
+                PathBuf::from(&self.instance_path)
+                    .join("data")
+                    .join("default-user")
+                    .join("OpenAI Settings"),
+            ),
+            TavernDataMode::Global => Some(
+                utils::app_paths()
+                    .default_global_data_dir()
+                    .join("default-user")
+                    .join("OpenAI Settings"),
+            ),
+        }
+    }
+
     /// 获取聊天记录目录路径
     fn chats_dir(&self) -> Option<PathBuf> {
         if self.instance_path.is_empty() {
@@ -674,6 +961,10 @@ impl ResourceManageState {
         self.is_loading_chats = false;
         self.selected_chat_path = None;
         self.chat_messages.clear();
+        self.presets_loaded = false;
+        self.is_loading_presets = false;
+        self.selected_preset_idx = None;
+        self.preset_detail_page = 0;
     }
 }
 
@@ -1123,6 +1414,11 @@ pub fn render(
             ResourceManageTab::ChatHistory,
             lang::t("rm_tab_chats", language),
         );
+        ui.selectable_value(
+            &mut state.tab,
+            ResourceManageTab::Presets,
+            lang::t("rm_tab_presets", language),
+        );
     });
 
     ui.separator();
@@ -1149,6 +1445,7 @@ pub fn render(
         ResourceManageTab::CharacterCards => render_character_cards(ui, state, language),
         ResourceManageTab::WorldBooks => render_world_books(ui, state, language),
         ResourceManageTab::ChatHistory => render_chat_history(ui, state, language),
+        ResourceManageTab::Presets => render_presets(ui, state, language),
     }
 }
 
@@ -2894,4 +3191,681 @@ fn render_chat_bubble(ui: &mut egui::Ui, msg: &ChatMessage, max_bubble_w: f32, c
     }
 
     ui.add_space(4.0);
+}
+
+// ============================================================================
+// 预设管理 Tab — 3 列卡片网格（参照世界书布局）
+// ============================================================================
+
+const PS_CARD_COLUMNS: usize = 3;
+const PS_CARD_SPACING: f32 = 12.0;
+const PS_CARD_HEIGHT: f32 = 120.0;
+const PS_CARD_NAME_HEIGHT: f32 = 56.0;
+const PS_CARD_INFO_HEIGHT: f32 = 56.0;
+
+fn render_presets(
+    ui: &mut egui::Ui,
+    state: &mut ResourceManageState,
+    language: &Language,
+) {
+    state.load_presets();
+
+    // 顶部操作栏
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(
+                lang::t("rm_count", language)
+                    .replace("{n}", &state.presets.len().to_string()),
+            )
+            .size(13.0),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add_sized(
+                    [70.0, 24.0],
+                    egui::Button::new(
+                        egui::RichText::new(lang::t("rm_refresh", language)).size(12.0),
+                    ),
+                )
+                .clicked()
+            {
+                state.refresh();
+            }
+        });
+    });
+    ui.separator();
+    ui.add_space(6.0);
+
+    // 加载中
+    if state.is_loading_presets {
+        ui.add_space(60.0);
+        ui.vertical_centered(|ui| {
+            ui.spinner();
+            ui.label(
+                egui::RichText::new(lang::t("rm_loading", language))
+                    .size(13.0)
+                    .color(egui::Color32::GRAY),
+            );
+        });
+        return;
+    }
+
+    // 空状态
+    if state.presets.is_empty() {
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
+            ui.label(
+                egui::RichText::new(lang::t("rm_empty_presets", language))
+                    .color(egui::Color32::GRAY)
+                    .size(13.0),
+            );
+        });
+        return;
+    }
+
+    // 卡片网格
+    let available_w = ui.available_width();
+    let card_w = ((available_w - PS_CARD_SPACING * (PS_CARD_COLUMNS as f32 - 1.0))
+        / PS_CARD_COLUMNS as f32)
+        .floor()
+        .max(160.0);
+
+    let preset_count = state.presets.len();
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(0, 4))
+                .show(ui, |ui| {
+                    egui::Grid::new("presets_grid")
+                        .spacing([PS_CARD_SPACING, PS_CARD_SPACING])
+                        .min_col_width(card_w)
+                        .max_col_width(card_w)
+                        .show(ui, |ui| {
+                            let mut to_select: Option<usize> = None;
+                            for idx in 0..preset_count {
+                                if idx > 0 && idx % PS_CARD_COLUMNS == 0 {
+                                    ui.end_row();
+                                }
+                                let ps_name = state.presets[idx].name.clone();
+                                let ps_source = state.presets[idx].chat_completion_source.clone();
+                                let ps_prompt_count = state.presets[idx].prompt_count;
+                                let ps_has_spreset = state.presets[idx].has_spreset;
+                                let hover_text =
+                                    lang::t("ps_click_detail", language).to_string();
+                                if render_preset_card(
+                                    ui,
+                                    &ps_name,
+                                    &ps_source,
+                                    ps_prompt_count,
+                                    ps_has_spreset,
+                                    &hover_text,
+                                    card_w,
+                                    language,
+                                    idx,
+                                ) {
+                                    to_select = Some(idx);
+                                }
+                            }
+                            if let Some(idx) = to_select {
+                                state.selected_preset_idx = Some(idx);
+                                state.preset_detail_page = 0;
+                            }
+                        });
+                });
+        });
+
+    // 详情弹窗
+    if let Some(idx) = state.selected_preset_idx {
+        if idx < state.presets.len() {
+            let preset = state.presets[idx].clone();
+            let mut open = true;
+            render_preset_detail_popup(
+                ui.ctx(),
+                &preset,
+                language,
+                &mut state.preset_detail_page,
+                &mut open,
+            );
+            if !open {
+                state.selected_preset_idx = None;
+                state.preset_detail_page = 0;
+            }
+        } else {
+            state.selected_preset_idx = None;
+        }
+    }
+}
+
+/// 单个预设卡片渲染，返回是否被点击
+fn render_preset_card(
+    ui: &mut egui::Ui,
+    name: &str,
+    source: &str,
+    prompt_count: usize,
+    has_spreset: bool,
+    hover_text: &str,
+    card_w: f32,
+    language: &Language,
+    _idx: usize,
+) -> bool {
+    let card_h = PS_CARD_HEIGHT;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(card_w, card_h), egui::Sense::click());
+
+    // 卡片背景
+    let bg = ui.visuals().faint_bg_color;
+    ui.painter().rect_filled(rect, 8.0, bg);
+
+    // --- 上部：预设名称 ---
+    let name_rect = egui::Rect::from_min_size(
+        rect.min,
+        egui::vec2(card_w, PS_CARD_NAME_HEIGHT),
+    );
+
+    let header_bg = ui.visuals().extreme_bg_color.linear_multiply(0.5);
+    ui.painter()
+        .rect_filled(name_rect, egui::CornerRadius::same(4), header_bg);
+
+    let name_inner = name_rect.shrink2(egui::vec2(10.0, 4.0));
+    let mut name_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(name_inner)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    name_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+    name_ui.set_max_height(PS_CARD_NAME_HEIGHT - 12.0);
+    name_ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+
+    // 名称行 + SPreset 红色 tag
+    name_ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
+        ui.label(
+            egui::RichText::new(name)
+                .size(15.0)
+                .strong(),
+        );
+        if has_spreset {
+            let tag_frame = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(200, 40, 40))
+                .corner_radius(egui::CornerRadius::same(3))
+                .inner_margin(egui::Margin::symmetric(5, 1));
+            tag_frame.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ps_spreset_tag", language))
+                        .size(9.0)
+                        .color(egui::Color32::WHITE),
+                );
+            });
+        }
+    });
+
+    // --- 下部：信息栏 ---
+    let info_rect = egui::Rect::from_min_size(
+        egui::pos2(rect.min.x, rect.min.y + PS_CARD_NAME_HEIGHT),
+        egui::vec2(card_w, PS_CARD_INFO_HEIGHT - 8.0),
+    );
+    let info_inner = info_rect.shrink2(egui::vec2(10.0, 4.0));
+    let mut info_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(info_inner)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    info_ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+
+    // 来源
+    if !source.is_empty() {
+        info_ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(format!("{}:", lang::t("ps_source", language)))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+            ui.label(egui::RichText::new(source).size(11.0));
+        });
+    }
+
+    // 提示词数量
+    info_ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(
+                lang::t("ps_prompt_count", language).replace("{n}", &prompt_count.to_string()),
+            )
+            .size(11.0),
+        );
+    });
+
+    // 悬停遮罩
+    if response.hovered() {
+        let hover_bg = egui::Color32::from_rgba_premultiplied(0, 0, 0, 160);
+        ui.painter().rect_filled(rect, 8.0, hover_bg);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            hover_text,
+            egui::FontId::proportional(14.0),
+            egui::Color32::WHITE,
+        );
+    }
+
+    response.clicked()
+}
+
+// ============================================================================
+// 预设详情弹窗 — 每页 4 个条目（2 列 × 2 行）
+// ============================================================================
+
+fn render_preset_detail_popup(
+    ctx: &egui::Context,
+    preset: &PresetInfo,
+    language: &Language,
+    detail_page: &mut usize,
+    open: &mut bool,
+) {
+    egui::Window::new(format!(
+        "{} - {}",
+        lang::t("ps_detail_title", language),
+        preset.name
+    ))
+    .open(open)
+    .collapsible(false)
+    .resizable(true)
+    .default_size([880.0, 680.0])
+    .min_size([880.0, 680.0])
+    .show(ctx, |ui| {
+        ui.vertical(|ui| {
+            // 预设名称
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(&preset.name).size(20.0).strong());
+                if preset.has_spreset {
+                    ui.add_space(8.0);
+                    let tag_frame = egui::Frame::NONE
+                        .fill(egui::Color32::from_rgb(200, 40, 40))
+                        .corner_radius(egui::CornerRadius::same(3))
+                        .inner_margin(egui::Margin::symmetric(6, 2));
+                    tag_frame.show(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new(lang::t("ps_spreset_tag", language))
+                                .size(11.0)
+                                .color(egui::Color32::WHITE),
+                        );
+                    });
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.separator();
+            ui.add_space(6.0);
+
+            // 信息行（每行最多 3 项）
+            let mut items: Vec<(&str, String)> = Vec::new();
+
+            if !preset.chat_completion_source.is_empty() {
+                items.push((
+                    lang::t("ps_source", language),
+                    preset.chat_completion_source.clone(),
+                ));
+            }
+            items.push((
+                lang::t("ps_max_context_unlocked", language),
+                if preset.max_context_unlocked {
+                    "✓".to_string()
+                } else {
+                    "✗".to_string()
+                },
+            ));
+            if preset.openai_max_context > 0 {
+                items.push((
+                    lang::t("ps_openai_max_context", language),
+                    preset.openai_max_context.to_string(),
+                ));
+            }
+            if preset.openai_max_tokens > 0 {
+                items.push((
+                    lang::t("ps_openai_max_tokens", language),
+                    preset.openai_max_tokens.to_string(),
+                ));
+            }
+            items.push((
+                lang::t("ps_stream_openai", language),
+                if preset.stream_openai {
+                    "✓".to_string()
+                } else {
+                    "✗".to_string()
+                },
+            ));
+            if !preset.openai_model.is_empty() {
+                items.push((
+                    lang::t("ps_model", language),
+                    preset.openai_model.clone(),
+                ));
+            }
+            if !preset.claude_model.is_empty() && preset.claude_model != preset.openai_model {
+                items.push((
+                    lang::t("ps_claude_model", language),
+                    preset.claude_model.clone(),
+                ));
+            }
+            let prompt_count_label = lang::t("ps_prompt_count", language)
+                .replace("{n}", &preset.prompt_count.to_string());
+            items.push((prompt_count_label.as_str(), String::new()));
+
+            let items_per_row = 3;
+            let mut row: Vec<(&str, String)> = Vec::new();
+            for item in items {
+                row.push(item);
+                if row.len() >= items_per_row {
+                    render_info_row(ui, &row);
+                    row.clear();
+                }
+            }
+            if !row.is_empty() {
+                render_info_row(ui, &row);
+            }
+        });
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+
+        // === 下半部分：提示词条目 ===
+        if preset.prompts.is_empty() {
+            ui.add_space(16.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ps_empty_prompts", language))
+                        .color(egui::Color32::GRAY)
+                        .size(13.0),
+                );
+            });
+        } else {
+            let cols: usize = 2;
+            let rows_per_page: usize = 2;
+            let page_size = cols * rows_per_page;
+            let total_pages = (preset.prompts.len() + page_size - 1) / page_size;
+
+            if *detail_page >= total_pages {
+                *detail_page = total_pages.saturating_sub(1);
+            }
+
+            // 分页组件
+            ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized(
+                            [22.0, 20.0],
+                            egui::Button::new(egui::RichText::new("▶").size(12.0)),
+                        )
+                        .clicked()
+                        && *detail_page + 1 < total_pages
+                    {
+                        *detail_page += 1;
+                    }
+
+                    ui.label(
+                        egui::RichText::new(format!("{} / {}", *detail_page + 1, total_pages))
+                            .size(12.0),
+                    );
+
+                    if ui
+                        .add_sized(
+                            [22.0, 20.0],
+                            egui::Button::new(egui::RichText::new("◀").size(12.0)),
+                        )
+                        .clicked()
+                        && *detail_page > 0
+                    {
+                        *detail_page -= 1;
+                    }
+                });
+            });
+
+            ui.add_space(8.0);
+
+            let available_w = ui.available_width() - 8.0;
+            let grid_spacing = 10.0;
+            let card_w = ((available_w - grid_spacing * (cols as f32 - 1.0))
+                / cols as f32)
+                .floor()
+                .max(200.0);
+            let card_h = 220.0;
+
+            let start = *detail_page * page_size;
+            let end = (start + page_size).min(preset.prompts.len());
+            let page_prompts: Vec<&PresetPrompt> = preset.prompts[start..end].iter().collect();
+
+            egui::Grid::new("preset_detail_entries_grid")
+                .spacing([grid_spacing, grid_spacing])
+                .min_col_width(card_w)
+                .max_col_width(card_w)
+                .show(ui, |ui| {
+                    for (col, prompt) in page_prompts.iter().enumerate() {
+                        if col > 0 && col % cols == 0 {
+                            ui.end_row();
+                        }
+                        ui.push_id(start + col, |ui| {
+                            render_preset_prompt_entry(
+                                ui, prompt, language, card_w, card_h,
+                            );
+                        });
+                    }
+                });
+
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(lang::t("ps_scroll_prompts", language))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+        }
+    });
+}
+
+/// 渲染单个提示词条目卡片
+fn render_preset_prompt_entry(
+    ui: &mut egui::Ui,
+    prompt: &PresetPrompt,
+    language: &Language,
+    card_w: f32,
+    card_h: f32,
+) {
+    let (card_rect, _response) = ui.allocate_exact_size(
+        egui::vec2(card_w, card_h),
+        egui::Sense::hover(),
+    );
+
+    let bg = ui.visuals().faint_bg_color;
+    ui.painter().rect_filled(card_rect, 6.0, bg);
+
+    let inner_rect = card_rect.shrink(8.0);
+    let mut content_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    content_ui.spacing_mut().item_spacing = egui::vec2(4.0, 2.0);
+
+    // 第一行：启用状态 + 名称 + 标识符
+    content_ui.horizontal(|ui| {
+        let status_color = if prompt.enabled {
+            egui::Color32::from_rgb(80, 200, 80)
+        } else {
+            egui::Color32::GRAY
+        };
+        ui.label(egui::RichText::new("●").color(status_color).size(10.0));
+
+        // 系统提示词标记
+        if prompt.system_prompt {
+            ui.add_space(4.0);
+            let sys_badge = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(80, 120, 200).linear_multiply(0.15))
+                .corner_radius(egui::CornerRadius::same(3))
+                .inner_margin(egui::Margin::symmetric(4, 1));
+            sys_badge.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ps_sys_prompt", language))
+                        .size(9.0)
+                        .color(egui::Color32::from_rgb(100, 160, 255)),
+                );
+            });
+        }
+
+        // 标记 (marker) tag
+        if prompt.marker {
+            ui.add_space(4.0);
+            let marker_badge = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(180, 140, 60).linear_multiply(0.15))
+                .corner_radius(egui::CornerRadius::same(3))
+                .inner_margin(egui::Margin::symmetric(4, 1));
+            marker_badge.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ps_marker", language))
+                        .size(9.0)
+                        .color(egui::Color32::from_rgb(200, 160, 60)),
+                );
+            });
+        }
+
+        ui.add_space(4.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+        ui.label(
+            egui::RichText::new(lang::t("ps_name", language))
+                .color(egui::Color32::GRAY)
+                .size(11.0),
+        );
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        ui.label(
+            egui::RichText::new(&prompt.name)
+                .size(12.0)
+                .strong(),
+        );
+    });
+
+    // 第二行：角色 + identifier + forbid_overrides
+    content_ui.horizontal(|ui| {
+        ui.add_space(14.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        if !prompt.role.is_empty() {
+            let role_display = match prompt.role.as_str() {
+                "system" => lang::t("ps_role_system", language),
+                "user" => lang::t("ps_role_user", language),
+                "assistant" => lang::t("ps_role_assistant", language),
+                _ => prompt.role.as_str(),
+            };
+            ui.label(
+                egui::RichText::new(format!("{}: {}", lang::t("ps_role", language), role_display))
+                    .size(11.0)
+                    .color(egui::Color32::from_gray(180)),
+            );
+        }
+
+        if !prompt.identifier.is_empty() {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "ID: {}",
+                    prompt.identifier
+                ))
+                .size(10.0)
+                .color(egui::Color32::from_gray(140)),
+            );
+        }
+
+        if prompt.forbid_overrides {
+            ui.add_space(8.0);
+            let forbid_badge = egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(200, 120, 40).linear_multiply(0.15))
+                .corner_radius(egui::CornerRadius::same(3))
+                .inner_margin(egui::Margin::symmetric(4, 1));
+            forbid_badge.show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(lang::t("ps_forbid_overrides", language))
+                        .size(9.0)
+                        .color(egui::Color32::from_rgb(220, 140, 60)),
+                );
+            });
+        }
+    });
+
+    // 第三行：注入位置信息
+    content_ui.horizontal(|ui| {
+        ui.add_space(14.0);
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        let pos_label = if prompt.injection_position == 0 {
+            lang::t("ps_injection_pos_relative", language)
+        } else {
+            lang::t("ps_injection_pos_chat", language)
+        };
+        ui.label(
+            egui::RichText::new(format!(
+                "{}: {}",
+                lang::t("ps_injection_position", language),
+                pos_label
+            ))
+            .size(11.0)
+            .color(egui::Color32::from_gray(180)),
+        );
+
+        if prompt.injection_position == 1 {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}: {}",
+                    lang::t("ps_injection_depth", language),
+                    prompt.injection_depth
+                ))
+                .size(11.0)
+                .color(egui::Color32::from_gray(180)),
+            );
+        }
+
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{}: {}",
+                lang::t("ps_injection_order", language),
+                prompt.injection_order
+            ))
+            .size(11.0)
+            .color(egui::Color32::from_gray(180)),
+        );
+    });
+
+    // 第四行起：内容
+    if !prompt.content.is_empty() {
+        content_ui.add_space(2.0);
+
+        content_ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.spacing_mut().item_spacing.x = 4.0;
+            ui.label(
+                egui::RichText::new(lang::t("ps_content", language))
+                    .color(egui::Color32::GRAY)
+                    .size(11.0),
+            );
+        });
+
+        let content_max_h = 62.0;
+        egui::ScrollArea::vertical()
+            .max_height(content_max_h)
+            .auto_shrink([false, true])
+            .show(&mut content_ui, |ui| {
+                ui.set_max_width(inner_rect.width() - 24.0);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.horizontal(|ui| {
+                    ui.add_space(14.0);
+                    ui.label(
+                        egui::RichText::new(&prompt.content)
+                            .size(11.0)
+                            .color(egui::Color32::from_gray(200)),
+                    );
+                });
+            });
+    }
 }

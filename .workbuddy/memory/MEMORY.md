@@ -129,3 +129,14 @@
 - `src/core/mod.rs`：新增 `pub mod pm2`
 - `src/core/tavern_process.rs`：normalize_proxy_url / prepare_interceptor 改为 pub
 - `src/main.rs`：sync_with_settings 传入 `allow_tavern_background`
+
+## 预设管理页面（2026-06-14）
+- `src/pages/resource_manage.rs` 预设 Tab 完整实现
+- 数据来源：`data/default-user/OpenAI Settings/*.json`（独立/全局模式路径不同）
+- `PresetInfo`：filename/filepath/name/chat_completion_source/openai_model/claude_model/max_context_unlocked/openai_max_context/openai_max_tokens/stream_openai/prompts/has_spreset
+- `PresetPrompt`：name/identifier/system_prompt/enabled/role/content/injection_position/injection_depth/injection_order/forbid_overrides/marker
+- UI：参照世界书 3 列卡片网格（120px高），上部名称+SPreset红色tag，下部来源+提示词数量
+- 详情弹窗：参照角色卡布局，上信息栏（5 个核心字段+模型），下条目区 2×2/页
+- 条目卡片：启用状态/系统提示词tag/标记tag/名称/角色/identifier/forbid_overrides/注入位置/内容
+- extensions.SPreset → 红色 "依赖酒馆助手" tag
+- 翻译键 `rm_tab_presets` / `ps_*` 前缀，中英双语 29 个 key
