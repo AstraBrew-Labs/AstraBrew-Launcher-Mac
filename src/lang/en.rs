@@ -105,7 +105,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "auto_start_tavern" => "Auto Start Tavern",
         "auto_start_tavern_desc" => "Automatically start the tavern service on launch",
         "allow_tavern_background" => "Allow Background Running",
-        "allow_tavern_background_desc" => "Closing the launcher does not affect the tavern service running in background",
+        "allow_tavern_background_desc" => "Closing the launcher does not affect the tavern service running in background (requires PM2)",
 
         // Console Settings
         "console_settings" => "Console Settings",
@@ -151,11 +151,13 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "pm2_env_info_desc" => "Version: {version}\nPath: {path}",
         "pm2_not_installed" => "PM2 is not installed",
         "pm2_purpose" => "Run Tavern in background without the launcher (Optional, requires Node.js)",
+        "pm2_purpose_required" => "Run Tavern in background without the launcher (Required, requires Node.js)",
         "pm2_need_nodejs" => "Please install Node.js first",
         "pm2_install_title" => "PM2 Installation",
         "pm2_install_desc" => "Running npm install -g pm2, please wait...",
         "install" => "Install",
         "caddy_purpose" => "Reverse proxy for Tavern (Optional)",
+        "caddy_purpose_required" => "Reverse proxy for Tavern (Required)",
         "caddy_install_title" => "Caddy Installation",
         "caddy_install_desc" => "Running brew install caddy, please wait...",
         

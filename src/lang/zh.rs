@@ -105,7 +105,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "auto_start_tavern" => "启动后自动启动酒馆",
         "auto_start_tavern_desc" => "软件启动后自动运行酒馆服务",
         "allow_tavern_background" => "允许酒馆后台运行",
-        "allow_tavern_background_desc" => "关闭启动器也不影响酒馆服务在后台运行",
+        "allow_tavern_background_desc" => "关闭启动器也不影响酒馆服务在后台运行（依赖PM2）",
 
         // 控制台设置
         "console_settings" => "控制台设置",
@@ -151,11 +151,13 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "pm2_env_info_desc" => "版本: {version}\n路径: {path}",
         "pm2_not_installed" => "尚未安装 PM2",
         "pm2_purpose" => "让酒馆支持脱离启动器来后台运行（可选，依赖 Node.js）",
+        "pm2_purpose_required" => "让酒馆支持脱离启动器来后台运行（必装，依赖 Node.js）",
         "pm2_need_nodejs" => "请先安装 Node.js",
         "pm2_install_title" => "PM2 安装",
         "pm2_install_desc" => "正在执行 npm install -g pm2，请稍候...",
         "install" => "安装",
         "caddy_purpose" => "用于给酒馆添加反向代理（可选）",
+        "caddy_purpose_required" => "用于给酒馆添加反向代理（必装）",
         "caddy_install_title" => "Caddy 安装",
         "caddy_install_desc" => "正在执行 brew install caddy，请稍候...",
         

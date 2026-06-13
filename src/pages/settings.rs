@@ -633,17 +633,6 @@ pub fn render(
                         );
                         ui.add_space(10.0);
 
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::ARROW_ARC_LEFT,
-                            lang::t("allow_tavern_background", &state.language),
-                            lang::t("allow_tavern_background_desc", &state.language),
-                            |ui| {
-                                ui.add(crate::ui::switch::toggle(&mut state.allow_tavern_background));
-                            },
-                        );
-                        ui.add_space(10.0);
-
                         let mode_desc = if state.server_mode_enabled {
                             lang::t("server_mode_enabled_desc", &state.language)
                         } else {
@@ -733,6 +722,26 @@ pub fn render(
                                             (ServerServiceMode::Internet, lang::t("server_mode_internet", &state.language)),
                                         ],
                                     );
+                                },
+                            );
+                        }
+
+                        // 允许酒馆后台运行（仅服务器模式开启时显示）
+                        if state.server_mode_enabled {
+                            ui.add_space(10.0);
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::ARROW_ARC_LEFT,
+                                lang::t("allow_tavern_background", &state.language),
+                                lang::t("allow_tavern_background_desc", &state.language),
+                                |ui| {
+                                    let pm2_installed = state.pm2_version.is_some();
+                                    ui.add_enabled_ui(pm2_installed, |ui| {
+                                        ui.add(crate::ui::switch::toggle(&mut state.allow_tavern_background));
+                                    });
+                                    if !pm2_installed {
+                                        state.allow_tavern_background = false;
+                                    }
                                 },
                             );
                         }
@@ -961,7 +970,7 @@ pub fn render(
                                 ui,
                                 egui_phosphor::regular::SHIELD_CHECK,
                                 "Caddy",
-                                lang::t("caddy_purpose", &state.language),
+                                lang::t(if state.server_mode_enabled { "caddy_purpose_required" } else { "caddy_purpose" }, &state.language),
                                 |ui| {
                                     match cv {
                                         Some(ref ver) => {
@@ -991,7 +1000,7 @@ pub fn render(
                                 ui,
                                 egui_phosphor::regular::CLOUD_ARROW_DOWN,
                                 "PM2",
-                                lang::t("pm2_purpose", &state.language),
+                                lang::t(if state.server_mode_enabled { "pm2_purpose_required" } else { "pm2_purpose" }, &state.language),
                                 |ui| {
                                     match pv {
                                         Some(ref ver) => {
