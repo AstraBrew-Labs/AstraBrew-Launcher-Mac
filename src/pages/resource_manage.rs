@@ -1480,12 +1480,12 @@ fn render_world_entry_card(
         });
 
         // 可滚动内容区域
-        let content_max_h = 60.0;
+        let content_max_h = 50.0;
         egui::ScrollArea::vertical()
             .max_height(content_max_h)
             .auto_shrink([false, true])
             .show(&mut content_ui, |ui| {
-                ui.set_max_width(inner_rect.width() - 14.0);
+                ui.set_max_width(inner_rect.width() - 24.0);
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
                 ui.spacing_mut().item_spacing.y = 2.0;
                 // 通过左边距实现缩进
@@ -1517,7 +1517,7 @@ fn render_character_detail_popup(
     .collapsible(false)
     .resizable(true)
     .default_size([720.0, 560.0])
-    .min_size([480.0, 360.0])
+    .min_size([720.0, 560.0])
     .show(ctx, |ui| {
         // 上半部分：左右结构
         ui.horizontal(|ui| {
@@ -1742,7 +1742,7 @@ fn render_character_detail_popup(
                         / cols as f32)
                         .floor()
                         .max(200.0);
-                    let card_h = 135.0;
+                    let card_h = 170.0;
 
                     let start = *worldbook_page * page_size;
                     let end = (start + page_size).min(wb.entries.len());
@@ -2064,8 +2064,8 @@ fn render_world_book_detail_popup(
     ))
     .collapsible(false)
     .resizable(true)
-    .default_size([760.0, 600.0])
-    .min_size([500.0, 400.0])
+    .default_size([880.0, 680.0])
+    .min_size([880.0, 680.0])
     .show(ctx, |ui| {
         // 上半部分：基本信息
         ui.horizontal(|ui| {
@@ -2205,7 +2205,7 @@ fn render_world_book_detail_popup(
                 / cols as f32)
                 .floor()
                 .max(160.0);
-            let card_h = 140.0;
+            let card_h = 175.0;
 
             let start = *detail_page * page_size;
             let end = (start + page_size).min(book.entries.len());
