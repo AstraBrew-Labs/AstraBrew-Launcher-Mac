@@ -107,6 +107,7 @@ impl ConsoleState {
         desktop_auto_stop: bool,
         is_desktop_mode: bool,
         allow_tavern_background: bool,
+        server_mode_enabled: bool,
     ) {
         self.instance_path = instance_path;
         self.instance_type = instance_type;
@@ -119,7 +120,8 @@ impl ConsoleState {
         self.desktop_auto_stop = desktop_auto_stop;
         self.is_desktop_mode = is_desktop_mode;
 
-        // 当 allow_tavern_background 启用且 PM2 已安装时，切换到 PM2 模式
+        // PM2 接管条件：服务器模式 + 允许酒馆后台运行 + PM2 已安装
+        // 仅当服务器模式开启时才能被 PM2 接管，关闭服务器模式后必须切回直接模式
         // PM2 可用性缓存：每 30 秒检测一次，避免每帧执行 pm2 --version
         let now = std::time::Instant::now();
         let check_interval = std::time::Duration::from_secs(30);
@@ -127,7 +129,7 @@ impl ConsoleState {
             self.pm2_available_cache = Pm2Manager::is_installed();
             self.last_pm2_check = now;
         }
-        let new_use_pm2 = allow_tavern_background && self.pm2_available_cache;
+        let new_use_pm2 = server_mode_enabled && allow_tavern_background && self.pm2_available_cache;
 
         // 处理模式切换
         if new_use_pm2 != self.use_pm2 {
