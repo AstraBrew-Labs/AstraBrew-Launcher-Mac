@@ -629,6 +629,46 @@ fn parse_browser_launch(m: &YamlMap) -> (bool, String) {
 }
 
 impl TavernConfig {
+    /// 所有可能被系统保留的白名单 IP（跨所有模式）
+    /// 匹配这些 IP 的条目由系统管理，模式切换时自动移除旧模式专属条目
+    pub fn all_reserved_whitelist_ips() -> Vec<String> {
+        vec![
+            "::1".into(),
+            "127.0.0.1".into(),
+            "10.0.0.0/8".into(),
+            "172.16.0.0/12".into(),
+            "192.168.0.0/16".into(),
+            "0.0.0.0/0".into(),
+            "::/0".into(),
+        ]
+    }
+
+    /// 获取根据服务器模式/服务模式应写死的白名单 IP 列表
+    /// - 服务器关闭 → 本机回环
+    /// - 局域网模式 → 本机 + 内网段
+    /// - 互联网模式 → 全网放通
+    pub fn fixed_whitelist(server_mode_enabled: bool, service_mode: &str) -> Vec<String> {
+        if !server_mode_enabled {
+            // 服务器关闭：只锁定本机回环
+            return vec!["::1".into(), "127.0.0.1".into()];
+        }
+        match service_mode {
+            "Internet" => vec![
+                "::1".into(),
+                "127.0.0.1".into(),
+                "0.0.0.0/0".into(),
+                "::/0".into(),
+            ],
+            _ => vec![
+                "::1".into(),
+                "127.0.0.1".into(),
+                "10.0.0.0/8".into(),
+                "172.16.0.0/12".into(),
+                "192.168.0.0/16".into(),
+            ],
+        }
+    }
+
     /// 从 YAML 字符串解析
     pub fn from_yaml(yaml_str: &str) -> Option<Self> {
         // serde_yaml 0.9 不支持 !tag:yaml.org,2002:null 写法，预处理替换为 plain null

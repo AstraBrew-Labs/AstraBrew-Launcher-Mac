@@ -462,6 +462,11 @@ impl eframe::App for MyApp {
             });
             self.tavern_config_ui.proxy_enabled = self.settings_state.github_proxy_enabled;
             self.tavern_config_ui.proxy_url = self.settings_state.github_proxy_url.clone();
+            self.tavern_config_ui.server_mode_enabled = self.settings_state.server_mode_enabled;
+            self.tavern_config_ui.server_service_mode = match self.settings_state.server_service_mode {
+                crate::pages::settings::ServerServiceMode::Lan => "Lan".to_string(),
+                crate::pages::settings::ServerServiceMode::Internet => "Internet".to_string(),
+            };
         }
 
         // 同步控制台所需配置（实例路径 + 类型/版本 + 数据模式 + 代理）

@@ -67,6 +67,12 @@ pub struct TavernConfigUI {
     // ── 恢复默认 ──
     /// 是否显示恢复默认二次确认弹窗
     pub show_reset_confirm: bool,
+
+    // ── 服务器模式（用于白名单固定 IP 逻辑）──
+    /// 服务器模式是否开启（由 main.rs 每帧同步）
+    pub server_mode_enabled: bool,
+    /// 服务模式："Lan" 或 "Internet"（由 main.rs 每帧同步）
+    pub server_service_mode: String,
 }
 
 impl TavernConfigUI {
@@ -96,6 +102,8 @@ impl TavernConfigUI {
             proxy_enabled: false,
             proxy_url: String::new(),
             show_reset_confirm: false,
+            server_mode_enabled: false,
+            server_service_mode: String::new(),
         }
     }
 
@@ -784,7 +792,118 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, cu
                             ui.vertical(|ui| {
                                 ui.label(RichText::new(crate::lang::t("tc_whitelist_ips", lang)).size(12.0).strong());
                                 ui.add_space(2.0);
-                                dynamic_list(ui, &mut state.config.whitelist, crate::lang::t("tc_add_ip", lang));
+
+                                // 固定白名单 IP（根据服务器模式/服务模式）
+                                let fixed = TavernConfig::fixed_whitelist(
+                                    state.server_mode_enabled,
+                                    &state.server_service_mode,
+                                );
+                                let fixed_set: std::collections::HashSet<String> =
+                                    fixed.iter().cloned().collect();
+
+                                // 所有可被系统保留的 IP（跨三种模式）
+                                let all_reserved: std::collections::HashSet<String> =
+                                    TavernConfig::all_reserved_whitelist_ips()
+                                        .into_iter()
+                                        .collect();
+
+                                // 1) 移除旧模式专属的系统保留 IP（当前 fixed 里没有的 → 删除）
+                                state.config.whitelist.retain(|ip| {
+                                    if all_reserved.contains(ip) {
+                                        fixed_set.contains(ip) // 仅保留当前模式需要的
+                                    } else {
+                                        true // 用户自添 IP 永远保留
+                                    }
+                                });
+
+                                // 2) 去重（安全网：防止历史上出现重复条目）
+                                {
+                                    let mut seen = std::collections::HashSet::new();
+                                    state.config.whitelist.retain(|ip| seen.insert(ip.clone()));
+                                }
+
+                                // 3) 确保当前 fixed IP 都在列表中（缺失则追加）
+                                {
+                                    let mut missing: Vec<String> = Vec::new();
+                                    for ip in &fixed {
+                                        if !state.config.whitelist.contains(ip) {
+                                            missing.push(ip.clone());
+                                        }
+                                    }
+                                    for ip in missing {
+                                        state.config.whitelist.push(ip);
+                                    }
+                                }
+
+                                if !fixed.is_empty() && state.server_mode_enabled {
+                                    ui.label(
+                                        RichText::new("🔒 固定白名单（由服务器模式自动管理）")
+                                            .size(11.0)
+                                            .color(Color32::from_rgb(100, 100, 255)),
+                                    );
+                                }
+
+                                // 渲染白名单：固定条目只读，用户条目可编辑
+                                let mut to_remove: Option<usize> = None;
+                                for (idx, ip) in state.config.whitelist.iter_mut().enumerate() {
+                                    let is_fixed = fixed_set.contains(ip.as_str());
+                                    ui.horizontal(|ui| {
+                                        if is_fixed {
+                                            let mut display = ip.clone();
+                                            ui.add_enabled(
+                                                false,
+                                                egui::TextEdit::singleline(&mut display)
+                                                    .desired_width(220.0),
+                                            );
+                                            ui.label(
+                                                RichText::new("固定")
+                                                    .size(11.0)
+                                                    .color(Color32::GRAY),
+                                            );
+                                        } else {
+                                            ui.text_edit_singleline(ip);
+                                            if ui
+                                                .add_sized(
+                                                    [28.0, 28.0],
+                                                    egui::Button::new(
+                                                        RichText::new("✕")
+                                                            .size(14.0)
+                                                            .color(Color32::from_rgb(239, 68, 68)),
+                                                    ),
+                                                )
+                                                .clicked()
+                                            {
+                                                to_remove = Some(idx);
+                                            }
+                                        }
+                                    });
+                                }
+                                if let Some(idx) = to_remove {
+                                    state.config.whitelist.remove(idx);
+                                }
+
+                                // 添加按钮（防重复）
+                                ui.add_space(2.0);
+                                if ui
+                                    .add_sized(
+                                        [ui.available_width(), 32.0],
+                                        egui::Button::new(
+                                            RichText::new(format!(
+                                                "+  {}",
+                                                crate::lang::t("tc_add_ip", lang)
+                                            ))
+                                            .size(12.0)
+                                            .color(Color32::from_rgb(37, 99, 235)),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    let exists = state.config.whitelist.contains(&String::new())
+                                        || fixed_set.contains(&String::new());
+                                    if !exists {
+                                        state.config.whitelist.push(String::new());
+                                    }
+                                }
                             });
                         });
                     }
