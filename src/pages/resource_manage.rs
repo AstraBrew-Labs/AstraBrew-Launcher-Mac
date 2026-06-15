@@ -172,6 +172,11 @@ pub struct ResourceManageState {
     // 实例信息
     pub instance_path: String,
     pub data_mode: TavernDataMode,
+    // 缓存信息：用于检测路径/模式变化时触发重新加载
+    cached_chats_path: String,
+    cached_chats_mode: TavernDataMode,
+    cached_presets_path: String,
+    cached_presets_mode: TavernDataMode,
     // 详情弹窗
     pub selected_char_idx: Option<usize>,
     pub worldbook_page: usize,
@@ -182,6 +187,8 @@ pub struct ResourceManageState {
     pub selected_chat_path: Option<(String, PathBuf)>, // (显示标题, 文件路径)
     pub chat_messages: Vec<ChatMessage>,
     pub chat_viewer_page: usize,
+    // 聊天记录诊断信息
+    pub chat_scan_debug: String,
     // 预设管理
     pub presets: Vec<PresetInfo>,
     pub presets_loaded: bool,
@@ -205,6 +212,10 @@ impl Default for ResourceManageState {
             is_loading_chats: false,
             instance_path: String::new(),
             data_mode: TavernDataMode::Current,
+            cached_chats_path: String::new(),
+            cached_chats_mode: TavernDataMode::Current,
+            cached_presets_path: String::new(),
+            cached_presets_mode: TavernDataMode::Current,
             selected_char_idx: None,
             worldbook_page: 0,
             selected_wb_idx: None,
@@ -212,6 +223,7 @@ impl Default for ResourceManageState {
             selected_chat_path: None,
             chat_messages: Vec::new(),
             chat_viewer_page: 0,
+            chat_scan_debug: String::new(),
             presets: Vec::new(),
             presets_loaded: false,
             is_loading_presets: false,
@@ -531,6 +543,14 @@ impl ResourceManageState {
 
     /// 加载预设列表
     pub fn load_presets(&mut self) {
+        // 检测 instance_path 或 data_mode 是否发生变化，若变化则重置加载状态
+        if self.instance_path != self.cached_presets_path || self.data_mode != self.cached_presets_mode {
+            self.presets_loaded = false;
+            self.presets.clear();
+            self.cached_presets_path = self.instance_path.clone();
+            self.cached_presets_mode = self.data_mode.clone();
+        }
+
         if self.presets_loaded || self.is_loading_presets {
             return;
         }
@@ -791,7 +811,20 @@ impl ResourceManageState {
     /// 也支持检查点文件: "Seraphina - 2023-5-12 @21h 32m 29s 224ms - Checkpoint #1.jsonl"
     /// 返回 (角色名, 显示时间字符串, 排序键, 检查点标记)
     fn parse_chat_filename(filename: &str) -> Option<(String, String, u64, Option<String>)> {
-        let name = filename.strip_suffix(".jsonl")?;
+        // 大小写不敏感地去除 .jsonl 后缀
+        let name = filename.strip_suffix(".jsonl")
+            .or_else(|| {
+                if filename.len() > 6 {
+                    let suffix = &filename[filename.len() - 6..];
+                    if suffix.eq_ignore_ascii_case(".jsonl") {
+                        Some(&filename[..filename.len() - 6])
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })?;
         // 按第一个 " - " 分割角色名和日期时间部分
         let sep_pos = name.find(" - ")?;
         let char_name = name[..sep_pos].to_string();
@@ -816,23 +849,25 @@ impl ResourceManageState {
 
     /// 解析 chat datetime 字符串为排序键 (毫秒级 Unix 时间戳近似值)
     fn parse_chat_datetime(s: &str) -> Option<u64> {
-        // "2023-5-12 @21h 32m 29s 224ms"
+        // 两种格式:
+        // 旧: "2023-5-12 @21h 32m 29s 224ms"（空格分隔）
+        // 新: "2026-06-15@17h18m44s700ms"（紧凑格式）
         let at_pos = s.find('@')?;
-        let date_part = s[..at_pos].trim(); // "2023-5-12"
-        let time_part = s[at_pos + 1..].trim(); // "21h 32m 29s 224ms"
+        let date_part = s[..at_pos].trim(); // "2023-5-12" 或 "2026-06-15"
+        let time_part = s[at_pos + 1..].trim(); // "21h 32m 29s 224ms" 或 "17h18m44s700ms"
 
-        // 解析日期: YYYY-M-D
+        // 解析日期: YYYY-M-D 或 YYYY-MM-DD
         let mut date_parts = date_part.split('-');
         let year: u64 = date_parts.next()?.parse().ok()?;
         let month: u64 = date_parts.next()?.parse().ok()?;
         let day: u64 = date_parts.next()?.parse().ok()?;
 
-        // 解析时间: HHh MMm SSs SSSms
+        // 解析时间: 先替换 ms（必须在替换单个 m/s 之前），再替换 h/m/s 为空格
         let time_part_clean = time_part
-            .replace("h ", " ")
-            .replace("m ", " ")
-            .replace("s ", " ")
-            .replace("ms", "");
+            .replace("ms", " ")
+            .replace('h', " ")
+            .replace('m', " ")
+            .replace('s', " ");
         let mut time_parts = time_part_clean.split_whitespace();
         let hour: u64 = time_parts.next()?.parse().ok()?;
         let minute: u64 = time_parts.next()?.parse().ok()?;
@@ -851,6 +886,14 @@ impl ResourceManageState {
 
     /// 加载聊天记录列表
     pub fn load_chats(&mut self) {
+        // 检测 instance_path 或 data_mode 是否发生变化，若变化则重置加载状态
+        if self.instance_path != self.cached_chats_path || self.data_mode != self.cached_chats_mode {
+            self.chats_loaded = false;
+            self.chat_groups.clear();
+            self.cached_chats_path = self.instance_path.clone();
+            self.cached_chats_mode = self.data_mode.clone();
+        }
+
         if self.chats_loaded || self.is_loading_chats {
             return;
         }
@@ -881,12 +924,27 @@ impl ResourceManageState {
             }
         };
 
-        // 遍历角色文件夹
-        for entry in entries.flatten() {
+        // 遍历角色文件夹，收集诊断信息
+        let mut dir_count: usize = 0;
+        let mut skipped_names: Vec<String> = Vec::new();
+        let chats_dir_str = dir.display().to_string();
+
+        for entry_result in entries {
+            let entry = match entry_result {
+                Ok(e) => e,
+                Err(err) => {
+                    self.chat_scan_debug = format!(
+                        "读取目录条目失败: {}\n路径: {}",
+                        err, chats_dir_str
+                    );
+                    continue;
+                }
+            };
             let path = entry.path();
             if !path.is_dir() {
                 continue;
             }
+            dir_count += 1;
             let folder_name = path
                 .file_name()
                 .unwrap_or_default()
@@ -894,18 +952,28 @@ impl ResourceManageState {
                 .to_string();
 
             let mut files = Vec::new();
+            let mut total_file_count: usize = 0;
+            let mut jsonl_count: usize = 0;
+            let mut parse_fail_count: usize = 0;
+            let mut parse_fail_names: Vec<String> = Vec::new();
 
             // 读取文件夹内的 .jsonl 文件
             if let Ok(file_entries) = fs::read_dir(&path) {
-                for fe in file_entries.flatten() {
+                for fe_result in file_entries {
+                    let fe = match fe_result {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
                     let fp = fe.path();
                     if !fp.is_file() {
                         continue;
                     }
+                    total_file_count += 1;
                     let ext = fp.extension().and_then(|e| e.to_str()).unwrap_or("");
-                    if ext.to_lowercase() != "jsonl" {
+                    if !ext.eq_ignore_ascii_case("jsonl") {
                         continue;
                     }
+                    jsonl_count += 1;
                     let fname = fp
                         .file_name()
                         .unwrap_or_default()
@@ -922,11 +990,29 @@ impl ResourceManageState {
                             sort_key,
                             checkpoint_num,
                         });
+                    } else {
+                        parse_fail_count += 1;
+                        parse_fail_names.push(fname);
                     }
                 }
+            } else {
+                skipped_names.push(format!("{}(读取失败)", folder_name));
+                continue;
             }
 
             if files.is_empty() {
+                let mut reason = format!(
+                    "{}(总{}/jsonl{}/解析失败{}",
+                    folder_name, total_file_count, jsonl_count, parse_fail_count
+                );
+                if !parse_fail_names.is_empty() {
+                    reason.push_str(&format!(
+                        ": [{}]",
+                        parse_fail_names.join(", ")
+                    ));
+                }
+                reason.push(')');
+                skipped_names.push(reason);
                 continue;
             }
 
@@ -940,6 +1026,13 @@ impl ResourceManageState {
                 page: 0,
             });
         }
+
+        // 构建诊断信息
+        let mut debug_parts = vec![format!("发现: {} 个, 有效: {} 个", dir_count, self.chat_groups.len())];
+        if !skipped_names.is_empty() {
+            debug_parts.push(format!("跳过: {}", skipped_names.join(", ")));
+        }
+        self.chat_scan_debug = debug_parts.join(" | ");
 
         // 按文件夹名排序
         self.chat_groups.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
@@ -2591,6 +2684,16 @@ fn render_chat_history(
     });
     ui.separator();
     ui.add_space(6.0);
+
+    // 诊断信息（开发用）
+    if !state.chat_scan_debug.is_empty() {
+        ui.label(
+            egui::RichText::new(&state.chat_scan_debug)
+                .size(10.0)
+                .color(egui::Color32::from_rgb(120, 120, 120)),
+        );
+        ui.add_space(4.0);
+    }
 
     // 加载中
     if state.is_loading_chats {

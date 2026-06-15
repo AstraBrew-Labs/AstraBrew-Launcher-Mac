@@ -13,7 +13,7 @@
 //! │   │       └── default-user/
 //! │   │           └── settings.json ← 全局模式酒馆WebUI设置
 //! │   └── local_instances.json
-//! ├── sillytavern/            ← 酒馆核心文件目录 (ST installation)
+//! ├── sillytavern/            ← 酒馆核心文件目录 (ST installation) (在线下载实例)
 //! └── config.json             ← 启动器配置文件
 //!
 //! ~/Library/Logs/AstraBrew Launcher/      ← 日志目录 (logs)

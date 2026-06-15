@@ -771,6 +771,14 @@ impl eframe::App for MyApp {
                     if self.resource_manage_state.world_books.is_empty() && !self.resource_manage_state.is_loading_wb {
                         self.resource_manage_state.world_books_loaded = false;
                     }
+                    // 如果聊天记录列表为空且没在加载，触发自动加载
+                    if self.resource_manage_state.chat_groups.is_empty() && !self.resource_manage_state.is_loading_chats {
+                        self.resource_manage_state.chats_loaded = false;
+                    }
+                    // 如果预设列表为空且没在加载，触发自动加载
+                    if self.resource_manage_state.presets.is_empty() && !self.resource_manage_state.is_loading_presets {
+                        self.resource_manage_state.presets_loaded = false;
+                    }
 
                     pages::resource_manage::render(ui, &mut self.resource_manage_state, &self.settings_state.language);
                 }

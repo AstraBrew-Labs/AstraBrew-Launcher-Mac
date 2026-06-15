@@ -98,6 +98,8 @@
 - 点击文件日期 → 弹出聊天查看器（微信/QQ 风格气泡，用户右蓝/角色左灰，30条/页）
 - 新增翻译：`ch_viewer_title`, `ch_viewer_messages`
 - `CornerRadius` 字段类型是 `u8` 不是 `f32`
+- **缓存失效（2026-06-15）**：`load_chats()` 通过 `cached_chats_path` + `cached_chats_mode` 检测路径/模式变化，变化时自动重置 `chats_loaded`。同样修复了 `load_presets()`
+- **诊断信息（2026-06-15）**：`chat_scan_debug` 字段 + UI 显示扫描路径、发现文件夹数、跳过原因。扩展名比对改为 `eq_ignore_ascii_case`，目录遍历改为显式错误处理。
 
 ## 反向代理弹窗（2026-06-12）
 - `src/pages/reverse_proxy_popup.rs`：反向代理设置弹窗
