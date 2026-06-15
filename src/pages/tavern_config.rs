@@ -447,6 +447,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut TavernConfigUI, lang: &Language, cu
 
                     if template.exists() {
                         if TavernConfig::copy_template_to(&template, &target) {
+                            TavernConfig::optimize_after_generate(&target);
                             state.gen_config_status = GenConfigStatus::Done;
                             state.refresh();
                             state.gen_config_success = true;

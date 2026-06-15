@@ -1007,6 +1007,54 @@ impl TavernConfig {
         }
     }
 
+    /// 生成配置后自动优化：打开局域网访问 / 启用IPv6 / 端口改为 11451
+    /// 直接操作 YAML 文件，无需经过 TavernConfig 结构体
+    pub fn optimize_after_generate(path: &Path) {
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[tavern_config] optimize: 读取文件失败: {}", e);
+                return;
+            }
+        };
+
+        let mut root: serde_yaml::Value = match serde_yaml::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[tavern_config] optimize: 解析 YAML 失败: {}", e);
+                return;
+            }
+        };
+
+        let m = match root.as_mapping_mut() {
+            Some(m) => m,
+            None => return,
+        };
+
+        // 端口改为 11451
+        upsert_u16(m, "port", 11451);
+        // 允许局域网访问
+        upsert_bool(m, "listen", true);
+
+        // protocol.ipv6 = true
+        {
+            let p = child_mut(m, "protocol");
+            upsert_bool(p, "ipv6", true);
+        }
+
+        let yaml_str = match serde_yaml::to_string(&root) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[tavern_config] optimize: 序列化 YAML 失败: {}", e);
+                return;
+            }
+        };
+
+        if let Err(e) = fs::write(path, yaml_str) {
+            eprintln!("[tavern_config] optimize: 写入文件失败: {}", e);
+        }
+    }
+
     /// 在后台线程中下载默认模板配置文件
     /// target_path: 目标配置文件路径
     /// template_path: 默认模板缓存路径（下载后同时保存一份到此，供后续"恢复默认"使用）
@@ -1046,6 +1094,8 @@ impl TavernConfig {
                 }
                 match Self::download_single(&url, &target_path, &tx) {
                     Ok(()) => {
+                        // 生成后自动优化：打开局域网/IPv6，端口 11451
+                        Self::optimize_after_generate(&target_path);
                         // 同时保存一份到模板目录，供后续"恢复默认"使用
                         let _ = fs::copy(&target_path, &template_path);
                         let _ = tx.send(GenConfigMsg::Done);

@@ -48,6 +48,7 @@
 - 翻译：中英双语 60+ 个 key（`tc_*` 前缀）
 - **serde_yaml 0.9 不支持 `!tag:yaml.org,2002:null`** — 写 YAML null 用 `Value::Null`，不能用 tagged value，否则回读时解析失败 → 全默认值 → 保存覆盖原配置（数据丢失）
 - YAML 写入后要确保 serde_yaml 能回读
+- **生成配置自动优化（2026-06-15）**：`optimize_after_generate()` 直接修改 YAML → port=11451 / listen=true / protocol.ipv6=true，小白友好
 
 ## 控制台页面 + 进程管理（2026-06-03 初版 / 2026-06-08 进程对接）
 - `src/pages/console.rs`：ConsoleState（status + logs + process + instance_path + data_mode）+ render 函数

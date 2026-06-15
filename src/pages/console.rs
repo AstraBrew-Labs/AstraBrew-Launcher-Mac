@@ -4,6 +4,7 @@ use crate::lang;
 use crate::pages::settings::{Language, ProxyType, TavernDataMode};
 use egui::text::LayoutJob;
 use egui::{Color32, RichText, TextFormat, Vec2};
+use std::path::PathBuf;
 
 #[derive(PartialEq, Clone)]
 pub enum ConsoleStatus {
@@ -61,6 +62,8 @@ pub struct ConsoleState {
     pub webview_auto_opened: bool,
     /// 当前启动模式是否为桌面模式（状态栏不显示访问酒馆链接）
     pub is_desktop_mode: bool,
+    /// 优化后的 settings.json 是否已针对当前实例准备完毕
+    settings_prepared: bool,
 }
 
 impl ConsoleState {
@@ -90,6 +93,7 @@ impl ConsoleState {
             reopen_webview_triggered: false,
             webview_auto_opened: false,
             is_desktop_mode: false,
+            settings_prepared: false,
         }
     }
 
@@ -109,6 +113,12 @@ impl ConsoleState {
         allow_tavern_background: bool,
         server_mode_enabled: bool,
     ) {
+        // 检测实例是否变更，重置优化设置标记
+        let instance_changed = self.instance_path != instance_path;
+        if instance_changed {
+            self.settings_prepared = false;
+        }
+
         self.instance_path = instance_path;
         self.instance_type = instance_type;
         self.instance_version = instance_version;
@@ -150,6 +160,12 @@ impl ConsoleState {
                 self.status = ConsoleStatus::Stopped;
             }
         }
+
+        // 确保优化后的酒馆设置已生成（在进程启动前完成，避免被酒馆自身的生成逻辑覆盖）
+        if self.has_instance() && !self.settings_prepared {
+            self.prepare_optimized_settings();
+            self.settings_prepared = true;
+        }
     }
 
     /// 是否有已选择的酒馆实例
@@ -174,6 +190,75 @@ impl ConsoleState {
                 // 读取 macOS 系统代理（优先 HTTPS，回退 HTTP）
                 crate::core::network::read_system_proxy()
                     .map(|(addr, _enabled)| addr)
+            }
+        }
+    }
+
+    /// 首次启动酒馆时，将优化过的默认设置复制到目标位置。
+    ///
+    /// - **独立模式**：`<instance_path>/data/default-user/settings.json`
+    /// - **全局模式**：全局数据目录下的 `default-user/settings.json`
+    ///
+    /// 仅当目标文件不存在时复制。复制前会检查 `currentVersion`，
+    /// 如果与当前实例版本不一致则自动更新。
+    fn prepare_optimized_settings(&mut self) {
+        let paths = crate::utils::app_paths();
+
+        // 1. 确保模板文件存在（不存在则从常量生成）
+        paths.ensure_default_tavern_settings();
+
+        // 2. 读取模板
+        let content = match std::fs::read_to_string(paths.default_tavern_settings_file()) {
+            Ok(c) => c,
+            Err(e) => {
+                self.add_log(&format!("[系统] 读取默认设置模板失败: {}", e));
+                return;
+            }
+        };
+
+        // 3. 解析 JSON
+        let mut settings: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                self.add_log(&format!("[系统] 解析默认设置模板失败: {}", e));
+                return;
+            }
+        };
+
+        // 4. 检查并更新 currentVersion
+        let version = if self.instance_version.is_empty() {
+            "0.0.0"
+        } else {
+            &self.instance_version
+        };
+
+        if settings.get("currentVersion").and_then(|v| v.as_str()) != Some(version) {
+            settings["currentVersion"] = serde_json::Value::String(version.to_string());
+        }
+
+        // 5. 确定目标路径
+        let target = match self.data_mode {
+            TavernDataMode::Current => PathBuf::from(&self.instance_path)
+                .join("data")
+                .join("default-user")
+                .join("settings.json"),
+            TavernDataMode::Global => paths.global_tavern_settings_file(),
+        };
+
+        // 6. 仅在目标不存在时复制（首次启动）
+        if !target.exists() {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match serde_json::to_string_pretty(&settings) {
+                Ok(updated) => {
+                    if let Err(e) = std::fs::write(&target, &updated) {
+                        self.add_log(&format!("[系统] 写入默认设置失败: {}", e));
+                    }
+                }
+                Err(e) => {
+                    self.add_log(&format!("[系统] 序列化默认设置失败: {}", e));
+                }
             }
         }
     }
