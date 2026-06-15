@@ -62,6 +62,8 @@ pub struct ConsoleState {
     pub webview_auto_opened: bool,
     /// 当前启动模式是否为桌面模式（状态栏不显示访问酒馆链接）
     pub is_desktop_mode: bool,
+    /// 当前是否为服务器模式（禁止酒馆自动打开浏览器）
+    pub is_server_mode: bool,
     /// 优化后的 settings.json 是否已针对当前实例准备完毕
     settings_prepared: bool,
 }
@@ -93,6 +95,7 @@ impl ConsoleState {
             reopen_webview_triggered: false,
             webview_auto_opened: false,
             is_desktop_mode: false,
+            is_server_mode: false,
             settings_prepared: false,
         }
     }
@@ -129,6 +132,7 @@ impl ConsoleState {
         self.show_startup_command = show_startup_command;
         self.desktop_auto_stop = desktop_auto_stop;
         self.is_desktop_mode = is_desktop_mode;
+        self.is_server_mode = server_mode_enabled;
 
         // PM2 接管条件：服务器模式 + 允许酒馆后台运行 + PM2 已安装
         // 仅当服务器模式开启时才能被 PM2 接管，关闭服务器模式后必须切回直接模式
@@ -320,7 +324,7 @@ impl ConsoleState {
                 &self.data_mode,
                 proxy.as_deref(),
                 github_proxy.as_deref(),
-                self.is_desktop_mode,
+                self.is_desktop_mode || self.is_server_mode,
             );
             self.add_log(&format!("[启动命令] {}", cmd));
         }
@@ -329,7 +333,7 @@ impl ConsoleState {
             &self.data_mode,
             proxy.as_deref(),
             github_proxy.as_deref(),
-            self.is_desktop_mode,
+            self.is_desktop_mode || self.is_server_mode,
         ) {
             Ok(()) => {
                 self.status = ConsoleStatus::Running;
@@ -403,7 +407,7 @@ impl ConsoleState {
                 parts.push(format!("--node-args \"--import {}\"", interceptor));
             }
             // 构建脚本参数（复用 build_startup_command 的逻辑）
-            if self.is_desktop_mode {
+            if self.is_desktop_mode || self.is_server_mode {
                 parts.push("--browserLaunchEnabled false".to_string());
             }
             if self.data_mode == TavernDataMode::Global {
@@ -433,7 +437,7 @@ impl ConsoleState {
             &self.data_mode,
             proxy.as_deref(),
             github_proxy.as_deref(),
-            self.is_desktop_mode,
+            self.is_desktop_mode || self.is_server_mode,
             interceptor_path.as_deref(),
         ) {
             Ok(()) => {
@@ -796,7 +800,7 @@ impl ConsoleState {
                         &self.data_mode,
                         proxy.as_deref(),
                         github_proxy.as_deref(),
-                        self.is_desktop_mode,
+                        self.is_desktop_mode || self.is_server_mode,
                     );
                     self.add_log(&format!("[启动命令] {}", cmd));
                 }
@@ -805,7 +809,7 @@ impl ConsoleState {
                     &self.data_mode,
                     proxy.as_deref(),
                     github_proxy.as_deref(),
-                    self.is_desktop_mode,
+                    self.is_desktop_mode || self.is_server_mode,
                 ) {
                     Ok(()) => {
                         self.status = ConsoleStatus::Running;

@@ -356,7 +356,7 @@ impl TavernProcess {
             cmd.arg("localhost 127.0.0.1 ::1");
         }
 
-        // 桌面模式：禁止酒馆自动打开浏览器（由启动器的 WebView 替代）
+        // 桌面模式/服务器模式：禁止酒馆自动打开浏览器
         if is_desktop_mode {
             cmd.arg("--browserLaunchEnabled");
             cmd.arg("false");

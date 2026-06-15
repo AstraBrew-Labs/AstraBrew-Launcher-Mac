@@ -722,7 +722,7 @@ impl eframe::App for MyApp {
                     if current_key != self.tavern_config_ui.last_config_key {
                         self.tavern_config_ui.refresh();
                     }
-                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language, &mut self.current_page, self.settings_state.start_mode == StartMode::Desktop);
+                    pages::tavern_config::render(ui, &mut self.tavern_config_ui, &self.settings_state.language, &mut self.current_page, self.settings_state.start_mode == StartMode::Desktop, self.settings_state.server_mode_enabled);
                 }
                 Page::VersionManage => {
                     ui.heading(lang::t("version_manage", &self.settings_state.language));
