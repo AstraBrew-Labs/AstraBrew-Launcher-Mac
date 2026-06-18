@@ -213,7 +213,7 @@ impl Default for SettingsState {
             show_startup_command: false,
             npm_registry: NpmRegistry::default(),
             github_proxy_enabled: false,
-            github_proxy_url: "https://gt.astrabrew.cn/".to_string(),
+            github_proxy_url: "https://gh-proxy.org/".to_string(),
             proxy_type: ProxyType::default(),
             custom_proxy: String::new(),
             reverse_proxy_enabled: false,

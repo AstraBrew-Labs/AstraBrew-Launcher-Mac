@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 pub struct ProxyNode {
     pub url: String,
     pub tag: String,
-    /// 节点来源："开发者提供" 或 "第三方"
+    /// 节点来源："第三方"
     pub source: String,
 }
 
 // ─── 延迟测试 ─────────────────────────────────────────────────────────────────
+
 
 /// 测试单个节点 URL 的实测延迟（ms），失败则返回 None
 /// 通过对 {url}/favicon.ico 发起 HEAD 请求来测量
@@ -44,7 +45,7 @@ pub enum NodeLoadState {
 pub struct NodeEntry {
     pub url: String,
     pub tag: String,
-    pub source: String,   // "开发者提供" 或 "第三方"
+    pub source: String,   // "第三方"
     /// 实测延迟（ms），None = 测试中或失败
     pub measured_ms: Arc<Mutex<Option<Option<u64>>>>,
 }
@@ -108,14 +109,9 @@ fn build_and_test_nodes(
 fn fallback_nodes() -> Vec<ProxyNode> {
     vec![
         ProxyNode {
-            url: "https://gt.astrabrew.cn/".to_string(),
+            url: "https://gh-proxy.org/".to_string(),
             tag: "首选".to_string(),
-            source: "开发者提供".to_string(),
-        },
-        ProxyNode {
-            url: "https://gs.astrabrew.cn/".to_string(),
-            tag: "备用".to_string(),
-            source: "开发者提供".to_string(),
+            source: "第三方".to_string(),
         },
         ProxyNode {
             url: "https://ghfast.top/".to_string(),
