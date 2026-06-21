@@ -219,7 +219,10 @@ define_class!(
     #[thread_kind = MainThreadOnly]
     struct FileDownloadHandler;
 
-    impl FileDownloadHandler {
+    // 注意：WKScriptMessageHandler 的 userContentController:didReceiveScriptMessage: 是
+    // required 方法，必须定义在 `unsafe impl WKScriptMessageHandler` 块内，否则 objc2
+    // define_class! 宏在 debug 构建下会 panic（协议必需方法未在协议块中注册）。
+    unsafe impl WKScriptMessageHandler for FileDownloadHandler {
         #[allow(non_snake_case)]
         #[unsafe(method(userContentController:didReceiveScriptMessage:))]
         fn userContentController_didReceiveScriptMessage(
@@ -322,7 +325,6 @@ define_class!(
     }
 
     unsafe impl NSObjectProtocol for FileDownloadHandler {}
-    unsafe impl WKScriptMessageHandler for FileDownloadHandler {}
 );
 
 impl FileDownloadHandler {

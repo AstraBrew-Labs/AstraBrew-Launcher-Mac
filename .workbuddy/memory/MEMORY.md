@@ -16,6 +16,7 @@
 - 关键依赖：`objc2 0.6`, `objc2-app-kit 0.3`, `objc2-foundation 0.3`, `objc2-web-kit 0.3`, `block2 0.6`
 - NSData::alloc() 需要 `use objc2::AnyThread;`（AnyThread 类）
 - RcBlock → &DynBlock 转换用 `&*handler`（Deref）
+- **objc2 define_class! 协议必需方法**（2026-06-22 修复）：协议的 required 方法（无 `#[optional]`）必须定义在 `unsafe impl Protocol for Type { ... }` 块内，不能放在普通 `impl Type { ... }` 块。否则 debug 构建下 `ClassProtocolMethodsBuilder::finish()` panic。`WKScriptMessageHandler` 的 `userContentController:didReceiveScriptMessage:` 是 required；`WKNavigationDelegate` / `WKUIDelegate` 全是 optional
 
 ## 关键目录/文件
 - `src/main.rs`：主程序，MyApp 状态管理，eframe::App::update
