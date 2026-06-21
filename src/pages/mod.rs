@@ -1,3 +1,4 @@
+pub mod access_tavern_popup;
 pub mod console;
 pub mod extensions;
 pub mod home;

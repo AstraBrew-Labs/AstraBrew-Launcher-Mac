@@ -1,7 +1,7 @@
 use crate::core::settings::pm2::Pm2Manager;
 use crate::core::tavern_process::TavernProcess;
 use crate::lang;
-use crate::pages::settings::{Language, ProxyType, TavernDataMode};
+use crate::pages::settings::{Language, ProxyType, ServerServiceMode, TavernDataMode};
 use egui::text::LayoutJob;
 use egui::{Color32, RichText, TextFormat, Vec2};
 use std::path::PathBuf;
@@ -24,8 +24,8 @@ pub struct ConsoleState {
     pm2_manager: Pm2Manager,
     /// 是否使用 PM2 模式
     use_pm2: bool,
-    /// PM2 日志读取偏移量（已消费的行数）
-    pm2_log_offset: usize,
+    /// PM2 日志读取字节偏移量（追踪 out.log 文件已读位置）
+    pm2_log_byte_offset: u64,
     /// 上次 PM2 轮询时间（节流用，避免每帧调用 pm2 CLI 导致 UI 卡顿）
     last_pm2_poll: std::time::Instant,
     /// PM2 可用性缓存（避免每帧检测 pm2 --version）
@@ -64,6 +64,8 @@ pub struct ConsoleState {
     pub is_desktop_mode: bool,
     /// 当前是否为服务器模式（禁止酒馆自动打开浏览器）
     pub is_server_mode: bool,
+    /// 服务器模式下的服务模式（局域网/互联网），用于访问酒馆弹窗
+    pub server_service_mode: ServerServiceMode,
     /// 优化后的 settings.json 是否已针对当前实例准备完毕
     settings_prepared: bool,
 }
@@ -76,7 +78,7 @@ impl ConsoleState {
             process: TavernProcess::new(),
             pm2_manager: Pm2Manager::new(),
             use_pm2: false,
-            pm2_log_offset: 0,
+            pm2_log_byte_offset: 0,
             last_pm2_poll: std::time::Instant::now(),
             pm2_available_cache: Pm2Manager::is_installed(),
             last_pm2_check: std::time::Instant::now(),
@@ -96,6 +98,7 @@ impl ConsoleState {
             webview_auto_opened: false,
             is_desktop_mode: false,
             is_server_mode: false,
+            server_service_mode: ServerServiceMode::default(),
             settings_prepared: false,
         }
     }
@@ -115,6 +118,7 @@ impl ConsoleState {
         is_desktop_mode: bool,
         allow_tavern_background: bool,
         server_mode_enabled: bool,
+        server_service_mode: ServerServiceMode,
     ) {
         // 检测实例是否变更，重置优化设置标记
         let instance_changed = self.instance_path != instance_path;
@@ -133,6 +137,7 @@ impl ConsoleState {
         self.desktop_auto_stop = desktop_auto_stop;
         self.is_desktop_mode = is_desktop_mode;
         self.is_server_mode = server_mode_enabled;
+        self.server_service_mode = server_service_mode.clone();
 
         // PM2 接管条件：服务器模式 + 允许酒馆后台运行 + PM2 已安装
         // 仅当服务器模式开启时才能被 PM2 接管，关闭服务器模式后必须切回直接模式
@@ -353,7 +358,7 @@ impl ConsoleState {
         self.logs.clear();
         self.tavern_url = None;
         self.webview_auto_opened = false;
-        self.pm2_log_offset = 0;
+        self.pm2_log_byte_offset = 0;
 
         self.status = ConsoleStatus::Starting;
         self.add_log(&lang::t("pm2_starting", lang));
@@ -509,7 +514,7 @@ impl ConsoleState {
             // 清空 PM2 日志文件 + 内存日志
             let _ = self.pm2_manager.clear_logs();
             self.logs.clear();
-            self.pm2_log_offset = 0;
+            self.pm2_log_byte_offset = 0;
 
             self.add_log(&lang::t("pm2_restarting", lang));
 
@@ -598,8 +603,9 @@ impl ConsoleState {
                     if self.status != ConsoleStatus::Running {
                         self.status = ConsoleStatus::Running;
                         self.add_log("[系统] 检测到 PM2 托管进程正在运行，已恢复控制");
-                        // 拉取当前日志
-                        let existing_logs = self.pm2_manager.get_logs(200);
+                        // 拉取当前日志（从文件开头读取全部已有日志）
+                        let (existing_logs, new_offset) =
+                            self.pm2_manager.read_out_logs_since(0);
                         for line in &existing_logs {
                             let cleaned = strip_osc(line);
                             if self.tavern_url.is_none() {
@@ -610,7 +616,7 @@ impl ConsoleState {
                             }
                             self.add_log(&cleaned);
                         }
-                        self.pm2_log_offset = existing_logs.len();
+                        self.pm2_log_byte_offset = new_offset;
                     }
                     return;
                 }
@@ -686,10 +692,11 @@ impl ConsoleState {
         if self.status == ConsoleStatus::Running
             || self.status == ConsoleStatus::Starting
         {
-            let new_logs = self.pm2_manager.get_logs(200);
-            // 只取偏移量之后的新行
-            if new_logs.len() > self.pm2_log_offset {
-                for line in &new_logs[self.pm2_log_offset..] {
+            // 直接读取 out.log 文件从上次偏移开始的新内容
+            let (new_logs, new_offset) =
+                self.pm2_manager.read_out_logs_since(self.pm2_log_byte_offset);
+            if !new_logs.is_empty() {
+                for line in &new_logs {
                     let cleaned = strip_osc(line);
 
                     // 解析酒馆访问地址
@@ -702,7 +709,7 @@ impl ConsoleState {
 
                     self.add_log(&cleaned);
                 }
-                self.pm2_log_offset = new_logs.len();
+                self.pm2_log_byte_offset = new_offset;
             }
         }
     }
@@ -1232,11 +1239,19 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                     );
                                     ui.add_space(6.0);
 
-                                    // 正常模式：用浏览器打开；桌面模式：重新打开 WebView
-                                    let (btn_key, open_in_browser, icon) = if state.is_desktop_mode {
-                                        ("console_btn_open", false, egui_phosphor::regular::ARROW_SQUARE_OUT)
+                                    // 桌面模式：重新打开 WebView；服务器模式：打开访问弹窗；正常模式：浏览器打开
+                                    #[derive(Clone, Copy)]
+                                    enum VisitAction {
+                                        ReopenWebview,
+                                        OpenPopup,
+                                        OpenBrowser,
+                                    }
+                                    let (btn_key, action, icon) = if state.is_desktop_mode {
+                                        ("console_btn_open", VisitAction::ReopenWebview, egui_phosphor::regular::ARROW_SQUARE_OUT)
+                                    } else if state.is_server_mode {
+                                        ("console_btn_visit", VisitAction::OpenPopup, egui_phosphor::regular::GLOBE)
                                     } else {
-                                        ("console_btn_visit", true, egui_phosphor::regular::GLOBE)
+                                        ("console_btn_visit", VisitAction::OpenBrowser, egui_phosphor::regular::GLOBE)
                                     };
 
                                     let link_color = Color32::from_rgb(80, 180, 255);
@@ -1253,12 +1268,24 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     }
                                     if resp.clicked() {
-                                        if open_in_browser {
-                                            let _ = std::process::Command::new("open")
-                                                .arg(url)
-                                                .spawn();
-                                        } else {
-                                            state.reopen_webview_triggered = true;
+                                        match action {
+                                            VisitAction::OpenBrowser => {
+                                                let _ = std::process::Command::new("open")
+                                                    .arg(url)
+                                                    .spawn();
+                                            }
+                                            VisitAction::ReopenWebview => {
+                                                state.reopen_webview_triggered = true;
+                                            }
+                                            VisitAction::OpenPopup => {
+                                                let port = crate::pages::access_tavern_popup::parse_port(url);
+                                                crate::pages::access_tavern_popup::open_popup(
+                                                    url.clone(),
+                                                    state.server_service_mode.clone(),
+                                                    port,
+                                                    ui.ctx(),
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -1406,7 +1433,7 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                         .clicked()
                     {
                         state.logs.clear();
-                        state.pm2_log_offset = 0;
+                        state.pm2_log_byte_offset = 0;
                         if state.use_pm2 {
                             if let Err(e) = state.pm2_manager.clear_logs() {
                                 state.add_log(&format!("[错误] PM2 清空日志失败: {}", e));

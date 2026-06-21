@@ -759,6 +759,7 @@ pub fn render(
                                 ui.add(crate::ui::switch::toggle(&mut state.server_mode_enabled));
                             },
                         );
+                        ui.add_space(10.0);
 
                         // 服务器模式开启时：强制锁定启动模式为正常模式
                         if state.server_mode_enabled && state.start_mode != StartMode::Normal {
@@ -767,7 +768,6 @@ pub fn render(
 
                         // 酒馆服务模式（仅服务器模式开启时显示）
                         if state.server_mode_enabled {
-                            ui.add_space(10.0);
                             let svc_desc = match state.server_service_mode {
                                 ServerServiceMode::Lan => lang::t("server_mode_lan_desc", &state.language),
                                 ServerServiceMode::Internet => lang::t("server_mode_internet_desc", &state.language),
@@ -788,11 +788,11 @@ pub fn render(
                                     );
                                 },
                             );
+                            ui.add_space(10.0);
                         }
 
                         // 允许酒馆后台运行（仅服务器模式开启时显示）
                         if state.server_mode_enabled {
-                            ui.add_space(10.0);
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::ARROW_ARC_LEFT,
@@ -808,11 +808,11 @@ pub fn render(
                                     }
                                 },
                             );
+                            ui.add_space(10.0);
                         }
 
                         // 反向代理（仅服务器模式 + 互联网时显示，依赖 Caddy）
                         if state.server_mode_enabled && state.server_service_mode == ServerServiceMode::Internet {
-                            ui.add_space(10.0);
                             let caddy_installed = state.caddy_version.is_some();
                             setting_row(
                                 ui,

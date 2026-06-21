@@ -515,3 +515,102 @@ pub fn get_github_multi_test_result() -> Option<Vec<GithubMultiTestItem>> {
     let mut state = GITHUB_MULTI_TEST_STATE.lock().unwrap();
     state.results.take()
 }
+
+// ─── 本机 IP 地址检测 ─────────────────────────────────────────────────────────
+
+/// 获取局域网 IPv4 地址（解析 ifconfig，跳过回环和链路本地）
+pub fn get_lan_ipv4() -> Option<String> {
+    let output = Command::new("ifconfig").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("inet ") {
+            let ip = rest.split_whitespace().next()?;
+            if ip == "127.0.0.1" || ip.starts_with("169.254.") {
+                continue;
+            }
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+/// 获取局域网 IPv6 地址（解析 ifconfig，跳过回环和链路本地 fe80::）
+/// 仅返回全局 IPv6 地址（可用于 LAN 跨设备 HTTP 访问）
+pub fn get_lan_ipv6() -> Option<String> {
+    let output = Command::new("ifconfig").output().ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("inet6 ") {
+            let raw = rest.split_whitespace().next()?;
+            // 去掉 zone id 后缀（%en0 等）
+            let ip = raw.split('%').next().unwrap_or(raw);
+            if ip == "::1" || ip.starts_with("fe80:") {
+                continue;
+            }
+            return Some(ip.to_string());
+        }
+    }
+    None
+}
+
+/// 获取公网 IPv4 地址（优先 ip.sb，备用 ipify / ident.me）
+/// 通过 local_address 强制使用 IPv4 socket；**禁用所有代理**，确保获取到真实公网 IP
+pub fn get_public_ipv4() -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(8))
+        .no_proxy()
+        .build()
+        .ok()?;
+
+    let endpoints = [
+        "https://api-ipv4.ip.sb/ip",
+        "https://api4.ipify.org",
+        "https://v4.ident.me",
+    ];
+    for url in endpoints {
+        if let Ok(resp) = client.get(url).send() {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text() {
+                    let ip = text.trim().to_string();
+                    if !ip.is_empty() && ip.contains('.') && !ip.contains(':') {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 获取公网 IPv6 地址（优先 ip.sb，备用 ipify / ident.me）
+/// 通过 local_address 强制使用 IPv6 socket；**禁用所有代理**，确保获取到真实公网 IP
+pub fn get_public_ipv6() -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED))
+        .timeout(Duration::from_secs(8))
+        .no_proxy()
+        .build()
+        .ok()?;
+
+    let endpoints = [
+        "https://api-ipv6.ip.sb/ip",
+        "https://api6.ipify.org",
+        "https://v6.ident.me",
+    ];
+    for url in endpoints {
+        if let Ok(resp) = client.get(url).send() {
+            if resp.status().is_success() {
+                if let Ok(text) = resp.text() {
+                    let ip = text.trim().to_string();
+                    if !ip.is_empty() && ip.contains(':') {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+    }
+    None
+}

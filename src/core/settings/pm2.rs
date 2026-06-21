@@ -6,8 +6,8 @@
 //! - restart: pm2 restart astrabrew-launcher-sillytavern
 //! - force_kill: pm2 delete astrabrew-launcher-sillytavern
 //! - get_status: pm2 jlist → 解析状态
-//! - get_logs: pm2 logs astrabrew-launcher-sillytavern --lines N --nostream --raw
-//! - clear_logs: pm2 flush
+//! - get_logs: 直接读取 ~/.pm2/logs/<name>-out.log（字节偏移追踪）
+//! - clear_logs: pm2 flush + 直接删除日志文件
 //!
 //! 设计要点：
 //! - 所有操作都是同步阻塞的（PM2 CLI 执行很快）
@@ -330,77 +330,96 @@ impl Pm2Manager {
 
     // ---- 日志操作 ----
 
-    /// 获取 PM2 日志（最近 N 行）
-    ///
-    /// 通过 `pm2 logs astrabrew-launcher-sillytavern --lines N --nostream --raw` 获取。
-    /// 返回日志行列表（已去除 PM2 前缀格式）。
-    pub fn get_logs(&self, lines: usize) -> Vec<String> {
-        let output = match Command::new("pm2")
-            .arg("logs")
-            .arg(&self.process_name)
-            .arg("--lines")
-            .arg(lines.to_string())
-            .arg("--nostream")
-            .arg("--raw")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output()
-        {
-            Ok(o) => o,
-            Err(_) => return Vec::new(),
-        };
-
-        if !output.status.success() {
-            return Vec::new();
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        // 解析日志输出：去除 PM2 前缀行，只保留实际日志内容
-        // pm2 logs 输出格式（--raw 时）：
-        //   [PM2] Tailing logs for [astrabrew-launcher-sillytavern] ...  ← 跳过此行
-        //   实际日志行内容
-        //   实际日志行内容
-        let mut result = Vec::new();
-        let mut header_skipped = false;
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // 跳过 PM2 系统消息头
-            if !header_skipped {
-                if trimmed.starts_with("[PM2]") {
-                    header_skipped = true;
-                    continue;
-                }
-                header_skipped = true;
-            }
-            // 跳过剩余的 [PM2] 行
-            if trimmed.starts_with("[PM2]") {
-                continue;
-            }
-            result.push(trimmed.to_string());
-        }
-
-        result
+    /// 获取 PM2 stdout 日志文件路径（`~/.pm2/logs/<name>-out.log`）
+    fn out_log_path(&self) -> Option<std::path::PathBuf> {
+        let home = std::env::var("HOME").ok()?;
+        Some(std::path::PathBuf::from(home)
+            .join(".pm2/logs")
+            .join(format!("{}-out.log", self.process_name)))
     }
 
-    /// 清空 PM2 所有日志（pm2 flush）
-    pub fn clear_logs(&self) -> Result<(), String> {
-        let output = Command::new("pm2")
-            .arg("flush")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .map_err(|e| format!("无法执行 pm2 flush: {}", e))?;
+    /// 获取 PM2 stderr 日志文件路径（`~/.pm2/logs/<name>-error.log`）
+    fn error_log_path(&self) -> Option<std::path::PathBuf> {
+        let home = std::env::var("HOME").ok()?;
+        Some(std::path::PathBuf::from(home)
+            .join(".pm2/logs")
+            .join(format!("{}-error.log", self.process_name)))
+    }
 
-        if output.status.success() {
-            Ok(())
+    /// 读取 stdout 日志文件从指定字节偏移开始的新内容。
+    ///
+    /// 返回 `(新行列表, 新字节偏移)`。
+    /// - 如果文件不存在或读取失败，返回空列表和原偏移。
+    /// - 如果文件被截断（偏移超出文件大小），自动从头开始。
+    ///
+    /// 直接读取文件而非 `pm2 logs` 命令，原因：
+    /// 1. `pm2 flush` 在进程不存在时不会清空日志文件 → 旧日志残留 → 重复显示
+    /// 2. `pm2 logs --lines N` 返回最后 N 行，与行偏移追踪不兼容（sliding window）
+    /// 3. `pm2 logs --raw` 输出含 [TAILING] 和文件路径行，需额外解析
+    pub fn read_out_logs_since(&self, byte_offset: u64) -> (Vec<String>, u64) {
+        let path = match self.out_log_path() {
+            Some(p) => p,
+            None => return (Vec::new(), byte_offset),
+        };
+
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(_) => return (Vec::new(), byte_offset),
+        };
+
+        let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+        // 文件被截断（pm2 flush / 删除后重建），重置到开头
+        let start = if byte_offset > file_size {
+            0
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("PM2 清空日志失败: {}", stderr.trim()))
+            byte_offset
+        };
+
+        if start > 0 {
+            if file.seek(SeekFrom::Start(start)).is_err() {
+                return (Vec::new(), byte_offset);
+            }
         }
+
+        let mut content = String::new();
+        if file.read_to_string(&mut content).is_err() {
+            return (Vec::new(), byte_offset);
+        }
+
+        let new_offset = start + content.len() as u64;
+        let lines: Vec<String> = content
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect();
+
+        (lines, new_offset)
+    }
+
+    /// 清空 PM2 日志。
+    ///
+    /// 先执行 `pm2 flush`（处理进程运行中的情况），再直接删除日志文件
+    /// （处理进程不存在时 `pm2 flush` 不清空文件的问题）。
+    pub fn clear_logs(&self) -> Result<(), String> {
+        // 先尝试 pm2 flush（进程运行中时正确清空）
+        let _ = Command::new("pm2")
+            .arg("flush")
+            .arg(&self.process_name)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .output();
+
+        // 直接删除日志文件，确保即使 PM2 进程不存在也彻底清空
+        if let Some(path) = self.out_log_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+        if let Some(path) = self.error_log_path() {
+            let _ = std::fs::remove_file(&path);
+        }
+
+        Ok(())
     }
 
     // ---- 更新配置 ----

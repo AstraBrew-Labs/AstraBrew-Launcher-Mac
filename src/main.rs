@@ -498,6 +498,7 @@ impl eframe::App for MyApp {
                 self.settings_state.start_mode == StartMode::Desktop,
                 self.settings_state.allow_tavern_background,
                 self.settings_state.server_mode_enabled,
+                self.settings_state.server_service_mode.clone(),
             );
         }
 
@@ -838,6 +839,9 @@ impl eframe::App for MyApp {
 
         // 渲染 toast 堆叠
         self.toast_stack.render(ctx);
+
+        // 访问酒馆弹窗（服务器模式）
+        crate::pages::access_tavern_popup::render_access_tavern_popup(ctx, &self.settings_state.language);
 
         // 文件夹选择器处理
         if self.settings_state.trigger_folder_picker {

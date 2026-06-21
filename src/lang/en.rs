@@ -583,6 +583,19 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_ssl_key_hint" => "Paste PEM-format private key content...",
         "rp_select_file" => "Select File",
 
+        // Access Tavern Popup
+        "at_popup_title" => "Access Tavern",
+        "at_loading" => "Detecting network addresses...",
+        "at_qr_generating" => "Generating QR code...",
+        "at_ipv4" => "IPv4 Address",
+        "at_ipv6" => "IPv6 Address",
+        "at_fetch_failed" => "Failed to fetch",
+        "at_no_address" => "No available address obtained",
+        "at_retry" => "Retry",
+        "at_scan_hint" => "Scan to access Tavern",
+        "at_lan_mode" => "LAN Mode",
+        "at_internet_mode" => "Internet Mode",
+
         // Fallback
         _ => key,
     }

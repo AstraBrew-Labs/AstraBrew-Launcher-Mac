@@ -583,6 +583,19 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "rp_ssl_key_hint" => "粘贴 PEM 格式的私钥内容...",
         "rp_select_file" => "选择文件",
 
+        // 访问酒馆弹窗
+        "at_popup_title" => "访问酒馆",
+        "at_loading" => "正在检测网络地址...",
+        "at_qr_generating" => "生成二维码中...",
+        "at_ipv4" => "IPv4 地址",
+        "at_ipv6" => "IPv6 地址",
+        "at_fetch_failed" => "获取失败",
+        "at_no_address" => "未能获取到任何可用地址",
+        "at_retry" => "重新检测",
+        "at_scan_hint" => "扫码访问酒馆",
+        "at_lan_mode" => "局域网模式",
+        "at_internet_mode" => "互联网模式",
+
         // Fallback
         _ => key,
     }
