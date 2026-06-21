@@ -299,6 +299,8 @@ impl ConsoleState {
         self.logs.clear();
         self.tavern_url = None;
         self.webview_auto_opened = false;
+        // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
+        self.notified_connections.clear();
 
         self.status = ConsoleStatus::Starting;
         self.add_log(&lang::t("console_log_starting_instance", lang));
@@ -365,6 +367,8 @@ impl ConsoleState {
         self.tavern_url = None;
         self.webview_auto_opened = false;
         self.pm2_log_byte_offset = 0;
+        // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
+        self.notified_connections.clear();
 
         self.status = ConsoleStatus::Starting;
         self.add_log(&lang::t("pm2_starting", lang));
@@ -521,6 +525,8 @@ impl ConsoleState {
             let _ = self.pm2_manager.clear_logs();
             self.logs.clear();
             self.pm2_log_byte_offset = 0;
+            // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
+            self.notified_connections.clear();
 
             self.add_log(&lang::t("pm2_restarting", lang));
 
@@ -780,6 +786,8 @@ impl ConsoleState {
                 // 重启流程：停止已完成 → 清空日志并自动启动
                 self.restart_pending = false;
                 self.logs.clear();
+                // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
+                self.notified_connections.clear();
                 self.add_log(&lang::t("console_log_restarting_start", lang));
 
                 let github_proxy = if self.github_proxy_url.is_some() {
@@ -861,8 +869,19 @@ impl ConsoleState {
             .unwrap_or_else(|_| String::from("--:--:--"));
         self.logs.push(format!("[{}] {}", timestamp, msg));
 
-        // 检测酒馆连接日志 → 推送通知（去重：同一 IP+UA 只通知一次）
+        // 检测酒馆连接日志 → 推送通知（仅服务器模式 + 互联网模式启用）
         if let Some(info) = crate::core::network::parse_connection_log(msg) {
+            // 门禁：仅在"服务器模式开启 + 服务模式为互联网"时启用连接通知
+            // 局域网模式或非服务器模式下不弹通知（避免本机和内网设备频繁打扰）
+            if !self.is_server_mode
+                || !matches!(self.server_service_mode, ServerServiceMode::Internet)
+            {
+                return;
+            }
+            // 本机访问（127.0.0.1 / ::1 / 本机网卡 IP）不弹通知
+            if crate::core::network::is_local_ip(&info.ip) {
+                return;
+            }
             let dedup_key = format!("{}|{}", info.ip, info.user_agent);
             if !self.notified_connections.contains(&dedup_key) {
                 self.notified_connections.insert(dedup_key);
@@ -876,9 +895,17 @@ impl ConsoleState {
                         format!("{:02}:{:02}:{:02}", h, m, s)
                     })
                     .unwrap_or_else(|_| "--:--:--".to_string());
+
+                // 通知正文：第 1 行 IP；第 2 行设备/系统；第 3 行时间
+                // - 有设备型号时显示"设备 · 系统"，无则仅显示系统
+                // - 设备型号可能为 None（PC 浏览器无法识别具体硬件）
+                let second_line = match &info.device {
+                    Some(dev) if !dev.is_empty() => format!("{}  ·  {}", dev, info.os),
+                    _ => info.os.clone(),
+                };
                 self.pending_connection_notifications.push(format!(
-                    "{}/{}  {}",
-                    info.ip, info.os, time_str
+                    "{}\n{}\n{}",
+                    info.ip, second_line, time_str
                 ));
             }
         }

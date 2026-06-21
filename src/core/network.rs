@@ -624,6 +624,8 @@ pub struct ConnectionInfo {
     pub ip: String,
     /// 从 User Agent 解析出的操作系统（如 "macOS 10.15.7"）
     pub os: String,
+    /// 从 User Agent 解析出的设备型号/品牌（如 "iPhone"、"SM-S901B"），无法识别时为 None
+    pub device: Option<String>,
     /// 原始 User Agent
     pub user_agent: String,
 }
@@ -744,6 +746,100 @@ fn parse_os_from_ua(ua: &str) -> String {
     "Unknown".to_string()
 }
 
+/// 从 User Agent 字符串解析设备型号/品牌
+///
+/// 返回 `Some(可读型号)` 或 `None`（PC / 桌面浏览器 / 无法识别）。
+/// 桌面浏览器（Mac/Windows/Linux PC）通常无法识别具体硬件，返回 None。
+fn parse_device_from_ua(ua: &str) -> Option<String> {
+    // ---- iOS / iPadOS：UA 中常带机型代号，如 "iPhone14,3"（取自可选的设备标识段）----
+    // 注：标准 Safari UA 通常不含机型，但 SillyTavern 记录的 UA 若含 "iPhone<iOS>" 即识别
+    if ua.contains("iPhone") {
+        return Some("iPhone".to_string());
+    }
+    if ua.contains("iPad") {
+        return Some("iPad".to_string());
+    }
+    if ua.contains("iPod") {
+        return Some("iPod".to_string());
+    }
+
+    // ---- Android：品牌/机型编码在 "(Linux; Android 13; <model>)" 中 ----
+    // 例：Mozilla/5.0 (Linux; Android 13; SM-S901B) ...
+    //     Mozilla/5.0 (Linux; Android 12; Pixel 6) ...
+    //     Mozilla/5.0 (Linux; Android 14; CPH2581) ...
+    if let Some(android_idx) = ua.find("Android") {
+        // Android 之后通常跟着 "版本;" 再跟机型，机型位于 "Android X; <model>)"
+        let after = &ua[android_idx..];
+        // 形如 "Android 13; SM-S901B)" — 取最后一个分号后、右括号前的内容
+        if let Some(paren_end) = after.find(')') {
+            let segment = &after[..paren_end];
+            // 取分号后的最后一段作为机型
+            if let Some(semi) = segment.rfind(';') {
+                let model = segment[semi + 1..].trim();
+                // 过滤空值或明显非机型占位（如 "wv" 表示 WebView）
+                if !model.is_empty() && model.len() <= 40 {
+                    // 尝试把机型代号映射为品牌可读名
+                    let brand = android_brand_from_model(model);
+                    return Some(brand.unwrap_or_else(|| model.to_string()));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// 将部分已知的 Android 机型代号映射为"品牌 可读名"，无法识别时返回 None。
+///
+/// 这只是一张覆盖常见机型的小表，命中则更友好；不命中则直接回退显示原始代号。
+fn android_brand_from_model(model: &str) -> Option<String> {
+    let m = model.to_uppercase();
+    // 三星：SM-XXXX / SGH-XXXX / SCH-XXXX / GT-XXXX
+    if m.starts_with("SM-")
+        || m.starts_with("SGH-")
+        || m.starts_with("SCH-")
+        || m.starts_with("GT-")
+    {
+        return Some(format!("Samsung {}", model));
+    }
+    // 小米 / Redmi / POCO：常见前缀 2XXXXXXX（数字串）或 M2xxx / Redmi / POCO
+    if model.starts_with("Redmi") || model.starts_with("POCO") || model.starts_with("Mi ") {
+        return Some(format!("Xiaomi {}", model));
+    }
+    if model.starts_with("M2") && model.len() >= 6 && model[2..].chars().all(|c| c.is_ascii_digit()) {
+        return Some(format!("Xiaomi {}", model));
+    }
+    // OPPO / OnePlus / realme
+    if m.starts_with("CPH") || m.starts_with("ONEPLUS") || m.starts_with("RMX") {
+        if m.starts_with("ONEPLUS") {
+            return Some(format!("OnePlus {}", model));
+        }
+        if m.starts_with("RMX") {
+            return Some(format!("realme {}", model));
+        }
+        return Some(format!("OPPO {}", model));
+    }
+    // vivo：VXXXX / V2xxx / IXXXX
+    if (m.starts_with('V') || m.starts_with('I'))
+        && model.len() >= 5
+        && model[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Some(format!("vivo {}", model));
+    }
+    // 华为：HUAWEI / Honor / HW-XXX / DCO-XXX
+    if model.starts_with("HUAWEI") || model.starts_with("Honor") {
+        return Some(model.to_string());
+    }
+    if m.starts_with("HW-") || m.starts_with("DCO-") {
+        return Some(format!("HUAWEI {}", model));
+    }
+    // Google Pixel
+    if model.starts_with("Pixel") {
+        return Some(format!("Google {}", model));
+    }
+    None
+}
+
 /// 解析酒馆日志中的连接信息
 ///
 /// 日志格式：`New connection from <IP>; User Agent: <UA>`
@@ -769,9 +865,66 @@ pub fn parse_connection_log(line: &str) -> Option<ConnectionInfo> {
     }
 
     let os = parse_os_from_ua(&ua);
+    let device = parse_device_from_ua(&ua);
     Some(ConnectionInfo {
         ip,
         os,
+        device,
         user_agent: ua,
     })
 }
+
+// ─── 本机 / 局域网 IP 识别（连接通知过滤）────────────────────────────────────
+
+/// 判断给定 IP 字符串是否为本机访问（无需弹出连接通知）。
+///
+/// 命中以下任一条件即视为本机：
+/// - 字面量回环：`127.0.0.1`、`::1`、`localhost`
+/// - 本机任一网卡分配的地址（含 LAN IPv4 / 全局 IPv6）
+///
+/// 注意：服务器模式下手机经路由器访问 MAC 的 LAN IP（如 192.168.x.x），
+/// 在 MAC 的网卡上即为本机地址 → 此时会判定为本机访问并跳过通知，
+/// 但手机自身 IP（如 192.168.1.50）不在本机网卡上，仍正常通知。
+pub fn is_local_ip(ip: &str) -> bool {
+    let trimmed = ip.trim();
+    if trimmed.is_empty() {
+        return true; // 异常情况，保守过滤
+    }
+    // 字面量回环
+    if matches!(trimmed, "127.0.0.1" | "::1" | "localhost") || trimmed.starts_with("127.") {
+        return true;
+    }
+    // 命中本机网卡 IP
+    LOCAL_IP_SET.contains(trimmed)
+}
+
+/// 本机所有网卡 IP 的集合（启动时扫描一次后缓存）。
+///
+/// 用 `LazyLock` 实现首次访问时填充。包含：
+/// - 局域网 IPv4（跳过回环和链路本地 169.254.x.x）
+/// - 全局 IPv6（跳过回环 ::1 和链路本地 fe80::）
+/// 同时展开含/不含 zone id（`%en0`）两种形式，方便匹配。
+static LOCAL_IP_SET: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+    let mut set = std::collections::HashSet::new();
+    if let Ok(output) = Command::new("ifconfig").output() {
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("inet ") {
+                if let Some(ip) = rest.split_whitespace().next() {
+                    if ip != "127.0.0.1" && !ip.starts_with("169.254.") {
+                        set.insert(ip.to_string());
+                    }
+                }
+            } else if let Some(rest) = trimmed.strip_prefix("inet6 ") {
+                if let Some(raw) = rest.split_whitespace().next() {
+                    let base = raw.split('%').next().unwrap_or(raw);
+                    if base != "::1" && !base.starts_with("fe80:") {
+                        set.insert(base.to_string());
+                    }
+                }
+            }
+        }
+    }
+    set
+});
