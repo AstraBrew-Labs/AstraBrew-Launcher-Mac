@@ -139,7 +139,6 @@ struct MyApp {
     // 资源管理状态
     resource_manage_state: ResourceManageState,
     // brew 任务状态
-    homebrew_update_state: pages::settings::BrewTaskState,
     git_install_state: pages::settings::BrewTaskState,
     nodejs_install_state: pages::settings::BrewTaskState,
     caddy_install_state: pages::settings::BrewTaskState,
@@ -194,7 +193,6 @@ impl MyApp {
             ),
             console_state: ConsoleState::new(),
             resource_manage_state: ResourceManageState::new(),
-            homebrew_update_state: pages::settings::BrewTaskState::new(),
             git_install_state: pages::settings::BrewTaskState::new(),
             nodejs_install_state: pages::settings::BrewTaskState::new(),
             caddy_install_state: pages::settings::BrewTaskState::new(),
@@ -367,9 +365,6 @@ impl eframe::App for MyApp {
         let old_state = self.settings_state.clone();
 
         // 轮询 brew 任务日志
-        if let Some(new_ver) = self.homebrew_update_state.poll() {
-            self.settings_state.homebrew_version = Some(new_ver);
-        }
         if let Some(new_ver) = self.git_install_state.poll() {
             self.settings_state.git_version = Some(new_ver);
         }
@@ -382,12 +377,10 @@ impl eframe::App for MyApp {
         if let Some(new_ver) = self.pm2_install_state.poll() {
             self.settings_state.pm2_version = Some(new_ver);
         }
-        if self.homebrew_update_state.running
-            || self.git_install_state.running
+        if self.git_install_state.running
             || self.nodejs_install_state.running
             || self.caddy_install_state.running
             || self.pm2_install_state.running
-            || self.homebrew_update_state.done_at.is_some()
             || self.git_install_state.done_at.is_some()
             || self.nodejs_install_state.done_at.is_some()
             || self.caddy_install_state.done_at.is_some()
@@ -808,7 +801,6 @@ impl eframe::App for MyApp {
                         ui,
                         &mut self.settings_tab,
                         &mut self.settings_state,
-                        &mut self.homebrew_update_state,
                         &mut self.git_install_state,
                         &mut self.nodejs_install_state,
                         &mut self.caddy_install_state,

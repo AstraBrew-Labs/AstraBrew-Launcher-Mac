@@ -300,7 +300,14 @@ pub struct BrewTaskState {
     pub receiver: Option<std::sync::mpsc::Receiver<String>>,
     /// 任务完成的时间点（用于 3 秒后自动关闭）
     pub done_at: Option<std::time::Instant>,
+    /// 任务开始的时间点（用于超时检测）
+    pub started_at: Option<std::time::Instant>,
+    /// 是否已超时
+    pub timed_out: bool,
 }
+
+/// 安装/更新任务的超时时间（5 分钟）
+const BREW_TASK_TIMEOUT_SECS: u64 = 300;
 
 impl BrewTaskState {
     pub fn new() -> Self {
@@ -310,20 +317,9 @@ impl BrewTaskState {
             running: false,
             receiver: None,
             done_at: None,
+            started_at: None,
+            timed_out: false,
         }
-    }
-
-    /// 启动 brew update
-    pub fn start_update(&mut self) {
-        use crate::core::settings::env_detect;
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.receiver = Some(rx);
-        self.log = String::new();
-        self.running = true;
-        self.show = true;
-        std::thread::spawn(move || {
-            env_detect::run_brew_update(tx);
-        });
     }
 
     /// 启动 brew install <package>
@@ -335,6 +331,9 @@ impl BrewTaskState {
         self.log = String::new();
         self.running = true;
         self.show = true;
+        self.done_at = None;
+        self.timed_out = false;
+        self.started_at = Some(std::time::Instant::now());
         std::thread::spawn(move || {
             env_detect::run_brew_install(&package, tx);
         });
@@ -349,6 +348,9 @@ impl BrewTaskState {
         self.log = String::new();
         self.running = true;
         self.show = true;
+        self.done_at = None;
+        self.timed_out = false;
+        self.started_at = Some(std::time::Instant::now());
         std::thread::spawn(move || {
             env_detect::run_npm_install_global(&package, tx);
         });
@@ -390,6 +392,7 @@ fn render_brew_task_window(
     waiting: &str,
     running_label: &str,
     close_label: &str,
+    timeout_msg: &str,
 ) {
     // 完成后 3 秒自动关闭
     if let Some(done_at) = task.done_at {
@@ -399,6 +402,26 @@ fn render_brew_task_window(
             return;
         }
         ctx.request_repaint();
+    }
+
+    // 超时检测：运行超过 5 分钟则标记超时，停止等待
+    if task.running && !task.timed_out {
+        if let Some(started_at) = task.started_at {
+            if started_at.elapsed().as_secs() >= BREW_TASK_TIMEOUT_SECS {
+                task.timed_out = true;
+                task.running = false;
+                task.receiver = None; // 丢弃 receiver，不再轮询
+                task.done_at = None;
+                if !task.log.is_empty() {
+                    task.log.push('\n');
+                }
+                task.log.push('\n');
+                task.log.push_str("⏰ ");
+                task.log.push_str(timeout_msg);
+            } else {
+                ctx.request_repaint();
+            }
+        }
     }
 
     if !task.show {
@@ -427,11 +450,19 @@ fn render_brew_task_window(
                 if task.running {
                     ui.spinner();
                     ui.label(running_label);
+                } else if task.timed_out {
+                    ui.label(
+                        egui::RichText::new(timeout_msg)
+                            .color(egui::Color32::from_rgb(220, 80, 80))
+                            .strong(),
+                    );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !task.running {
                         if ui.button(close_label).clicked() {
                             task.show = false;
+                            task.timed_out = false;
+                            task.started_at = None;
                         }
                     }
                 });
@@ -496,7 +527,6 @@ pub fn render(
     ui: &mut egui::Ui,
     tab: &mut SettingsTab,
     state: &mut SettingsState,
-    homebrew_update: &mut BrewTaskState,
     git_install: &mut BrewTaskState,
     nodejs_install: &mut BrewTaskState,
     caddy_install: &mut BrewTaskState,
@@ -780,16 +810,24 @@ pub fn render(
                             );
                         }
 
-                        // 反向代理（仅服务器模式 + 互联网时显示）
+                        // 反向代理（仅服务器模式 + 互联网时显示，依赖 Caddy）
                         if state.server_mode_enabled && state.server_service_mode == ServerServiceMode::Internet {
                             ui.add_space(10.0);
+                            let caddy_installed = state.caddy_version.is_some();
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::ARROWS_LEFT_RIGHT,
                                 lang::t("rp_title", &state.language),
                                 lang::t("rp_manage_desc", &state.language),
                                 |ui| {
-                                    if ui.button(lang::t("rp_manage", &state.language)).clicked() {
+                                    let btn = egui::Button::new(lang::t("rp_manage", &state.language));
+                                    let resp = if caddy_installed {
+                                        ui.add_enabled(true, btn)
+                                    } else {
+                                        ui.add_enabled(false, btn)
+                                            .on_disabled_hover_text(lang::t("rp_need_caddy", &state.language))
+                                    };
+                                    if resp.clicked() {
                                         let mut popup = crate::pages::reverse_proxy_popup::REVERSE_PROXY_POPUP.lock().unwrap();
                                         popup.show = true;
                                     }
@@ -874,18 +912,18 @@ pub fn render(
                             let hv_outdated = hv.as_ref().map_or(false, |v| {
                                 crate::core::settings::env_detect::is_homebrew_outdated(v)
                             });
+                            let title = if hv_outdated {
+                                format!("Homebrew  ⚠ {}", lang::t("version_too_low", &state.language))
+                            } else {
+                                "Homebrew".to_string()
+                            };
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::BEER_BOTTLE,
-                                "Homebrew",
+                                &title,
                                 lang::t("homebrew_purpose", &state.language),
                                 |ui| {
                                     match hv {
-                                        Some(ref ver) if hv_outdated => {
-                                            if ui.button(lang::t("update_btn", &state.language)).clicked() {
-                                                homebrew_update.start_update();
-                                            }
-                                        }
                                         Some(ref ver) => {
                                             ui.label(egui::RichText::new(ver.as_str()).size(14.0));
                                         }
@@ -947,14 +985,15 @@ pub fn render(
                                 |ui| {
                                     match nv {
                                         Some(ref ver) if nv_outdated => {
-                                            let btn = egui::Button::new(lang::t("update_btn", &state.language));
+                                            // 版本过低时直接用安装命令升级覆盖，不先 brew update
+                                            let btn = egui::Button::new(lang::t("upgrade_btn", &state.language));
                                             let resp = if brew_installed {
                                                 ui.add_enabled(true, btn)
                                             } else {
                                                 ui.add_enabled(false, btn)
                                             };
                                             if resp.clicked() {
-                                                // TODO: 触发 NodeJs 更新逻辑
+                                                nodejs_install.start_install("node@24");
                                             }
                                         }
                                         Some(ref ver) => {
@@ -1058,17 +1097,6 @@ pub fn render(
                         }
                     });
 
-                    // Homebrew 更新弹窗
-                    render_brew_task_window(
-                        ui.ctx(),
-                        homebrew_update,
-                        lang::t("homebrew_update_title", &state.language),
-                        lang::t("homebrew_update_desc", &state.language),
-                        lang::t("homebrew_update_waiting", &state.language),
-                        lang::t("homebrew_update_running", &state.language),
-                        lang::t("close", &state.language),
-                    );
-
                     // Git 安装弹窗
                     render_brew_task_window(
                         ui.ctx(),
@@ -1078,6 +1106,7 @@ pub fn render(
                         lang::t("brew_install_waiting", &state.language),
                         lang::t("brew_install_running", &state.language),
                         lang::t("close", &state.language),
+                        lang::t("install_timeout", &state.language),
                     );
 
                     // NodeJs 安装弹窗
@@ -1089,6 +1118,7 @@ pub fn render(
                         lang::t("brew_install_waiting", &state.language),
                         lang::t("brew_install_running", &state.language),
                         lang::t("close", &state.language),
+                        lang::t("install_timeout", &state.language),
                     );
 
                     // Caddy 安装弹窗
@@ -1100,6 +1130,7 @@ pub fn render(
                         lang::t("brew_install_waiting", &state.language),
                         lang::t("brew_install_running", &state.language),
                         lang::t("close", &state.language),
+                        lang::t("install_timeout", &state.language),
                     );
 
                     // PM2 安装弹窗
@@ -1111,6 +1142,7 @@ pub fn render(
                         lang::t("brew_install_waiting", &state.language),
                         lang::t("brew_install_running", &state.language),
                         lang::t("close", &state.language),
+                        lang::t("install_timeout", &state.language),
                     );
                     }
 

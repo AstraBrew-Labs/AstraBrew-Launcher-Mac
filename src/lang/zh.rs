@@ -130,14 +130,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "env_dependencies" => "环境依赖",
         "homebrew_purpose" => "MacOS下的环境安装工具（必装）",
         "update_btn" => "更新",
+        "upgrade_btn" => "升级",
         "version_too_low" => "版本过低",
         "close" => "关闭",
-
-        // Homebrew 更新弹窗
-        "homebrew_update_title" => "Homebrew 更新",
-        "homebrew_update_desc" => "正在执行 brew update，请稍候...",
-        "homebrew_update_waiting" => "等待输出...",
-        "homebrew_update_running" => "更新中...",
+        "install_timeout" => "安装超时，请检查网络环境",
 
         // 安装弹窗
         "git_install_title" => "Git 安装",
@@ -564,7 +560,8 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // 反向代理
         "rp_title" => "反向代理",
         "rp_manage" => "管理",
-        "rp_manage_desc" => "配置反向代理域名、端口和 SSL 证书",
+        "rp_manage_desc" => "配置反向代理域名、端口和 SSL 证书（依赖Caddy）",
+        "rp_need_caddy" => "请先安装 Caddy",
         "rp_popup_title" => "反向代理设置",
         "rp_master_switch" => "启用反向代理",
         "rp_tab_basic" => "基本设置",

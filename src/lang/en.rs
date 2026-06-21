@@ -130,14 +130,10 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "env_dependencies" => "Environment Dependencies",
         "homebrew_purpose" => "Package manager for macOS (Required)",
         "update_btn" => "Update",
+        "upgrade_btn" => "Upgrade",
         "version_too_low" => "Low Version",
         "close" => "Close",
-
-        // Homebrew Update Popup
-        "homebrew_update_title" => "Homebrew Update",
-        "homebrew_update_desc" => "Running brew update, please wait...",
-        "homebrew_update_waiting" => "Waiting for output...",
-        "homebrew_update_running" => "Updating...",
+        "install_timeout" => "Installation timed out, please check your network",
 
         // Install Popups
         "git_install_title" => "Git Installation",
@@ -564,7 +560,8 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // Reverse Proxy
         "rp_title" => "Reverse Proxy",
         "rp_manage" => "Manage",
-        "rp_manage_desc" => "Configure reverse proxy domain, port, and SSL certificate",
+        "rp_manage_desc" => "Configure reverse proxy domain, port, and SSL certificate (Requires Caddy)",
+        "rp_need_caddy" => "Please install Caddy first",
         "rp_popup_title" => "Reverse Proxy Settings",
         "rp_master_switch" => "Enable Reverse Proxy",
         "rp_tab_basic" => "Basic Settings",

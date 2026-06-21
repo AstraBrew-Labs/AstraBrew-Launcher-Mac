@@ -155,11 +155,6 @@ pub fn is_nodejs_outdated(version: &str) -> bool {
     }
 }
 
-/// 运行 brew update 并返回日志（通过 channel 逐行发送）
-pub fn run_brew_update(sender: std::sync::mpsc::Sender<String>) {
-    run_brew_command(&["update"], sender, "homebrew");
-}
-
 /// 运行 brew install <package> 并返回日志
 pub fn run_brew_install(package: &str, sender: std::sync::mpsc::Sender<String>) {
     let detect_target = match package {
