@@ -513,6 +513,9 @@ impl eframe::App for MyApp {
 
         // ---- 桌面模式 WebView 管理 ----
         if self.settings_state.start_mode == StartMode::Desktop {
+            // 每帧同步导出路径设置到 WebView（用户在设置页修改后即时生效）
+            DesktopWebView::set_export_path(&self.settings_state.tavern_export_path);
+
             // 日志中出现 "Go to: http://..." → 首次自动打开 WebView
             if let Some(ref url) = self.console_state.tavern_url {
                 if self.desktop_webview.is_none() && !self.console_state.webview_auto_opened {

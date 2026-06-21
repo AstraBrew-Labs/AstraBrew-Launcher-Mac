@@ -416,6 +416,14 @@ pub struct DesktopWebView {
 }
 
 impl DesktopWebView {
+    /// 更新导出文件保存目录。
+    ///
+    /// 设置页修改 `tavern_export_path` 后每帧调用此方法同步到 WebView，
+    /// 这样无需重新打开 WebView 即可让新路径生效。
+    pub fn set_export_path(path: &str) {
+        *EXPORT_PATH.lock().unwrap() = path.to_string();
+    }
+
     /// 在主线程上创建 NSWindow + WKWebView
     ///
     /// - `url`: 酒馆访问地址（如 http://127.0.0.1:8000）
@@ -425,7 +433,7 @@ impl DesktopWebView {
     /// 调用者必须确保在主线程上调用此方法。
     pub fn open(url: &str, title: &str, export_path: String) -> Result<Self, String> {
         // 更新 blob 下载目标目录
-        *EXPORT_PATH.lock().unwrap() = export_path;
+        Self::set_export_path(&export_path);
 
         let mtm =
             MainThreadMarker::new().ok_or("桌面模式 WebView 必须在主线程创建")?;
