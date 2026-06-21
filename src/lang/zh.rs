@@ -93,6 +93,8 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "desktop_mode_desc" => "用 Webview 打开酒馆页面",
         "desktop_auto_stop" => "关闭酒馆窗口自动停止服务",
         "desktop_auto_stop_desc" => "关闭 Webview 窗口时，自动停止正在运行的酒馆服务",
+        "desktop_export_path" => "导出保存目录",
+        "desktop_export_path_desc" => "在酒馆页面里点击导出，文件自动保存的目录",
         "server_start_mode" => "服务器模式",
         "server_mode_enabled" => "启用服务器模式",
         "server_mode_enabled_desc" => "把此设备当做一台仅运行酒馆服务的服务器",
@@ -109,6 +111,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "global_data_path" => "全局数据存放位置",
         "global_data_path_desc" => "设置全局模式下的数据存储目录，酒馆配置与数据将一同保存于此",
         "change_path" => "更改位置",
+        "browse" => "浏览...",
         "auto_start" => "软件自启动",
         "auto_start_desc" => "开机时自动启动星酿启动器",
         "auto_minimize" => "启动后自动最小化",
@@ -556,6 +559,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // 文件/文件夹对话框
         "dialog_select_package_json" => "选择酒馆的 package.json 文件",
         "dialog_select_folder" => "选择文件夹",
+        "dialog_select_export_folder" => "选择导出保存目录",
 
         // 反向代理
         "rp_title" => "反向代理",

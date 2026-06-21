@@ -93,6 +93,8 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "desktop_mode_desc" => "Open Tavern page with WebView",
         "desktop_auto_stop" => "Stop service when closing tavern window",
         "desktop_auto_stop_desc" => "Automatically stop the running tavern service when closing the WebView window",
+        "desktop_export_path" => "Export save directory",
+        "desktop_export_path_desc" => "Directory where files exported from the tavern page are automatically saved",
         "server_start_mode" => "Server Mode",
         "server_mode_enabled" => "Enable Server Mode",
         "server_mode_enabled_desc" => "Use this device as a dedicated Tavern service server",
@@ -109,6 +111,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "global_data_path" => "Global Data Path",
         "global_data_path_desc" => "Set the storage directory for global mode. Tavern config and data will be saved here together",
         "change_path" => "Change",
+        "browse" => "Browse...",
         "auto_start" => "Auto Start",
         "auto_start_desc" => "Launch AstraBrew Launcher on system startup",
         "auto_minimize" => "Minimize on Startup",
@@ -556,6 +559,7 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         // File/Folder Dialogs
         "dialog_select_package_json" => "Select SillyTavern package.json",
         "dialog_select_folder" => "Select Folder",
+        "dialog_select_export_folder" => "Select export save directory",
 
         // Reverse Proxy
         "rp_title" => "Reverse Proxy",

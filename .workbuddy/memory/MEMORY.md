@@ -6,6 +6,17 @@
 - **平台**：仅macOS
 - **窗口规格**：默认 1280x720（16:9），最小 800x600，禁用最大化
 
+## 桌面模式 WebView（2026-06-18）
+- `src/core/desktop_webview.rs`：NSWindow + WKWebView + delegate 管理
+- **WebViewNavDelegate**（WKNavigationDelegate）：
+  - 外部链接 / target="_blank" → 默认浏览器打开
+  - 不可显示 MIME 类型 → 默认浏览器下载
+  - **blob: URL 导出** → JS fetch blob → base64 → NSSavePanel 原生保存对话框
+- **WebViewUIDelegate**（WKUIDelegate）：`<input type="file">` → NSOpenPanel
+- 关键依赖：`objc2 0.6`, `objc2-app-kit 0.3`, `objc2-foundation 0.3`, `objc2-web-kit 0.3`, `block2 0.6`
+- NSData::alloc() 需要 `use objc2::AnyThread;`（AnyThread 类）
+- RcBlock → &DynBlock 转换用 `&*handler`（Deref）
+
 ## 关键目录/文件
 - `src/main.rs`：主程序，MyApp 状态管理，eframe::App::update
 - `src/pages/settings.rs`：设置页面 UI + SettingsState 数据结构

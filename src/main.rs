@@ -152,6 +152,7 @@ struct MyApp {
     github_node_state: crate::core::settings::github_proxy::NodeLoadState,
     on_refresh_nodes: bool,
     folder_picker_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    export_path_picker_rx: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     // 异步路径检查
     path_check_rx: Option<std::sync::mpsc::Receiver<PathCheckResult>>,
     last_path_check: Option<std::time::Instant>,
@@ -202,6 +203,7 @@ impl MyApp {
             github_node_state: crate::core::settings::github_proxy::NodeLoadState::Done(vec![]),
             on_refresh_nodes: false,
             folder_picker_rx: None,
+            export_path_picker_rx: None,
             path_check_rx: None,
             last_path_check: None,
             desktop_webview: None,
@@ -518,7 +520,7 @@ impl eframe::App for MyApp {
                         "SillyTavern - v{}",
                         self.console_state.instance_version
                     );
-                    match DesktopWebView::open(url, &title) {
+                    match DesktopWebView::open(url, &title, self.settings_state.tavern_export_path.clone()) {
                         Ok(wv) => {
                             self.console_state.add_log(&format!(
                                 "[系统] 桌面模式 WebView 已打开: {}",
@@ -564,7 +566,7 @@ impl eframe::App for MyApp {
                         "SillyTavern - v{}",
                         self.console_state.instance_version
                     );
-                    match DesktopWebView::open(url, &title) {
+                    match DesktopWebView::open(url, &title, self.settings_state.tavern_export_path.clone()) {
                         Ok(wv) => {
                             self.console_state.add_log(&format!(
                                 "[系统] 桌面模式 WebView 已打开: {}",
@@ -828,6 +830,17 @@ impl eframe::App for MyApp {
             self.toast_stack.push(toast_text, ctx);
         }
 
+        // blob 下载结果通知（来自桌面模式 WebView）
+        {
+            let mut notifications =
+                crate::core::desktop_webview::DOWNLOAD_NOTIFICATIONS
+                    .lock()
+                    .unwrap();
+            for msg in notifications.drain(..) {
+                self.toast_stack.push(msg, ctx);
+            }
+        }
+
         // 渲染 toast 堆叠
         self.toast_stack.render(ctx);
 
@@ -850,6 +863,28 @@ impl eframe::App for MyApp {
                         Some(path.to_string_lossy().to_string());
                 }
                 self.folder_picker_rx = None;
+            }
+        }
+
+        // 导出路径选择器处理
+        if self.settings_state.trigger_export_path_picker {
+            self.settings_state.trigger_export_path_picker = false;
+            let lang = self.settings_state.language;
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.export_path_picker_rx = Some(rx);
+            std::thread::spawn(move || {
+                let title = lang::t("dialog_select_export_folder", &lang);
+                let path = rfd::FileDialog::new().set_title(title).pick_folder();
+                let _ = tx.send(path);
+            });
+        }
+        if let Some(rx) = &self.export_path_picker_rx {
+            if let Ok(result) = rx.try_recv() {
+                if let Some(path) = result {
+                    self.settings_state.tavern_export_path =
+                        path.to_string_lossy().to_string();
+                }
+                self.export_path_picker_rx = None;
             }
         }
 

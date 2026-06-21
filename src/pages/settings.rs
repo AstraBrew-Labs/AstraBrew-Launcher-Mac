@@ -119,6 +119,9 @@ pub struct SettingsState {
     /// 桌面模式：关闭 WebView 窗口时自动停止酒馆服务（默认开启）
     #[serde(default = "default_auto_stop")]
     pub auto_stop_tavern_on_webview_close: bool,
+    /// 桌面模式：酒馆导出文件的默认保存路径
+    #[serde(default = "default_export_path")]
+    pub tavern_export_path: String,
 
     // 控制台设置
     pub show_startup_command: bool,
@@ -177,11 +180,22 @@ pub struct SettingsState {
     // 文件夹选择器触发标记（不持久化）
     #[serde(skip)]
     pub trigger_folder_picker: bool,
+
+    // 导出路径选择器触发标记（不持久化）
+    #[serde(skip)]
+    pub trigger_export_path_picker: bool,
 }
 
 /// auto_stop_tavern_on_webview_close 默认值
 fn default_auto_stop() -> bool {
     true
+}
+
+/// tavern_export_path 默认值 → ~/Downloads
+fn default_export_path() -> String {
+    std::env::var("HOME")
+        .map(|h| format!("{}/Downloads", h))
+        .unwrap_or_default()
 }
 
 fn default_reverse_proxy_http_port() -> String {
@@ -210,6 +224,7 @@ impl Default for SettingsState {
             auto_start_tavern: false,
             allow_tavern_background: false,
             auto_stop_tavern_on_webview_close: true,
+            tavern_export_path: default_export_path(),
             show_startup_command: false,
             npm_registry: NpmRegistry::default(),
             github_proxy_enabled: false,
@@ -233,6 +248,7 @@ impl Default for SettingsState {
             pm2_version: None,
             restore_defaults_triggered: false,
             trigger_folder_picker: false,
+            trigger_export_path_picker: false,
         }
     }
 }
@@ -680,6 +696,24 @@ pub fn render(
                                 lang::t("desktop_auto_stop_desc", &state.language),
                                 |ui| {
                                     ui.add(crate::ui::switch::toggle(&mut state.auto_stop_tavern_on_webview_close));
+                                },
+                            );
+                            ui.add_space(10.0);
+
+                            // 导出路径
+                            let desc = format!("{}\n{}",
+                                lang::t("desktop_export_path_desc", &state.language),
+                                state.tavern_export_path,
+                            );
+                            setting_row(
+                                ui,
+                                egui_phosphor::regular::FOLDER,
+                                lang::t("desktop_export_path", &state.language),
+                                &desc,
+                                |ui| {
+                                    if ui.button(lang::t("change_path", &state.language)).clicked() {
+                                        state.trigger_export_path_picker = true;
+                                    }
                                 },
                             );
                             ui.add_space(10.0);
