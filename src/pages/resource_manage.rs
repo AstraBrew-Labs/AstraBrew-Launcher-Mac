@@ -180,6 +180,8 @@ pub struct ResourceManageState {
     // 详情弹窗
     pub selected_char_idx: Option<usize>,
     pub worldbook_page: usize,
+    pub char_card_page: usize,
+    pub char_card_page_size: usize,
     // 世界书详情弹窗
     pub selected_wb_idx: Option<usize>,
     pub wb_detail_page: usize,
@@ -218,6 +220,8 @@ impl Default for ResourceManageState {
             cached_presets_mode: TavernDataMode::Current,
             selected_char_idx: None,
             worldbook_page: 0,
+            char_card_page: 0,
+            char_card_page_size: 4,
             selected_wb_idx: None,
             wb_detail_page: 0,
             selected_chat_path: None,
@@ -1046,6 +1050,7 @@ impl ResourceManageState {
         self.characters_loaded = false;
         self.is_loading = false;
         self.selected_char_idx = None;
+        self.char_card_page = 0;
         self.world_books_loaded = false;
         self.is_loading_wb = false;
         self.selected_wb_idx = None;
@@ -1609,66 +1614,84 @@ fn render_character_cards(
         return;
     }
 
-    // 卡片网格
+    // 计算分页
+    let total_chars = state.characters.len();
+    let total_pages = if total_chars == 0 {
+        0
+    } else {
+        (total_chars + state.char_card_page_size - 1) / state.char_card_page_size
+    };
+    if state.char_card_page >= total_pages {
+        state.char_card_page = total_pages.saturating_sub(1);
+    }
+
+    // 卡片网格 — 手动 horizontal 布局，避免 Grid spacing 叠加 + ScrollArea 滚动条导致的溢出
     let available_w = ui.available_width();
-    let card_w = ((available_w - CARD_SPACING * (CARD_COLUMNS as f32 - 1.0))
+    // 预留 ScrollArea 垂直滚动条宽度（约 8-14px），防止 4 列卡片总宽超出内部可用宽度
+    let scrollbar_reserve = 12.0;
+    let card_w = ((available_w - CARD_SPACING * (CARD_COLUMNS as f32 - 1.0) - scrollbar_reserve)
         / CARD_COLUMNS as f32)
         .floor()
-        .max(120.0);
+        .max(100.0);
 
     // 根据第一张角色卡的实际尺寸计算图片高度
     let image_h = if let Some(first) = state.characters.first() {
         if first.image_width > 0 && first.image_height > 0 {
             card_w * first.image_height as f32 / first.image_width as f32
         } else {
-            200.0
+            140.0
         }
     } else {
-        200.0
+        140.0
     };
 
-    let card_count = state.characters.len();
+    // 为底部分页栏预留空间
+    let pagination_height = if total_pages > 1 { 32.0 } else { 0.0 };
+    let scroll_height = (ui.available_height() - pagination_height).max(0.0);
+
+    let start_idx = state.char_card_page * state.char_card_page_size;
+    let end_idx = (start_idx + state.char_card_page_size).min(total_chars);
 
     egui::ScrollArea::vertical()
+        .max_height(scroll_height)
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            egui::Frame::NONE
-                .inner_margin(egui::Margin::symmetric(0, 4))
-                .show(ui, |ui| {
-                    egui::Grid::new("character_cards_grid")
-                        .spacing([CARD_SPACING, CARD_SPACING])
-                        .min_col_width(card_w)
-                        .max_col_width(card_w)
-                        .show(ui, |ui| {
-                            let mut to_select: Option<usize> = None;
-                            for idx in 0..card_count {
-                                if idx > 0 && idx % CARD_COLUMNS == 0 {
-                                    ui.end_row();
-                                }
-                                // 复制必要数据，避免借出冲突
-                                let card_data = state.characters[idx].filepath.clone();
-                                let card_name = state.characters[idx].name.clone();
-                                let hover_text =
-                                    lang::t("rm_click_detail", language).to_string();
-                                if render_character_card(
-                                    ui,
-                                    &card_data,
-                                    &card_name,
-                                    &hover_text,
-                                    card_w,
-                                    image_h,
-                                    idx,
-                                ) {
-                                    to_select = Some(idx);
-                                }
-                            }
-                            if let Some(idx) = to_select {
-                                state.selected_char_idx = Some(idx);
-                                state.worldbook_page = 0;
-                            }
-                        });
+            let mut to_select: Option<usize> = None;
+            let mut idx = start_idx;
+            while idx < end_idx {
+                let row_end = (idx + CARD_COLUMNS).min(end_idx);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(CARD_SPACING, CARD_SPACING);
+                    for i in idx..row_end {
+                        let card_data = state.characters[i].filepath.clone();
+                        let card_name = state.characters[i].name.clone();
+                        let hover_text =
+                            lang::t("rm_click_detail", language).to_string();
+                        if render_character_card(
+                            ui,
+                            &card_data,
+                            &card_name,
+                            &hover_text,
+                            card_w,
+                            image_h,
+                            i,
+                        ) {
+                            to_select = Some(i);
+                        }
+                    }
                 });
+                idx = row_end;
+            }
+            if let Some(i) = to_select {
+                state.selected_char_idx = Some(i);
+                state.worldbook_page = 0;
+            }
         });
+
+    // 底部分页栏
+    if total_pages > 1 {
+        render_char_pagination_bar(ui, state, total_chars);
+    }
 
     // 详情弹窗
     if let Some(idx) = state.selected_char_idx {
@@ -1686,7 +1709,119 @@ fn render_character_cards(
     }
 }
 
-/// 单个角色卡卡片渲染，返回是否被点击
+// ============ 角色卡分页栏 ============
+
+fn render_char_pagination_bar(
+    ui: &mut egui::Ui,
+    state: &mut ResourceManageState,
+    total_chars: usize,
+) {
+    let total = (total_chars + state.char_card_page_size - 1) / state.char_card_page_size;
+    if total <= 1 {
+        return;
+    }
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+
+        // ◀ 上一页
+        let prev_enabled = state.char_card_page > 0;
+        if ui
+            .add_enabled(
+                prev_enabled,
+                egui::Button::new(
+                    egui::RichText::new(egui_phosphor::regular::CARET_LEFT).size(14.0),
+                ),
+            )
+            .clicked()
+        {
+            state.char_card_page -= 1;
+        }
+
+        ui.add_space(4.0);
+
+        // 页码按钮
+        let max_visible = 7usize;
+        if total <= max_visible {
+            for p in 0..total {
+                render_char_page_button(ui, state, p);
+            }
+        } else {
+            // 总是显示第一页
+            render_char_page_button(ui, state, 0);
+
+            let window_start = state.char_card_page.saturating_sub(2).max(1);
+            let window_end = (state.char_card_page + 2).min(total - 2);
+
+            // 前面省略号
+            if window_start > 1 {
+                ui.add_sized(
+                    [24.0, 20.0],
+                    egui::Label::new(
+                        egui::RichText::new("…").color(egui::Color32::GRAY),
+                    )
+                    .selectable(false),
+                );
+            }
+
+            // 中间窗口
+            for p in window_start..=window_end {
+                render_char_page_button(ui, state, p);
+            }
+
+            // 后面省略号
+            if window_end < total - 2 {
+                ui.add_sized(
+                    [24.0, 20.0],
+                    egui::Label::new(
+                        egui::RichText::new("…").color(egui::Color32::GRAY),
+                    )
+                    .selectable(false),
+                );
+            }
+
+            // 总是显示最后一页
+            render_char_page_button(ui, state, total - 1);
+        }
+
+        ui.add_space(4.0);
+
+        // ▶ 下一页
+        let next_enabled = state.char_card_page + 1 < total;
+        if ui
+            .add_enabled(
+                next_enabled,
+                egui::Button::new(
+                    egui::RichText::new(egui_phosphor::regular::CARET_RIGHT).size(14.0),
+                ),
+            )
+            .clicked()
+        {
+            state.char_card_page += 1;
+        }
+
+        // 总数
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(format!("共 {} 个", total_chars))
+                .size(12.0)
+                .color(egui::Color32::GRAY),
+        );
+    });
+}
+
+fn render_char_page_button(ui: &mut egui::Ui, state: &mut ResourceManageState, page: usize) {
+    let is_current = page == state.char_card_page;
+    let resp = ui.add_sized(
+        [24.0, 20.0],
+        egui::Button::selectable(is_current, (page + 1).to_string()),
+    );
+    if resp.clicked() {
+        state.char_card_page = page;
+    }
+}
+
+/// 单个角色卡卡片渲染（参照世界书卡片风格），返回是否被点击
 fn render_character_card(
     ui: &mut egui::Ui,
     filepath: &PathBuf,
@@ -1696,15 +1831,15 @@ fn render_character_card(
     image_h: f32,
     _idx: usize,
 ) -> bool {
-    let total_h = image_h + 28.0;
+    let name_h = 32.0;
+    let total_h = image_h + name_h;
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(card_w, total_h),
         egui::Sense::click(),
     );
 
-    // 背景
-    let bg = ui.visuals().faint_bg_color;
-    ui.painter().rect_filled(rect, 8.0, bg);
+    // 卡片背景
+    ui.painter().rect_filled(rect, 8.0, ui.visuals().faint_bg_color);
 
     // 图片区域
     let image_rect = egui::Rect::from_min_size(rect.min, egui::vec2(card_w, image_h));
@@ -1739,17 +1874,25 @@ fn render_character_card(
         );
     }
 
-    // 名称
+    // 名称区域（暗色头部，参照世界书卡片）
     let name_rect = egui::Rect::from_min_size(
         egui::pos2(rect.min.x, rect.min.y + image_h),
-        egui::vec2(card_w, 24.0),
+        egui::vec2(card_w, name_h),
     );
-    ui.painter().text(
-        egui::pos2(name_rect.min.x + 6.0, name_rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        name,
-        egui::FontId::proportional(13.0),
-        ui.visuals().text_color(),
+    let header_bg = ui.visuals().extreme_bg_color.linear_multiply(0.5);
+    ui.painter()
+        .rect_filled(name_rect, egui::CornerRadius::same(4), header_bg);
+    let name_inner = name_rect.shrink2(egui::vec2(10.0, 2.0));
+    let mut name_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(name_inner)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    name_ui.label(
+        egui::RichText::new(name)
+            .size(14.0)
+            .strong()
+            .color(ui.visuals().text_color()),
     );
 
     response.clicked()
