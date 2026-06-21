@@ -24,6 +24,13 @@
   3. `window.open` —— 备选路径
   - 必须同时匹配 `blob:` 和 `data:` scheme（部分导出用 data: URL）
   - 只拦截 click 事件会导致预设/世界书等用 FileSaver.js 的导出失败
+- **`<input accept>` 文件类型过滤**（2026-06-22 修复）：`WKOpenPanelParameters` 不暴露 accept，需三层方案：
+  1. JS capture click → `fileInputTracker` messageHandler 发送 accept（dispatch_async 时序保证）
+  2. `runOpenPanel` 读取 `LAST_FILE_ACCEPT` → `UTType::typeWithFilenameExtension` → `setAllowedContentTypes`
+  3. JS change 校验（后备）：不匹配则清空 + alert
+- **objc2 define_class! 限制**：`impl Type { ... }` 块内方法被当作 ObjC 方法（需 `&self`），普通关联函数必须定义在 `define_class!` 外部
+- **NSArray 构造**：无 `from_vec`，用 `RetainedFromIterator` trait 的 `collect()`：`let arr: Retained<NSArray<T>> = vec.into_iter().collect();`
+- **NSOpenPanel 文件类型过滤**：用 `setAllowedContentTypes(&NSArray<UTType>)`（非 deprecated 的 `setAllowedFileTypes`），需 `objc2-uniform-type-identifiers` + `objc2-app-kit` feature `objc2-uniform-type-identifiers`
 
 ## 关键目录/文件
 - `src/main.rs`：主程序，MyApp 状态管理，eframe::App::update

@@ -32,6 +32,7 @@ use objc2_foundation::{
     MainThreadMarker, NSArray, NSData, NSDataBase64DecodingOptions, NSDictionary, NSObject,
     NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL, NSURLRequest,
 };
+use objc2_uniform_type_identifiers::UTType;
 use objc2_web_kit::{
     WKFrameInfo, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
     WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
@@ -47,6 +48,14 @@ static EXPORT_PATH: LazyLock<Mutex<String>> = LazyLock::new(|| {
             .unwrap_or_default(),
     )
 });
+
+/// 最近一次点击的 `<input type="file">` 的 accept 属性，由 JS 注入脚本通过
+/// `fileInputTracker` messageHandler 同步发送，供 `run_open_panel` 设置 NSOpenPanel.allowedFileTypes。
+///
+/// 时序保证：JS click 事件 capture 阶段调用 postMessage → WebKit dispatch_async(主线程)
+/// → WebKit 在 click 事件结束后 dispatch_async(主线程) 调用 runOpenPanel。
+/// 两次 dispatch_async 按入队顺序执行，故 accept 先于 runOpenPanel 写入。
+static LAST_FILE_ACCEPT: LazyLock<Mutex<String>> = LazyLock::new(|| Mutex::new(String::new()));
 
 /// blob 下载结果通知队列，由 main.rs 每帧轮询并弹出 Toast
 pub static DOWNLOAD_NOTIFICATIONS: LazyLock<Mutex<Vec<String>>> =
@@ -165,6 +174,10 @@ define_class!(
 
     impl WebViewUIDelegate {
         /// 显示文件选择面板（文件导入）
+        ///
+        /// WKOpenPanelParameters 不暴露 HTML `<input accept>` 属性（WebKit API 限制），
+        /// 因此通过 JS 注入脚本在 input 点击时通过 `fileInputTracker` messageHandler
+        /// 预先把 accept 发送给原生层，这里读取并设置 NSOpenPanel.allowedFileTypes。
         #[unsafe(method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:))]
         fn run_open_panel(
             &self,
@@ -183,6 +196,24 @@ define_class!(
                 panel.setCanChooseFiles(true);
                 panel.setAllowsMultipleSelection(parameters.allowsMultipleSelection());
                 panel.setCanChooseDirectories(parameters.allowsDirectories());
+
+                // 读取 JS 预先发送的 accept，设置文件类型过滤
+                // 仅取扩展名形式（如 .json .png），MIME 类型 / 通配符交给 JS change 校验处理
+                let accept = LAST_FILE_ACCEPT.lock().unwrap().clone();
+                if !accept.is_empty() {
+                    let uttypes: Vec<Retained<UTType>> = accept
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| s.starts_with('.') && s.len() > 1)
+                        .filter_map(|s| {
+                            UTType::typeWithFilenameExtension(&NSString::from_str(&s[1..]))
+                        })
+                        .collect();
+                    if !uttypes.is_empty() {
+                        let ns_types: Retained<NSArray<UTType>> = uttypes.into_iter().collect();
+                        panel.setAllowedContentTypes(&ns_types);
+                    }
+                }
 
                 let result = panel.runModal();
 
@@ -214,7 +245,11 @@ impl WebViewUIDelegate {
 // ============================================================================
 
 define_class!(
-    /// 接收 JS 通过 `webkit.messageHandlers.fileDownloader.postMessage(...)` 发送的 blob 数据
+    /// 接收 JS 通过 `webkit.messageHandlers.*.postMessage(...)` 发送的消息
+    ///
+    /// 当前注册两个 name：
+    /// - `fileDownloader`：接收 {filename, base64} 字典，base64 解码后写入导出目录
+    /// - `fileInputTracker`：接收 accept 字符串，记录到 `LAST_FILE_ACCEPT` 供 NSOpenPanel 过滤
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
     struct FileDownloadHandler;
@@ -231,94 +266,15 @@ define_class!(
             message: &WKScriptMessage,
         ) {
             unsafe {
-                let body = message.body();
-                // JS postMessage({filename, base64}) → NSDictionary<NSString, NSString>
-                let dict: &NSDictionary<NSString, NSString> =
-                    &*(&*body as *const AnyObject
-                        as *const NSDictionary<NSString, NSString>);
-
-                let filename = dict
-                    .objectForKey(&NSString::from_str("filename"))
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "download".to_string());
-
-                let b64_str = dict
-                    .objectForKey(&NSString::from_str("base64"))
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
-
-                if b64_str.is_empty() {
-                    DOWNLOAD_NOTIFICATIONS
-                        .lock()
-                        .unwrap()
-                        .push("导出失败：数据为空".into());
-                    return;
-                }
-
-                // Base64 → NSData
-                let b64_ns = NSString::from_str(&b64_str);
-                let data = NSData::initWithBase64EncodedString_options(
-                    NSData::alloc(),
-                    &b64_ns,
-                    NSDataBase64DecodingOptions(0),
-                );
-                let data = match data {
-                    Some(d) => d,
-                    None => {
-                        DOWNLOAD_NOTIFICATIONS
-                            .lock()
-                            .unwrap()
-                            .push("导出失败：文件数据损坏".into());
-                        return;
+                let name = message.name().to_string();
+                match name.as_str() {
+                    "fileDownloader" => {
+                        handle_file_download(message);
                     }
-                };
-
-                // 保存到导出目录
-                let downloads = EXPORT_PATH.lock().unwrap().clone();
-
-                // 处理文件名冲突
-                use std::path::Path;
-                let mut save_path = format!("{}/{}", downloads, filename);
-                if Path::new(&save_path).exists() {
-                    let stem = Path::new(&filename)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&filename);
-                    let ext = Path::new(&filename)
-                        .extension()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
-                    let mut counter: u32 = 1;
-                    loop {
-                        let candidate = if ext.is_empty() {
-                            format!("{}/{}_{}", downloads, stem, counter)
-                        } else {
-                            format!("{}/{}_{}.{}", downloads, stem, counter, ext)
-                        };
-                        if !Path::new(&candidate).exists() {
-                            save_path = candidate;
-                            break;
-                        }
-                        counter += 1;
+                    "fileInputTracker" => {
+                        handle_file_input_accept(message);
                     }
-                }
-
-                let _ = std::fs::create_dir_all(&downloads);
-                let path_ns = NSString::from_str(&save_path);
-                if data.writeToFile_atomically(&path_ns, true) {
-                    let display_name = save_path
-                        .rsplit_once('/')
-                        .map(|(_, name)| name)
-                        .unwrap_or(&save_path);
-                    DOWNLOAD_NOTIFICATIONS
-                        .lock()
-                        .unwrap()
-                        .push(format!("已导出: {}", display_name));
-                } else {
-                    DOWNLOAD_NOTIFICATIONS
-                        .lock()
-                        .unwrap()
-                        .push("导出失败：无法写入文件".into());
+                    _ => {}
                 }
             }
         }
@@ -326,6 +282,116 @@ define_class!(
 
     unsafe impl NSObjectProtocol for FileDownloadHandler {}
 );
+
+/// 处理 blob 导出下载：JS postMessage({filename, base64}) → 写入文件
+///
+/// 注意：这是自由函数而非 FileDownloadHandler 的方法，因为 objc2 define_class! 的
+/// `impl Type` 块内方法会被当作 ObjC 方法处理（需要 &self 参数）。
+unsafe fn handle_file_download(message: &WKScriptMessage) {
+    unsafe {
+        let body = message.body();
+        // JS postMessage({filename, base64}) → NSDictionary<NSString, NSString>
+        let dict: &NSDictionary<NSString, NSString> =
+            &*(&*body as *const AnyObject
+                as *const NSDictionary<NSString, NSString>);
+
+        let filename = dict
+            .objectForKey(&NSString::from_str("filename"))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "download".to_string());
+
+        let b64_str = dict
+            .objectForKey(&NSString::from_str("base64"))
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        if b64_str.is_empty() {
+            DOWNLOAD_NOTIFICATIONS
+                .lock()
+                .unwrap()
+                .push("导出失败：数据为空".into());
+            return;
+        }
+
+        // Base64 → NSData
+        let b64_ns = NSString::from_str(&b64_str);
+        let data = NSData::initWithBase64EncodedString_options(
+            NSData::alloc(),
+            &b64_ns,
+            NSDataBase64DecodingOptions(0),
+        );
+        let data = match data {
+            Some(d) => d,
+            None => {
+                DOWNLOAD_NOTIFICATIONS
+                    .lock()
+                    .unwrap()
+                    .push("导出失败：文件数据损坏".into());
+                return;
+            }
+        };
+
+        // 保存到导出目录
+        let downloads = EXPORT_PATH.lock().unwrap().clone();
+
+        // 处理文件名冲突
+        use std::path::Path;
+        let mut save_path = format!("{}/{}", downloads, filename);
+        if Path::new(&save_path).exists() {
+            let stem = Path::new(&filename)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(&filename);
+            let ext = Path::new(&filename)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let mut counter: u32 = 1;
+            loop {
+                let candidate = if ext.is_empty() {
+                    format!("{}/{}_{}", downloads, stem, counter)
+                } else {
+                    format!("{}/{}_{}.{}", downloads, stem, counter, ext)
+                };
+                if !Path::new(&candidate).exists() {
+                    save_path = candidate;
+                    break;
+                }
+                counter += 1;
+            }
+        }
+
+        let _ = std::fs::create_dir_all(&downloads);
+        let path_ns = NSString::from_str(&save_path);
+        if data.writeToFile_atomically(&path_ns, true) {
+            let display_name = save_path
+                .rsplit_once('/')
+                .map(|(_, name)| name)
+                .unwrap_or(&save_path);
+            DOWNLOAD_NOTIFICATIONS
+                .lock()
+                .unwrap()
+                .push(format!("已导出: {}", display_name));
+        } else {
+            DOWNLOAD_NOTIFICATIONS
+                .lock()
+                .unwrap()
+                .push("导出失败：无法写入文件".into());
+        }
+    }
+}
+
+/// 处理 `<input type="file">` 的 accept 属性：JS postMessage(acceptString)
+/// → 记录到 LAST_FILE_ACCEPT，供 run_open_panel 设置 NSOpenPanel.allowedFileTypes
+unsafe fn handle_file_input_accept(message: &WKScriptMessage) {
+    unsafe {
+        let body = message.body();
+        // JS postMessage(string) → NSString
+        let ns_str: &NSString = &*(&*body as *const AnyObject as *const NSString);
+        let accept = ns_str.to_string();
+        *LAST_FILE_ACCEPT.lock().unwrap() = accept;
+    }
+}
 
 impl FileDownloadHandler {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
@@ -398,11 +464,17 @@ impl DesktopWebView {
         let config = unsafe { WKWebViewConfiguration::new(mtm) };
 
         // 注册 JS → Native 通信桥梁
+        // - fileDownloader：接收 blob 导出的 {filename, base64}
+        // - fileInputTracker：接收 <input type="file"> 的 accept 属性，供 NSOpenPanel 过滤
         unsafe {
             let controller = config.userContentController();
             controller.addScriptMessageHandler_name(
                 &ProtocolObject::from_ref(&*download_handler),
                 &NSString::from_str("fileDownloader"),
+            );
+            controller.addScriptMessageHandler_name(
+                &ProtocolObject::from_ref(&*download_handler),
+                &NSString::from_str("fileInputTracker"),
             );
         }
 
@@ -460,6 +532,82 @@ impl DesktopWebView {
         unsafe {
             let controller = config.userContentController();
             controller.addUserScript(&user_script);
+        }
+
+        // 注入脚本：恢复 `<input type="file" accept="...">` 的文件类型过滤
+        //
+        // 背景：自定义 WKUIDelegate::runOpenPanel 创建新的 NSOpenPanel 时，WebKit 不会
+        // 自动应用 HTML accept 属性（WKOpenPanelParameters 不暴露该信息）。本脚本：
+        //   1. capture 阶段监听 input click，识别导入类型，通过 fileInputTracker
+        //      messageHandler 同步发送给原生层（WebKit dispatch_async 保证先于 runOpenPanel）
+        //   2. change 事件校验作为后备：若 NSOpenPanel 过滤失效，在文件选中后再次校验，
+        //      不匹配则清空 input.value 并提示
+        //
+        // 手动指定类型规则（不依赖酒馆 DOM 结构）：
+        //   - 角色卡导入：accept 含 png / image → 强制 .png,.json
+        //   - 世界书/预设导入：accept 含 json → 强制 .json
+        //   - 其他：用原 accept
+        let file_input_filter_js = concat!(
+            "(function(){",
+            // 类型识别：根据 input 的 accept 属性归类
+            "function pickType(input){",
+            "var acc=(input.getAttribute('accept')||'').toLowerCase();",
+            // 角色卡：通常 accept="image/png,.png,application/json,.json" 或 .json
+            // 但有的角色卡 import 按钮 accept 只写 .json，需结合上下文判断
+            // 这里用 accept 内容做硬规则
+            "if(acc.indexOf('png')>=0||acc.indexOf('image/')>=0){return '.png,.json'}",
+            "if(acc.indexOf('json')>=0){return '.json'}",
+            // 兜底：用原 accept
+            "return acc",
+            "}",
+            // 1. 点击 input[type=file] 时，把识别出的类型发送给原生层
+            "document.addEventListener('click',function(e){",
+            "var t=e.target;",
+            "if(!t||t.tagName!=='INPUT'||(t.type||'').toLowerCase()!=='file')return;",
+            "var acc=pickType(t);",
+            "try{window.webkit.messageHandlers.fileInputTracker.postMessage(acc)}catch(err){}",
+            "},true);",
+            // 2. change 事件校验（后备，与 pickType 规则保持一致）
+            "document.addEventListener('change',function(e){",
+            "var t=e.target;",
+            "if(!t||t.tagName!=='INPUT'||(t.type||'').toLowerCase()!=='file')return;",
+            "if(!t.files||!t.files.length)return;",
+            "var acc=pickType(t);",
+            "if(!acc)return;",
+            "var exts=[],any=false;",
+            "acc.split(',').forEach(function(p){",
+            "p=p.trim().toLowerCase();",
+            "if(!p)return;",
+            "if(p.charAt(0)==='.'){exts.push(p.slice(1))}",
+            "else if(p==='*/*'||p==='*'||p.indexOf('/*')>=0){any=true}",
+            "});",
+            "if(any)return;",
+            "if(!exts.length)return;",
+            "var bad=[];",
+            "for(var i=0;i<t.files.length;i++){",
+            "var f=t.files[i];",
+            "var n=(f.name||'').toLowerCase();",
+            "var ok=exts.some(function(x){return n.lastIndexOf('.'+x)===n.length-x.length-1});",
+            "if(!ok){bad.push(f.name)}",
+            "}",
+            "if(bad.length){",
+            "t.value='';",
+            "alert('以下文件类型不被允许：\\n'+bad.join('\\n')+'\\n\\n允许的类型：'+acc)",
+            "}",
+            "},true)",
+            "})()"
+        );
+        let file_filter_script = unsafe {
+            WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
+                WKUserScript::alloc(mtm),
+                &NSString::from_str(file_input_filter_js),
+                WKUserScriptInjectionTime::AtDocumentStart,
+                true,
+            )
+        };
+        unsafe {
+            let controller = config.userContentController();
+            controller.addUserScript(&file_filter_script);
         }
 
         let webview = unsafe {
