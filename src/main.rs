@@ -127,6 +127,7 @@ struct MyApp {
     settings_tab: SettingsTab,
     settings_state: SettingsState,
     toast_stack: ui::toast::ToastStack,
+    notification_stack: ui::notification::NotificationStack,
 
     // 版本管理状态
     version_manage_state: pages::version_manage::VersionManageState,
@@ -180,6 +181,7 @@ impl MyApp {
             settings_tab: SettingsTab::default(),
             settings_state,
             toast_stack: ui::toast::ToastStack::new(),
+            notification_stack: ui::notification::NotificationStack::new(),
             version_manage_state: {
                 let mut state = pages::version_manage::VersionManageState::new();
                 state.local_instances = pages::version_manage::load_local_instances();
@@ -839,6 +841,17 @@ impl eframe::App for MyApp {
 
         // 渲染 toast 堆叠
         self.toast_stack.render(ctx);
+
+        // 连接通知（新设备访问酒馆）：从 ConsoleState 取出待显示通知
+        {
+            let pending: Vec<String> =
+                self.console_state.pending_connection_notifications.drain(..).collect();
+            for msg in pending {
+                self.notification_stack.push(msg, ctx);
+            }
+        }
+        // 渲染通知堆叠（右下角，从右到左滑入）
+        self.notification_stack.render(ctx);
 
         // 访问酒馆弹窗（服务器模式）
         crate::pages::access_tavern_popup::render_access_tavern_popup(ctx, &self.settings_state.language);

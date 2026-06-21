@@ -66,6 +66,10 @@ pub struct ConsoleState {
     pub is_server_mode: bool,
     /// 服务器模式下的服务模式（局域网/互联网），用于访问酒馆弹窗
     pub server_service_mode: ServerServiceMode,
+    /// 待显示的连接通知队列（main.rs 每帧 drain 并推送到 NotificationStack）
+    pub pending_connection_notifications: Vec<String>,
+    /// 已通知过的连接 IP+UA 哈希集合，避免同一连接重复通知
+    notified_connections: std::collections::HashSet<String>,
     /// 优化后的 settings.json 是否已针对当前实例准备完毕
     settings_prepared: bool,
 }
@@ -99,6 +103,8 @@ impl ConsoleState {
             is_desktop_mode: false,
             is_server_mode: false,
             server_service_mode: ServerServiceMode::default(),
+            pending_connection_notifications: Vec::new(),
+            notified_connections: std::collections::HashSet::new(),
             settings_prepared: false,
         }
     }
@@ -854,6 +860,28 @@ impl ConsoleState {
             })
             .unwrap_or_else(|_| String::from("--:--:--"));
         self.logs.push(format!("[{}] {}", timestamp, msg));
+
+        // 检测酒馆连接日志 → 推送通知（去重：同一 IP+UA 只通知一次）
+        if let Some(info) = crate::core::network::parse_connection_log(msg) {
+            let dedup_key = format!("{}|{}", info.ip, info.user_agent);
+            if !self.notified_connections.contains(&dedup_key) {
+                self.notified_connections.insert(dedup_key);
+                let time_str = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| {
+                        let secs = d.as_secs();
+                        let h = (secs / 3600) % 24 + 8;
+                        let m = (secs / 60) % 60;
+                        let s = secs % 60;
+                        format!("{:02}:{:02}:{:02}", h, m, s)
+                    })
+                    .unwrap_or_else(|_| "--:--:--".to_string());
+                self.pending_connection_notifications.push(format!(
+                    "{}/{}  {}",
+                    info.ip, info.os, time_str
+                ));
+            }
+        }
     }
 }
 

@@ -614,3 +614,164 @@ pub fn get_public_ipv6() -> Option<String> {
     }
     None
 }
+
+// ─── 酒馆连接日志解析 ─────────────────────────────────────────────────────────
+
+/// 解析酒馆日志得到的连接信息
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    /// 客户端 IP（IPv4 或 IPv6）
+    pub ip: String,
+    /// 从 User Agent 解析出的操作系统（如 "macOS 10.15.7"）
+    pub os: String,
+    /// 原始 User Agent
+    pub user_agent: String,
+}
+
+/// 剥离 ANSI 转义序列（CSI 和 OSC）
+fn strip_ansi_simple(line: &str) -> String {
+    if !line.contains('\x1b') {
+        return line.to_string();
+    }
+    let mut result = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            match chars.peek() {
+                Some(&'[') => {
+                    chars.next();
+                    while let Some(&c) = chars.peek() {
+                        chars.next();
+                        if c.is_ascii_alphabetic() || c == '~' {
+                            break;
+                        }
+                    }
+                }
+                Some(&']') => {
+                    chars.next();
+                    while let Some(&c) = chars.peek() {
+                        if c == '\x07' {
+                            chars.next();
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                        chars.next();
+                    }
+                }
+                _ => {
+                    if chars.peek().is_some() {
+                        chars.next();
+                    }
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+/// 从 User Agent 字符串解析操作系统
+fn parse_os_from_ua(ua: &str) -> String {
+    // macOS: "Macintosh; Intel Mac OS X 10_15_7"
+    if let Some(idx) = ua.find("Mac OS X ") {
+        let rest = &ua[idx + 9..];
+        let version: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let v = version.replace('_', ".");
+        if !v.is_empty() {
+            return format!("macOS {}", v);
+        }
+    }
+    // Windows: "Windows NT 10.0"
+    if let Some(idx) = ua.find("Windows NT ") {
+        let rest = &ua[idx + 11..];
+        let version: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if !version.is_empty() {
+            return format!("Windows {}", version);
+        }
+    }
+    // iPhone: "iPhone; CPU iPhone OS 17_0"
+    if let Some(idx) = ua.find("iPhone OS ") {
+        let rest = &ua[idx + 10..];
+        let version: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let v = version.replace('_', ".");
+        if !v.is_empty() {
+            return format!("iOS {}", v);
+        }
+    }
+    // iPad: "iPad; CPU OS 17_0"
+    if let Some(idx) = ua.find("CPU OS ") {
+        let rest = &ua[idx + 7..];
+        let version: String = rest
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        let v = version.replace('_', ".");
+        if !v.is_empty() {
+            return format!("iPadOS {}", v);
+        }
+    }
+    // Android: "Linux; Android 13"
+    if let Some(idx) = ua.find("Android ") {
+        let rest = &ua[idx + 8..];
+        let version: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if !version.is_empty() {
+            return format!("Android {}", version);
+        }
+    }
+    // Linux
+    if ua.contains("Linux") {
+        return "Linux".to_string();
+    }
+    "Unknown".to_string()
+}
+
+/// 解析酒馆日志中的连接信息
+///
+/// 日志格式：`New connection from <IP>; User Agent: <UA>`
+/// 例：`New connection from 240a:...; User Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) ...`
+///
+/// 返回 `Some(ConnectionInfo)` 或 `None`（不是连接日志/解析失败）
+pub fn parse_connection_log(line: &str) -> Option<ConnectionInfo> {
+    let plain = strip_ansi_simple(line);
+    let marker = "New connection from ";
+    let idx = plain.find(marker)?;
+    let rest = &plain[idx + marker.len()..];
+
+    let ua_marker = "; User Agent:";
+    let ua_idx = rest.find(ua_marker)?;
+    let ip = rest[..ua_idx].trim().to_string();
+    if ip.is_empty() {
+        return None;
+    }
+
+    let ua = rest[ua_idx + ua_marker.len()..].trim().to_string();
+    if ua.is_empty() {
+        return None;
+    }
+
+    let os = parse_os_from_ua(&ua);
+    Some(ConnectionInfo {
+        ip,
+        os,
+        user_agent: ua,
+    })
+}
