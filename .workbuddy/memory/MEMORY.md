@@ -13,10 +13,17 @@
   - 不可显示 MIME 类型 → 默认浏览器下载
   - **blob: URL 导出** → JS fetch blob → base64 → NSSavePanel 原生保存对话框
 - **WebViewUIDelegate**（WKUIDelegate）：`<input type="file">` → NSOpenPanel
+- **FileDownloadHandler**（WKScriptMessageHandler）：接收 JS postMessage 的 {filename, base64}，base64 解码写入导出目录
 - 关键依赖：`objc2 0.6`, `objc2-app-kit 0.3`, `objc2-foundation 0.3`, `objc2-web-kit 0.3`, `block2 0.6`
 - NSData::alloc() 需要 `use objc2::AnyThread;`（AnyThread 类）
 - RcBlock → &DynBlock 转换用 `&*handler`（Deref）
 - **objc2 define_class! 协议必需方法**（2026-06-22 修复）：协议的 required 方法（无 `#[optional]`）必须定义在 `unsafe impl Protocol for Type { ... }` 块内，不能放在普通 `impl Type { ... }` 块。否则 debug 构建下 `ClassProtocolMethodsBuilder::finish()` panic。`WKScriptMessageHandler` 的 `userContentController:didReceiveScriptMessage:` 是 required；`WKNavigationDelegate` / `WKUIDelegate` 全是 optional
+- **blob_patch_js 全面拦截**（2026-06-22 修复）：必须覆写三个入口才能覆盖所有导出场景：
+  1. `window.addEventListener('click', ..., true)` —— 用户真实点击 `<a>`
+  2. `HTMLAnchorElement.prototype.click` —— FileSaver.js 等库程序触发
+  3. `window.open` —— 备选路径
+  - 必须同时匹配 `blob:` 和 `data:` scheme（部分导出用 data: URL）
+  - 只拦截 click 事件会导致预设/世界书等用 FileSaver.js 的导出失败
 
 ## 关键目录/文件
 - `src/main.rs`：主程序，MyApp 状态管理，eframe::App::update

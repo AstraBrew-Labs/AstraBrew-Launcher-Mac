@@ -406,24 +406,48 @@ impl DesktopWebView {
             );
         }
 
-        // 注入脚本：拦截 <a href="blob:..."> 点击，fetch 转 base64 后通过 messageHandler 发送给原生层
+        // 注入脚本：全面拦截文件下载行为，覆盖 FileSaver.js / 程序触发 a.click() / window.open 等
+        //
+        // 背景：原方案只拦截用户真实点击 <a href="blob:">，但预设/世界书等导出走 FileSaver.js
+        // 等库，通常是程序触发 a.click() 或使用 data: URL，导致拦截失败。本脚本覆写以下入口：
+        //   1. 用户真实点击 <a> (capture 阶段)
+        //   2. HTMLAnchorElement.prototype.click (FileSaver.js 等库入口)
+        //   3. window.open(blob:|data:) (部分库的备选路径)
+        // 同时支持 blob: 和 data: 两种 URL scheme。
         let blob_patch_js = concat!(
-            "window.addEventListener('click',function(e){",
-            "var a=e.target.closest('a');",
-            "if(a&&a.href&&a.href.startsWith('blob:')){",
-            "e.preventDefault();",
-            "var u=a.href;",
-            "var f=a.download||'download';",
+            "(function(){",
+            "function dl(u,f){",
             "fetch(u).then(function(r){return r.blob()}).then(function(b){",
             "var rd=new FileReader();",
             "rd.onloadend=function(){",
             "window.webkit.messageHandlers.fileDownloader.postMessage({",
-            "filename:f,",
+            "filename:f||'download',",
             "base64:rd.result.split(',')[1]",
             "})};",
             "rd.readAsDataURL(b)",
-            "})",
-            "}},true)",
+            "}).catch(function(e){console.error('export err:',e)})",
+            "}",
+            "function isDl(u){return u&&(u.indexOf('blob:')===0||u.indexOf('data:')===0)}",
+            "window.addEventListener('click',function(e){",
+            "var a=e.target.closest&&e.target.closest('a');",
+            "if(a&&a.href&&isDl(a.href)){",
+            "e.preventDefault();e.stopPropagation();",
+            "dl(a.href,a.download||'download')",
+            "}",
+            "},true);",
+            "var oc=HTMLAnchorElement.prototype.click;",
+            "HTMLAnchorElement.prototype.click=function(){",
+            "if(this.href&&isDl(this.href)){",
+            "dl(this.href,this.download||'download');return",
+            "}",
+            "return oc.apply(this,arguments)",
+            "};",
+            "var oo=window.open;",
+            "window.open=function(u){",
+            "if(u&&isDl(u)){dl(u,'download');return null}",
+            "return oo.apply(window,arguments)",
+            "}",
+            "})()"
         );
         let user_script = unsafe {
             WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
