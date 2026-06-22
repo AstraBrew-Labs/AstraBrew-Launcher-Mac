@@ -17,6 +17,10 @@
 use crate::pages::settings::TavernDataMode;
 use std::process::Command;
 
+fn pm2_cmd() -> Command {
+    Command::new(super::env_detect::resolve_command("pm2"))
+}
+
 /// PM2 进程名（固定，避免与用户自行安装的 sillytavern 冲突）
 pub const PM2_PROCESS_NAME: &str = "astrabrew-launcher-sillytavern";
 
@@ -74,7 +78,7 @@ impl Pm2Manager {
 
     /// 检查 PM2 是否已安装（pm2 --version 成功返回即视为已安装）
     pub fn is_installed() -> bool {
-        Command::new("pm2")
+        pm2_cmd()
             .arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -109,7 +113,7 @@ impl Pm2Manager {
             self.delete_internal()?;
         }
 
-        let mut cmd = Command::new("pm2");
+        let mut cmd = pm2_cmd();
         cmd.arg("start").arg("server.js");
         cmd.arg("--name").arg(&self.process_name);
 
@@ -200,7 +204,7 @@ impl Pm2Manager {
 
     /// 停止酒馆进程（pm2 stop astrabrew-launcher-sillytavern）
     pub fn stop(&self) -> Result<(), String> {
-        let output = Command::new("pm2")
+        let output = pm2_cmd()
             .arg("stop")
             .arg(&self.process_name)
             .stdout(std::process::Stdio::piped())
@@ -228,7 +232,7 @@ impl Pm2Manager {
 
     /// 内部删除实现
     fn delete_internal(&self) -> Result<(), String> {
-        let output = Command::new("pm2")
+        let output = pm2_cmd()
             .arg("delete")
             .arg(&self.process_name)
             .stdout(std::process::Stdio::piped())
@@ -251,7 +255,7 @@ impl Pm2Manager {
 
     /// 重启酒馆进程（pm2 restart astrabrew-launcher-sillytavern）
     pub fn restart(&self) -> Result<(), String> {
-        let output = Command::new("pm2")
+        let output = pm2_cmd()
             .arg("restart")
             .arg(&self.process_name)
             .stdout(std::process::Stdio::piped())
@@ -293,7 +297,7 @@ impl Pm2Manager {
 
     /// 从 pm2 jlist 输出中提取目标进程信息
     fn get_process_info(&self) -> Option<ProcessInfo> {
-        let output = Command::new("pm2")
+        let output = pm2_cmd()
             .arg("jlist")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -404,7 +408,7 @@ impl Pm2Manager {
     /// （处理进程不存在时 `pm2 flush` 不清空文件的问题）。
     pub fn clear_logs(&self) -> Result<(), String> {
         // 先尝试 pm2 flush（进程运行中时正确清空）
-        let _ = Command::new("pm2")
+        let _ = pm2_cmd()
             .arg("flush")
             .arg(&self.process_name)
             .stdout(std::process::Stdio::null())

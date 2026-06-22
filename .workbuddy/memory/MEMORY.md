@@ -100,3 +100,18 @@
 - 角色卡/世界书 Tab：类似布局
 - 缓存失效：`cached_chats_path` / `cached_chats_mode` 检测路径/模式变化
 - `CornerRadius` 字段类型是 `u8` 不是 `f32`
+
+## 打包与自动更新（2026-06-23）
+- 打包工具：`cargo-packager` CLI（非 cargo-bundle），配置在 Cargo.toml `[package.metadata.packager]`（camelCase 键）
+- 打包命令：`cargo packager --release --private-key keys/update_key.pem`
+- 图标：`icons/icon.png` → `icons/icon.icns`（通过 sips + iconutil 转换 10 种尺寸）
+- 更新签名密钥：`keys/update_key.pem`（私钥，.gitignore）/ `keys/update_key.pem.pub`（公钥）
+
+### 自动更新模块（src/core/updater.rs）
+- 依赖 `cargo-packager-updater = "0.2"`（Cargo.toml）
+- 代理回退顺序：gh-proxy.org → ghfast.top → gt.astrabrew.cn → github.com（直连兜底）
+- 用户触发：设置 → 关于软件 → "检查更新"按钮 → 弹窗确认 → 下载安装
+- 触发机制：`SettingsState.check_update_trigger`/`do_update_trigger` → `main.rs` 处理 → `MyApp.updater_rx` 轮询
+- `UpdateStatus` 枚举：Checking/UpToDate/UpdateAvailable{version,notes,endpoint}/Downloading/Installed/Error
+- `start_check()` 保留供未来自动检测（当前 #[allow(dead_code)]）
+- 发布时需上传 `latest.json`（格式：{version, notes, pub_date, url, signature, format}）+ .app.tar.gz + .sig 到 GitHub Releases

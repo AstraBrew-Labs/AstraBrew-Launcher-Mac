@@ -237,6 +237,19 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "eframe_desc" => "egui 的官方集成框架",
         "phosphor_desc" => "图标库",
         
+        // Update
+        "check_update" => "检查更新",
+        "checking_update" => "正在检查更新...",
+        "update_found" => "发现新版本",
+        "update_confirm_desc" => "新版本 v{version} 可用。{notes}是否下载并安装更新？安装完成后需要重启启动器。",
+        "update_up_to_date" => "已是最新版本",
+        "update_error" => "检查更新失败",
+        "update_now" => "立即更新",
+        "update_later" => "稍后再说",
+        "updating" => "正在下载安装...",
+        "update_installed" => "更新已安装，重启后生效",
+        "update_failed" => "更新失败: {error}",
+        
         // Notifications
         "settings_saved" => "设置已保存",
         "fallback_system_git" => "内置 Git 缺失，已自动切换到系统 Git",

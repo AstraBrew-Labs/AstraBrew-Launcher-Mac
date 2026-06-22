@@ -21,6 +21,7 @@ const MAX_WIDTH: f32 = 360.0;
 const ICON_GAP: f32 = 10.0;
 
 pub struct Notification {
+    title: String,
     text: String,
     remaining: f32,
     age: f32,
@@ -40,11 +41,12 @@ impl NotificationStack {
         }
     }
 
-    pub fn push(&mut self, text: String, ctx: &egui::Context) {
+    pub fn push(&mut self, title: String, text: String, ctx: &egui::Context) {
         while self.notifications.len() >= MAX_NOTIFS {
             self.notifications.remove(0);
         }
         self.notifications.push(Notification {
+            title,
             text,
             remaining: NOTIF_LIFETIME,
             age: 0.0,
@@ -217,7 +219,7 @@ impl NotificationStack {
             painter.text(
                 title_pos,
                 egui::Align2::LEFT_TOP,
-                "新设备访问",
+                n.title.clone(),
                 title_font.clone(),
                 sub_color,
             );

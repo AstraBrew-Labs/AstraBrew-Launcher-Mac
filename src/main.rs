@@ -158,6 +158,8 @@ struct MyApp {
     last_path_check: Option<std::time::Instant>,
     // 桌面模式 WebView
     desktop_webview: Option<DesktopWebView>,
+    // 自动更新检测通道
+    updater_rx: Option<std::sync::mpsc::Receiver<crate::core::updater::UpdateStatus>>,
 }
 
 /// 后台路径检查结果
@@ -211,6 +213,7 @@ impl MyApp {
             path_check_rx: None,
             last_path_check: None,
             desktop_webview: None,
+            updater_rx: None,
         }
     }
 }
@@ -368,7 +371,7 @@ impl eframe::App for MyApp {
             });
 
         // 右侧页面区域
-        let old_state = self.settings_state.clone();
+        let mut old_state = self.settings_state.clone();
 
         // 轮询 brew 任务日志
         if let Some(new_ver) = self.git_install_state.poll() {
@@ -427,6 +430,85 @@ impl eframe::App for MyApp {
             }
             if clear_rx {
                 self.github_node_rx = None;
+            }
+        }
+
+        // 处理更新检测触发
+        if self.settings_state.check_update_trigger {
+            self.settings_state.check_update_trigger = false;
+            self.settings_state.update_checking = true;
+            self.notification_stack.push(
+                lang::t("check_update", &self.settings_state.language).to_string(),
+                lang::t("checking_update", &self.settings_state.language).to_string(),
+                ctx,
+            );
+            self.updater_rx = Some(crate::core::updater::check_update_manual());
+        }
+
+        // 处理下载安装触发
+        if let Some(endpoint) = self.settings_state.do_update_trigger.take() {
+            self.notification_stack.push(
+                lang::t("update_now", &self.settings_state.language).to_string(),
+                lang::t("updating", &self.settings_state.language).to_string(),
+                ctx,
+            );
+            self.updater_rx = Some(crate::core::updater::do_install(endpoint));
+        }
+
+        // 轮询自动更新状态
+        {
+            let mut clear_rx = false;
+            if let Some(ref rx) = self.updater_rx {
+                while let Ok(status) = rx.try_recv() {
+                    use crate::core::updater::UpdateStatus;
+                    match status {
+                        UpdateStatus::Checking => {}
+                        UpdateStatus::UpToDate => {
+                            self.notification_stack.push(
+                                lang::t("check_update", &self.settings_state.language).to_string(),
+                                lang::t("update_up_to_date", &self.settings_state.language).to_string(),
+                                ctx,
+                            );
+                            self.settings_state.update_checking = false;
+                            self.settings_state.update_downloading = false;
+                            clear_rx = true;
+                        }
+                        UpdateStatus::UpdateAvailable { version, notes, endpoint } => {
+                            self.settings_state.update_confirm_version = version;
+                            self.settings_state.update_confirm_notes = notes;
+                            self.settings_state.update_confirm_endpoint = endpoint;
+                            self.settings_state.update_confirm_open = true;
+                            self.settings_state.update_checking = false;
+                            self.settings_state.update_downloading = false;
+                            clear_rx = true;
+                        }
+                        UpdateStatus::Downloading => {}
+                        UpdateStatus::Installed => {
+                            self.notification_stack.push(
+                                lang::t("check_update", &self.settings_state.language).to_string(),
+                                lang::t("update_installed", &self.settings_state.language).to_string(),
+                                ctx,
+                            );
+                            self.settings_state.update_checking = false;
+                            self.settings_state.update_downloading = false;
+                            clear_rx = true;
+                        }
+                        UpdateStatus::Error(e) => {
+                            self.notification_stack.push(
+                                lang::t("check_update", &self.settings_state.language).to_string(),
+                                lang::t("update_failed", &self.settings_state.language)
+                                    .replace("{error}", &e),
+                                ctx,
+                            );
+                            self.settings_state.update_checking = false;
+                            self.settings_state.update_downloading = false;
+                            clear_rx = true;
+                        }
+                    }
+                }
+            }
+            if clear_rx {
+                self.updater_rx = None;
             }
         }
 
@@ -820,6 +902,16 @@ impl eframe::App for MyApp {
             }
         });
 
+        // 同步 transient 更新字段，避免误触发"设置已保存"
+        old_state.update_confirm_open = self.settings_state.update_confirm_open;
+        old_state.update_confirm_version.clone_from(&self.settings_state.update_confirm_version);
+        old_state.update_confirm_notes.clone_from(&self.settings_state.update_confirm_notes);
+        old_state.update_confirm_endpoint.clone_from(&self.settings_state.update_confirm_endpoint);
+        old_state.update_downloading = self.settings_state.update_downloading;
+        old_state.update_checking = self.settings_state.update_checking;
+        old_state.check_update_trigger = self.settings_state.check_update_trigger;
+        old_state.do_update_trigger.clone_from(&self.settings_state.do_update_trigger);
+
         // 设置变化时保存
         if old_state != self.settings_state {
             self.settings_state.save();
@@ -852,7 +944,7 @@ impl eframe::App for MyApp {
             let pending: Vec<String> =
                 self.console_state.pending_connection_notifications.drain(..).collect();
             for msg in pending {
-                self.notification_stack.push(msg, ctx);
+                self.notification_stack.push("新设备访问".into(), msg, ctx);
             }
         }
         // 渲染通知堆叠（右下角，从右到左滑入）

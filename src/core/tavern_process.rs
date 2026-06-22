@@ -13,6 +13,7 @@
 //! - Drop 时自动 kill 子进程（启动器关闭 → 酒馆也关闭）
 //! - GitHub 代理：通过 --import 预加载拦截器脚本，重写 GitHub URL
 
+use crate::core::settings::env_detect;
 use crate::pages::settings::TavernDataMode;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -187,7 +188,7 @@ pub fn prepare_interceptor() -> std::io::Result<PathBuf> {
 
 /// 检查当前 Node.js 是否支持 `--import` 标志（Node.js >= 19.0.0）
 pub fn node_supports_import() -> bool {
-    let output = Command::new("node")
+    let output = Command::new(env_detect::resolve_command("node"))
         .arg("--version")
         .output()
         .ok();
@@ -300,7 +301,7 @@ impl TavernProcess {
             return Err("进程已在运行".into());
         }
 
-        let mut cmd = Command::new("node");
+        let mut cmd = Command::new(env_detect::resolve_command("node"));
 
         // GitHub 加速代理：通过 --import 预加载拦截器脚本
         if let Some(proxy_url) = github_proxy_url {

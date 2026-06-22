@@ -195,6 +195,30 @@ pub struct SettingsState {
     // 导出路径选择器触发标记（不持久化）
     #[serde(skip)]
     pub trigger_export_path_picker: bool,
+
+    // ─── 更新检测（不持久化） ────────────────────────────────────────────────
+    /// 触发手动检查更新（由设置页"检查更新"按钮设置）
+    #[serde(skip)]
+    pub check_update_trigger: bool,
+    /// 是否显示"确认更新"弹窗
+    #[serde(skip)]
+    pub update_confirm_open: bool,
+    /// 确认弹窗中的更新信息
+    #[serde(skip)]
+    pub update_confirm_version: String,
+    #[serde(skip)]
+    pub update_confirm_notes: Option<String>,
+    #[serde(skip)]
+    pub update_confirm_endpoint: String,
+    /// 是否正在下载
+    #[serde(skip)]
+    pub update_downloading: bool,
+    /// 是否正在检查更新（控制按钮禁用态）
+    #[serde(skip)]
+    pub update_checking: bool,
+    /// 触发执行下载安装（含 endpoint）
+    #[serde(skip)]
+    pub do_update_trigger: Option<String>,
 }
 
 /// auto_stop_tavern_on_webview_close 默认值
@@ -258,6 +282,14 @@ impl Default for SettingsState {
             restore_defaults_triggered: false,
             trigger_folder_picker: false,
             trigger_export_path_picker: false,
+            update_confirm_open: false,
+            update_confirm_version: String::new(),
+            update_confirm_notes: None,
+            update_confirm_endpoint: String::new(),
+            update_downloading: false,
+            update_checking: false,
+            check_update_trigger: false,
+            do_update_trigger: None,
         }
     }
 }
@@ -1652,6 +1684,29 @@ pub fn render(
                 ui.label(lang::t("about_version", &state.language));
                 ui.label(lang::t("about_desc", &state.language));
 
+                // 检查更新按钮
+                ui.add_space(10.0);
+                let busy = state.update_checking || state.update_downloading;
+                if ui
+                    .add_enabled(
+                        !busy,
+                        egui::Button::new(lang::t(
+                            if state.update_downloading {
+                                "updating"
+                            } else if state.update_checking {
+                                "checking_update"
+                            } else {
+                                "check_update"
+                            },
+                            &state.language,
+                        )),
+                    )
+                    .clicked()
+                {
+                    state.check_update_trigger = true;
+                    state.update_checking = true;
+                }
+
                 ui.add_space(20.0);
                 ui.separator();
                 ui.add_space(10.0);
@@ -1718,6 +1773,47 @@ pub fn render(
                         });
                 });
             });
+
+            // 确认更新弹窗
+            if state.update_confirm_open {
+                let ctx = ui.ctx();
+                egui::Window::new(lang::t("update_found", &state.language))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                    .show(ctx, |ui| {
+                        ui.add_space(8.0);
+                        let desc = lang::t("update_confirm_desc", &state.language)
+                            .replace("{version}", &state.update_confirm_version)
+                            .replace(
+                                "{notes}",
+                                &state
+                                    .update_confirm_notes
+                                    .as_ref()
+                                    .map(|n| format!("{n}\n\n"))
+                                    .unwrap_or_default(),
+                            );
+                        ui.label(desc);
+                        ui.add_space(16.0);
+                        ui.horizontal(|ui| {
+                            if ui
+                                .button(lang::t("update_later", &state.language))
+                                .clicked()
+                            {
+                                state.update_confirm_open = false;
+                            }
+                            if ui
+                                .button(lang::t("update_now", &state.language))
+                                .clicked()
+                            {
+                                state.update_confirm_open = false;
+                                state.update_downloading = true;
+                                state.do_update_trigger = Some(state.update_confirm_endpoint.clone());
+                            }
+                        });
+                        ui.add_space(8.0);
+                    });
+            }
         }
     }
 

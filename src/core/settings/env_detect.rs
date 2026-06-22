@@ -1,9 +1,32 @@
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use std::process::{Command, Stdio};
+
+/// macOS 上 Homebrew 可能的 bin 目录。
+/// 打包后的 .app PATH 不含这些路径，必须手动解析命令位置。
+const HOMEBREW_BIN_PATHS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin"];
+
+/// 解析命令的完整路径：
+/// 1. 在 Homebrew bin 目录中查找
+/// 2. 回退到裸命令名（系统 PATH 中的工具，如 git）
+pub fn resolve_command(name: &str) -> String {
+    for base in HOMEBREW_BIN_PATHS {
+        let full = format!("{}/{}", base, name);
+        if Path::new(&full).exists() {
+            return full;
+        }
+    }
+    name.to_string()
+}
+
+/// 创建 Command，自动解析路径
+fn cmd(name: &str) -> Command {
+    Command::new(resolve_command(name))
+}
 
 /// 检测 Homebrew 版本，返回版本号字符串，如 "4.2.0"
 pub fn detect_homebrew() -> Option<String> {
-    let output = Command::new("brew").arg("--version").output().ok()?;
+    let output = cmd("brew").arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -29,7 +52,7 @@ fn parse_homebrew_version(output: &str) -> Option<String> {
 
 /// 检测 Git 版本，返回版本号字符串，如 "2.39.0"
 pub fn detect_git() -> Option<String> {
-    let output = Command::new("git").arg("--version").output().ok()?;
+    let output = cmd("git").arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -51,7 +74,7 @@ fn parse_git_version(output: &str) -> Option<String> {
 
 /// 检测 Node.js 版本，返回版本号字符串，如 "v22.1.0"
 pub fn detect_nodejs() -> Option<String> {
-    let output = Command::new("node").arg("--version").output().ok()?;
+    let output = cmd("node").arg("--version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -67,7 +90,7 @@ pub fn detect_nodejs() -> Option<String> {
 
 /// 检测 Caddy 版本，返回版本号字符串，如 "v2.9.1"
 pub fn detect_caddy() -> Option<String> {
-    let output = Command::new("caddy").arg("version").output().ok()?;
+    let output = cmd("caddy").arg("version").output().ok()?;
     if !output.status.success() {
         return None;
     }
@@ -85,7 +108,7 @@ pub fn detect_caddy() -> Option<String> {
 /// pm2 --version 或 pm2 -v 在首次运行时可能夹杂 daemon 启动日志，
 /// 因此合并 stdout + stderr 后用正则提取 X.Y.Z 格式的版本号。
 pub fn detect_pm2() -> Option<String> {
-    let output = Command::new("pm2").arg("-v").output().ok()?;
+    let output = cmd("pm2").arg("-v").output().ok()?;
     let combined = format!(
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
@@ -177,7 +200,7 @@ fn detect_version(target: &str) -> Option<String> {
 }
 
 fn run_brew_command(args: &[&str], sender: std::sync::mpsc::Sender<String>, detect_target: &str) {
-    let mut cmd = Command::new("brew");
+    let mut cmd = cmd("brew");
     for arg in args {
         cmd.arg(arg);
     }
@@ -266,7 +289,7 @@ fn run_brew_command(args: &[&str], sender: std::sync::mpsc::Sender<String>, dete
 
 /// 运行 npm install -g <package> 并返回日志（用于 PM2 等全局 npm 包）
 pub fn run_npm_install_global(package: &str, sender: std::sync::mpsc::Sender<String>) {
-    let mut cmd = Command::new("npm");
+    let mut cmd = cmd("npm");
     cmd.args(["install", "-g", package]);
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

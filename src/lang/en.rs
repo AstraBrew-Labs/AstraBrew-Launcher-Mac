@@ -237,6 +237,19 @@ pub fn translate<'a>(key: &'a str) -> &'a str {
         "eframe_desc" => "Official integration framework for egui",
         "phosphor_desc" => "Icon library",
         
+        // Update
+        "check_update" => "Check for Update",
+        "checking_update" => "Checking for updates...",
+        "update_found" => "Update Available",
+        "update_confirm_desc" => "A new version v{version} is available. {notes}Download and install the update? A restart is required after installation.",
+        "update_up_to_date" => "Already up to date",
+        "update_error" => "Update check failed",
+        "update_now" => "Update Now",
+        "update_later" => "Later",
+        "updating" => "Downloading and installing...",
+        "update_installed" => "Update installed, restart to apply",
+        "update_failed" => "Update failed: {error}",
+        
         // Notifications
         "settings_saved" => "Settings Saved",
         "fallback_system_git" => "Built-in Git missing, switched to System Git automatically",
