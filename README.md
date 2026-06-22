@@ -65,7 +65,8 @@
 
 在开始之前，请确保您的系统已经安装了以下工具：
 - [Rust & Cargo](https://www.rust-lang.org/tools/install) (建议使用最新的 stable 版本)
-- 仅支持 MacOS 平台。
+- 因为当前仓库是MacOS的版本，所有开发都按照 MacOS 的规范进行开发。仅支持 MacOS 平台。
+- 请勿将其他平台的依赖或配置引入本项目，以避免不必要的兼容性问题。
 
 ### 运行项目
 
