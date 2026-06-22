@@ -1,17 +1,20 @@
 <img src="https://raw.githubusercontent.com/al01cn/sillyTavern-launcher/GUI/src/assets/images/banner.png" style="width: 100%; height: 100%;" />
 
-# 星酿启动器 (AstraBrew Launcher)
+# 星酿启动器 (AstraBrew Launcher) · MacOS版本
 
 
 <div style="text-align: center;" align="center">
 
-星酿启动器 (AstraBrew Launcher) 是一款专为 MacOS 平台打造的高性能应用程序启动器。它基于 Rust 和 egui 开发，旨在为用户提供快速、轻量、多功能的启动和管理体验。
+星酿启动器 (AstraBrew Launcher) 原为 [酒馆启动器GUI (SillyTavern Launcher GUI)](https://github.com/al01cn/sillyTavern-launcher)，是一款专为小白打造的简单易用的[酒馆(SillyTavern)](https://github.com/sillyTavern/SillyTavern)启动器。基于 Rust 和 egui 开发，旨在为用户提供易用、快速、轻量、多功能的启动和管理体验。
 
+当前仓库单独管理 MacOS版本 的启动器。MacOS 用户可以通过星酿启动器轻松配置和管理酒馆实例，享受一键启动、版本管理、环境配置等功能。我们专注于提供流畅的用户界面和稳定的性能，让每位用户都能轻松上手并愉快使用。
 
 [![Releases](https://img.shields.io/github/v/release/AstraBrew-Labs/AstraBrew-Launcher-Mac?label=版本)](https://github.com/AstraBrew-Labs/AstraBrew-Launcher-Mac/releases)
 [![Rust](https://img.shields.io/badge/Rust-latest-CE422B?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![egui](https://img.shields.io/github/v/release/emilk/egui?label=egui)](https://github.com/emilk/egui)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
+
+[官网](https://launcher.astrabrew.cn) | [Windows版](https://github.com/AstraBrew-Labs/AstraBrew-Launcher-Win/)
 
 </div>
 
@@ -44,7 +47,19 @@
 - **cargo-packager**: 用于打包和发布 Rust 应用程序的库，支持生成 macOS 可执行文件和安装包。
 - **cargo-packager-updater**: 用于自动更新和版本管理的库，支持从 GitHub 仓库获取最新版本并进行更新。
 
-## 🚀 安装依赖与运行项目
+## 运行项目
+
+## 运行
+
+### 普通用户
+
+普通用户请可以直接到[发布页(Releases)](/releases)下载最新版本的DMG安装包，在安装界面把 AstraBrew Launcher.app 拖到 Applications 文件夹中，即可在App里找到星酿启动器 (AstraBrew Launcher) 点击启动。
+
+### 开发者
+
+##  开发环境
+
+本项目使用 Rust 语言进行开发，因此需要安装 Rust 和 Cargo。建议使用最新的 stable 版本，以确保兼容性和性能。
 
 ### 前置要求
 
