@@ -1,143 +1,140 @@
 name: 发布 macOS
 
 on:
-push:
-branches:
-- main
-workflow_dispatch:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-release:
-name: 构建并发布
-runs-on: macos-latest
-
-```
-env:
-  APP_NAME: "AstraBrew Launcher"
-
-steps:
-  - name: 检出仓库
-    uses: actions/checkout@v4
-
-  - name: 安装 Rust
-    uses: dtolnay/rust-toolchain@stable
-    with:
-      targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-  - name: 安装 cargo-packager
-    run: |
-      cargo install cargo-packager --locked
-
-  - name: 读取版本号
-    id: version
-    shell: bash
-    run: |
-      VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-      echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-      echo "检测到版本：$VERSION"
-
-  - name: 检查 Release 是否已存在
-    id: check_release
+  release:
+    name: 构建并发布
+    runs-on: macos-latest
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    shell: bash
-    run: |
-      if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
-        echo "exists=true" >> "$GITHUB_OUTPUT"
-        echo "Release 已存在，跳过发布"
-      else
-        echo "exists=false" >> "$GITHUB_OUTPUT"
-        echo "开始构建"
-      fi
+      APP_NAME: "AstraBrew Launcher"
 
-  - name: Release 已存在则结束
-    if: steps.check_release.outputs.exists == 'true'
-    run: |
-      exit 0
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
 
-  - name: 构建 Universal 版本
-    run: |
-      cargo packager \
-        --release \
-        --target universal-apple-darwin
+      - name: 安装 Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-  - name: 查找更新包
-    id: archive
-    shell: bash
-    run: |
-      FILE=$(find . -name "*.app.tar.gz" | head -n1)
-      echo "file=$FILE" >> "$GITHUB_OUTPUT"
-      echo "找到更新包：$FILE"
+      - name: 安装 cargo-packager
+        run: |
+          cargo install cargo-packager --locked
 
-  - name: 查找 DMG
-    id: dmg
-    shell: bash
-    run: |
-      FILE=$(find . -name "*.dmg" | head -n1)
-      echo "file=$FILE" >> "$GITHUB_OUTPUT"
-      echo "找到 DMG：$FILE"
+      - name: 读取版本号
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(grep '^version =' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "检测到版本：$VERSION"
 
-  - name: 对更新包签名
-    env:
-      CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.PACKAGER_PRIVATE_KEY }}
-    run: |
-      cargo packager signer sign "${{ steps.archive.outputs.file }}"
+      - name: 检查 Release 是否已存在
+        id: check_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release 已存在，跳过发布"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "开始构建"
+          fi
 
-  - name: 获取签名文件
-    id: sig
-    shell: bash
-    run: |
-      echo "file=${{ steps.archive.outputs.file }}.sig" >> "$GITHUB_OUTPUT"
+      - name: Release 已存在则结束
+        if: steps.check_release.outputs.exists == 'true'
+        run: |
+          exit 0
 
-  - name: 读取签名内容
-    id: signature
-    shell: bash
-    run: |
-      SIGNATURE=$(tr -d '\n' < "${{ steps.sig.outputs.file }}")
-      echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+      - name: 构建 Universal 版本
+        run: |
+          cargo packager \
+            --release \
+            --target universal-apple-darwin
 
-  - name: 生成 latest.json
-    shell: bash
-    run: |
-      cat > latest.json <<EOF
-      {
-        "version":"${{ steps.version.outputs.version }}",
-        "notes":"新版本发布",
-        "pub_date":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-        "platforms":{
-          "darwin-universal":{
-            "signature":"${{ steps.signature.outputs.signature }}",
-            "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${APP_NAME}.app.tar.gz"
+      - name: 查找更新包
+        id: archive
+        shell: bash
+        run: |
+          FILE=$(find . -name "*.app.tar.gz" | head -n1)
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "找到更新包：$FILE"
+
+      - name: 查找 DMG
+        id: dmg
+        shell: bash
+        run: |
+          FILE=$(find . -name "*.dmg" | head -n1)
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "找到 DMG：$FILE"
+
+      - name: 对更新包签名
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.PACKAGER_PRIVATE_KEY }}
+        run: |
+          cargo packager signer sign "${{ steps.archive.outputs.file }}"
+
+      - name: 获取签名文件
+        id: sig
+        shell: bash
+        run: |
+          echo "file=${{ steps.archive.outputs.file }}.sig" >> "$GITHUB_OUTPUT"
+
+      - name: 读取签名内容
+        id: signature
+        shell: bash
+        run: |
+          SIGNATURE=$(tr -d '\n' < "${{ steps.sig.outputs.file }}")
+          echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
+
+      - name: 生成 latest.json
+        shell: bash
+        run: |
+          cat > latest.json <<EOF
+          {
+            "version":"${{ steps.version.outputs.version }}",
+            "notes":"新版本发布",
+            "pub_date":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+            "platforms":{
+              "darwin-universal":{
+                "signature":"${{ steps.signature.outputs.signature }}",
+                "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${{ env.APP_NAME }}.app.tar.gz"
+              }
+            }
           }
-        }
-      }
-      EOF
+          EOF
 
-  - name: 创建 GitHub Release
-    uses: softprops/action-gh-release@v2
-    with:
-      tag_name: v${{ steps.version.outputs.version }}
-      name: v${{ steps.version.outputs.version }}
-      generate_release_notes: true
-      files: |
-        ${{ steps.archive.outputs.file }}
-        ${{ steps.sig.outputs.file }}
-        ${{ steps.dmg.outputs.file }}
-        latest.json
-    env:
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.archive.outputs.file }}
+            ${{ steps.sig.outputs.file }}
+            ${{ steps.dmg.outputs.file }}
+            latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  - name: 发布完成
-    run: |
-      echo "===================================="
-      echo "版本 v${{ steps.version.outputs.version }} 发布成功"
-      echo "上传文件："
-      echo "✓ ${APP_NAME}.dmg"
-      echo "✓ ${APP_NAME}.app.tar.gz"
-      echo "✓ ${APP_NAME}.app.tar.gz.sig"
-      echo "✓ latest.json"
-      echo "===================================="
-```
+      - name: 发布完成
+        run: |
+          echo "===================================="
+          echo "版本 v${{ steps.version.outputs.version }} 发布成功"
+          echo "上传文件："
+          echo "✓ ${{ env.APP_NAME }}.dmg"
+          echo "✓ ${{ env.APP_NAME }}.app.tar.gz"
+          echo "✓ ${{ env.APP_NAME }}.app.tar.gz.sig"
+          echo "✓ latest.json"
+          echo "===================================="
