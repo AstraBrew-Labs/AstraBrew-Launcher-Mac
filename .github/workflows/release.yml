@@ -72,14 +72,34 @@ jobs:
 
       - name: 查找更新包
         id: archive
+        shell: bash
         run: |
           FILE=$(find dist -name "*.app.tar.gz" | head -n1)
+
+          if [ -z "$FILE" ]; then
+            echo "没有找到 .app.tar.gz"
+            echo "当前 dist 内容："
+            find dist -type f
+            exit 1
+          fi
+
+          echo "找到更新包：$FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: 查找 DMG
         id: dmg
+        shell: bash
         run: |
           FILE=$(find dist -name "*.dmg" | head -n1)
+
+          if [ -z "$FILE" ]; then
+            echo "没有找到 .dmg"
+            echo "当前 dist 内容："
+            find dist -type f
+            exit 1
+          fi
+
+          echo "找到 DMG：$FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: 对更新包签名
@@ -90,16 +110,19 @@ jobs:
 
       - name: 获取签名文件
         id: sig
+        shell: bash
         run: |
           echo "file=${{ steps.archive.outputs.file }}.sig" >> "$GITHUB_OUTPUT"
 
       - name: 读取签名
         id: signature
+        shell: bash
         run: |
           SIGNATURE=$(tr -d '\n' < "${{ steps.sig.outputs.file }}")
           echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
 
       - name: 生成 latest.json
+        shell: bash
         run: |
           cat > latest.json <<EOF
           {
