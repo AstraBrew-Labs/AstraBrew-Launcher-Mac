@@ -107,6 +107,10 @@ pub struct VersionManageState {
     pub scan_finished_time: Option<std::time::Instant>,
     pub cancel_scan_flag: Option<Arc<AtomicBool>>,
     pub show_cancel_scan_confirm: bool,
+    /// 点击自动扫描时若无 FDA 权限，弹窗提示
+    pub show_fda_dialog: bool,
+    /// 帧末启动扫描线程的标记
+    pub pending_scan_start: bool,
 }
 
 impl Default for VersionManageState {
@@ -148,6 +152,8 @@ impl VersionManageState {
             scan_finished_time: None,
             cancel_scan_flag: None,
             show_cancel_scan_confirm: false,
+            show_fda_dialog: false,
+            pending_scan_start: false,
         }
     }
 
@@ -593,71 +599,10 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
             }
         } else {
             if ui.button(lang::t("btn_auto_scan", lang)).clicked() {
-                state.is_scanning = true;
-                state.scanning_paths.clear();
-                state.show_scan_tips = true;
-                state.scan_finished_time = None;
-                let (tx, rx) = mpsc::channel();
-                state.scan_receiver = Some(rx);
-
-                let cpu_cores = settings.cpu_cores.clone();
-                let cancel_flag = Arc::new(AtomicBool::new(false));
-                state.cancel_scan_flag = Some(cancel_flag.clone());
-
-                thread::spawn(move || {
-                    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-                    let threads = match cpu_cores {
-                        crate::pages::settings::CpuCores::Auto => std::cmp::max(1, cores.saturating_sub(2)),
-                        crate::pages::settings::CpuCores::Half => std::cmp::max(1, cores / 2),
-                        crate::pages::settings::CpuCores::All => cores,
-                    };
-
-                    // macOS: 扫描用户主目录
-                    let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
-                    let _ = tx.send(ScanMsg::ScanningPath(home.to_string_lossy().to_string()));
-
-                    let walk = jwalk::WalkDir::new(&home)
-                        .parallelism(jwalk::Parallelism::RayonNewPool(threads))
-                        .skip_hidden(false);
-
-                    for entry in walk.into_iter().filter_map(|e| e.ok()) {
-                        // 检查取消标志
-                        if cancel_flag.load(Ordering::Relaxed) {
-                            let _ = tx.send(ScanMsg::Finished);
-                            return;
-                        }
-                        // 跳过排除目录中的条目
-                        if is_path_excluded(&entry.path()) {
-                            continue;
-                        }
-                        if entry.file_name() == "package.json" {
-                            let path = entry.path();
-                            let dir_path = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string_lossy().to_string());
-                            let _ = tx.send(ScanMsg::ScanningPath(dir_path));
-
-                            if let Ok(content) = fs::read_to_string(&path) {
-                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                                    if let Some(name) = json.get("name").and_then(|n| n.as_str()) {
-                                        if name == "sillytavern" {
-                                            let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-                                            let mut parent_path = path.clone();
-                                            parent_path.pop();
-                                            let path_str = parent_path.to_string_lossy().to_string();
-                                            let _ = tx.send(ScanMsg::Found(LocalInstance {
-                                                version,
-                                                path: path_str,
-                                                is_current: false,
-                                                is_online: false,
-                                            }));
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    let _ = tx.send(ScanMsg::Finished);
-                });
+                state.pending_scan_start = true;
+                if !crate::core::app_permissions::is_full_disk_access_granted() {
+                    state.show_fda_dialog = true;
+                }
             }
         }
         if ui.button(lang::t("btn_manual_add", lang)).clicked() {
@@ -736,7 +681,52 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
         }
     });
 
-    ui.add_space(10.0);
+    // --- 完全磁盘访问权限提示 ---
+    if !state.is_scanning && !crate::core::app_permissions::is_full_disk_access_granted() {
+        ui.add_space(4.0);
+        egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(60, 45, 20))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE)
+                                .size(16.0)
+                                .color(egui::Color32::from_rgb(255, 200, 60)),
+                        )
+                        .selectable(false),
+                    );
+                    ui.add_space(4.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(1.0);
+                        ui.label(
+                            egui::RichText::new(lang::t("fda_access_title", lang))
+                                .size(13.0)
+                                .strong()
+                                .color(egui::Color32::from_rgb(255, 220, 120)),
+                        );
+                        ui.label(
+                            egui::RichText::new(lang::t("fda_access_desc", lang))
+                                .size(11.0)
+                                .color(egui::Color32::from_rgb(200, 190, 170)),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .small_button(lang::t("fda_access_button", lang))
+                            .clicked()
+                        {
+                            crate::core::app_permissions::open_full_disk_access_settings();
+                        }
+                    });
+                });
+            });
+        ui.add_space(4.0);
+    } else {
+        ui.add_space(10.0);
+    }
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         if state.local_instances.is_empty() {
@@ -838,6 +828,94 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
         if !confirm_open {
             state.show_cancel_scan_confirm = false;
         }
+    }
+
+    // --- FDA 权限弹窗 ---
+    if state.show_fda_dialog {
+        let mut open = true;
+        egui::Window::new(lang::t("fda_access_title", lang))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(lang::t("fda_access_dialog_desc", lang));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button(lang::t("fda_access_button", lang)).clicked() {
+                        crate::core::app_permissions::open_full_disk_access_settings();
+                        state.show_fda_dialog = false;
+                        state.pending_scan_start = false;
+                    }
+                    if ui.button(lang::t("continue_anyway", lang)).clicked() {
+                        state.show_fda_dialog = false;
+                    }
+                });
+            });
+        if !open {
+            state.show_fda_dialog = false;
+            state.pending_scan_start = false;
+        }
+    }
+
+    // --- 帧末启动扫描线程 ---
+    if state.pending_scan_start && !state.is_scanning {
+        state.pending_scan_start = false;
+        state.is_scanning = true;
+        state.scanning_paths.clear();
+        state.show_scan_tips = true;
+        state.scan_finished_time = None;
+        let (tx, rx) = mpsc::channel();
+        state.scan_receiver = Some(rx);
+        let cpu_cores = settings.cpu_cores.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        state.cancel_scan_flag = Some(cancel_flag.clone());
+        thread::spawn(move || {
+            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+            let threads = match cpu_cores {
+                crate::pages::settings::CpuCores::Auto => std::cmp::max(1, cores.saturating_sub(2)),
+                crate::pages::settings::CpuCores::Half => std::cmp::max(1, cores / 2),
+                crate::pages::settings::CpuCores::All => cores,
+            };
+            let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+            let _ = tx.send(ScanMsg::ScanningPath(home.to_string_lossy().to_string()));
+            let walk = jwalk::WalkDir::new(&home)
+                .parallelism(jwalk::Parallelism::RayonNewPool(threads))
+                .skip_hidden(false);
+            for entry in walk.into_iter().filter_map(|e| e.ok()) {
+                if cancel_flag.load(Ordering::Relaxed) {
+                    let _ = tx.send(ScanMsg::Finished);
+                    return;
+                }
+                if is_path_excluded(&entry.path()) {
+                    continue;
+                }
+                if entry.file_name() == "package.json" {
+                    let path = entry.path();
+                    let dir_path = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string_lossy().to_string());
+                    let _ = tx.send(ScanMsg::ScanningPath(dir_path));
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(name) = json.get("name").and_then(|n| n.as_str()) {
+                                if name == "sillytavern" {
+                                    let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                                    let mut parent_path = path.clone();
+                                    parent_path.pop();
+                                    let path_str = parent_path.to_string_lossy().to_string();
+                                    let _ = tx.send(ScanMsg::Found(LocalInstance {
+                                        version,
+                                        path: path_str,
+                                        is_current: false,
+                                        is_online: false,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let _ = tx.send(ScanMsg::Finished);
+        });
     }
 }
 

@@ -28,3 +28,5 @@ block2 = "0.6"
 zip = "2"
 # 二维码生成（访问酒馆弹窗）
 qrcode = "0.14"
+# macOS 开机自启动（SMAppService 封装，需 macOS 13+）
+smappservice-rs = "0.1"

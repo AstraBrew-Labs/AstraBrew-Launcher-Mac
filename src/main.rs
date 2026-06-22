@@ -173,6 +173,10 @@ impl MyApp {
         // 检测环境依赖版本
         settings_state.detect_all_env();
 
+        // 同步自启动状态：以系统实际注册状态为准（用户可能在系统设置中手动关闭）
+        settings_state.auto_start = crate::core::auto_launch::is_auto_launch_enabled();
+        settings_state.save();
+
         let global_data_path = settings_state.global_data_path.clone();
 
         Self {
@@ -501,6 +505,7 @@ impl eframe::App for MyApp {
                 self.settings_state.allow_tavern_background,
                 self.settings_state.server_mode_enabled,
                 self.settings_state.server_service_mode.clone(),
+                self.settings_state.global_data_path.clone(),
             );
         }
 

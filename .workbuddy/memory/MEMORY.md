@@ -32,6 +32,26 @@
 - `src/lang/zh.rs` + `src/lang/en.rs`：双语翻译文件
 - `data/settings.json`：运行时持久化配置
 
+## 设置页面选项变更（2026-06-23）
+- 已移除："启动后自动启动酒馆" 选项（`auto_start_tavern`）
+- 已移除：相关翻译字符串、`main.rs` 启动逻辑、`console.rs` 引用
+- 替换：`auto_start_tavern_skipped` → `tavern_port_in_use`（通用提示）
+- `main.rs`：`startup_check_done` 字段已清除
+
+## 版本管理 - 自动扫描权限（2026-06-23）
+- 点击"自动扫描"按钮时，若无完全磁盘访问权限（FDA），弹出模态对话框
+- 对话框：说明需要 FDA 权限、提供"前往设置"和"仍要继续"按钮
+- `VersionManageState` 新增：`show_fda_dialog`、`pending_scan_start`
+- 扫描线程在帧末统一启动（避免借用冲突）
+- 翻译新增：`fda_access_dialog_desc`、`continue_anyway`
+
+## 软件自启动功能完善（2026-06-23）
+- `auto_launch.rs` 新增 `get_auto_launch_status()` 返回 enabled/disabled/requires_approval
+- 设置 UI：自启动开关下方显示状态文字（绿色/警告色）
+- 状态为 requires_approval 时显示"打开系统设置"按钮
+- `Cargo.toml`：`smappservice-rs` 版本号从 `0.2` 修正为 `0.1`
+- 翻译新增：`auto_start_enabled`、`auto_start_disabled`、`auto_start_requires_approval`、`open_system_settings`
+
 ## macOS 路径管理（src/utils.rs AppPaths）
 - `root`：`~/Library/Application Support/AstraBrew Launcher/`
 - `logs`：`~/Library/Logs/AstraBrew Launcher/`

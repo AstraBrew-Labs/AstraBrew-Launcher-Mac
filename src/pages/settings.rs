@@ -86,6 +86,19 @@ static GITHUB_TEST_POPUP_STATE: LazyLock<Mutex<GithubTestPopupState>> = LazyLock
     })
 });
 
+/// 自启动状态缓存，避免每帧调用 SMAppService（底层 ObjC IPC 会卡 UI）
+struct AutoLaunchCache {
+    status: &'static str,
+    checked_at: std::time::Instant,
+}
+
+static AUTO_LAUNCH_CACHE: LazyLock<Mutex<AutoLaunchCache>> = LazyLock::new(|| {
+    Mutex::new(AutoLaunchCache {
+        status: "disabled",
+        checked_at: std::time::Instant::now(),
+    })
+});
+
 /// 当前激活的 SillyTavern 实例
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct CurrentInstance {
@@ -113,8 +126,6 @@ pub struct SettingsState {
     #[serde(default)]
     pub global_data_path: Option<String>,
     pub auto_start: bool,
-    pub auto_minimize: bool,
-    pub auto_start_tavern: bool,
     pub allow_tavern_background: bool,
     /// 桌面模式：关闭 WebView 窗口时自动停止酒馆服务（默认开启）
     #[serde(default = "default_auto_stop")]
@@ -220,8 +231,6 @@ impl Default for SettingsState {
             data_mode: TavernDataMode::default(),
             global_data_path: None,
             auto_start: false,
-            auto_minimize: false,
-            auto_start_tavern: false,
             allow_tavern_background: false,
             auto_stop_tavern_on_webview_close: true,
             tavern_export_path: default_export_path(),
@@ -633,27 +642,51 @@ pub fn render(
                             lang::t("auto_start", &state.language),
                             lang::t("auto_start_desc", &state.language),
                             |ui| {
+                                let prev = state.auto_start;
                                 ui.add(crate::ui::switch::toggle(&mut state.auto_start));
-                            },
-                        );
-                        ui.add_space(10.0);
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::ARROW_DOWN,
-                            lang::t("auto_minimize", &state.language),
-                            lang::t("auto_minimize_desc", &state.language),
-                            |ui| {
-                                ui.add(crate::ui::switch::toggle(&mut state.auto_minimize));
-                            },
-                        );
-                        ui.add_space(10.0);
-                        setting_row(
-                            ui,
-                            egui_phosphor::regular::ROCKET,
-                            lang::t("auto_start_tavern", &state.language),
-                            lang::t("auto_start_tavern_desc", &state.language),
-                            |ui| {
-                                ui.add(crate::ui::switch::toggle(&mut state.auto_start_tavern));
+                                if prev != state.auto_start {
+                                    let enabled = state.auto_start;
+                                    match crate::core::auto_launch::set_auto_launch(enabled) {
+                                        Ok(()) => {
+                                            // 操作成功，强制刷新缓存
+                                            let mut cache = AUTO_LAUNCH_CACHE.lock().unwrap();
+                                            cache.checked_at = std::time::Instant::now() - std::time::Duration::from_secs(10);
+                                        }
+                                        Err(e) => {
+                                            eprintln!("[auto_launch] set_auto_launch({}) failed: {}", enabled, e);
+                                            state.auto_start = crate::core::auto_launch::is_auto_launch_enabled();
+                                        }
+                                    }
+                                }
+                                // 显示自启动状态（节流缓存，最多每 3 秒查一次，避免高频 ObjC IPC 卡 UI）
+                                ui.add_space(4.0);
+                                let status = {
+                                    let mut cache = AUTO_LAUNCH_CACHE.lock().unwrap();
+                                    if cache.checked_at.elapsed() > std::time::Duration::from_secs(3) {
+                                        cache.status = crate::core::auto_launch::get_auto_launch_status();
+                                        cache.checked_at = std::time::Instant::now();
+                                        // 同步开关状态与系统真实状态
+                                        let system_enabled = crate::core::auto_launch::is_auto_launch_enabled();
+                                        if state.auto_start != system_enabled {
+                                            state.auto_start = system_enabled;
+                                        }
+                                    }
+                                    cache.status
+                                };
+                                let (status_text, status_color) = match status {
+                                    "enabled" => (lang::t("auto_start_enabled", &state.language), egui::Color32::GREEN),
+                                    "requires_approval" => (lang::t("auto_start_requires_approval", &state.language), egui::Color32::from_rgb(255, 200, 60)),
+                                    _ => (lang::t("auto_start_disabled", &state.language), egui::Color32::GRAY),
+                                };
+                                ui.label(egui::RichText::new(status_text).size(11.0).color(status_color));
+                                if status == "requires_approval" {
+                                    ui.add_space(4.0);
+                                    if ui.small_button(lang::t("open_system_settings", &state.language)).clicked() {
+                                        let _ = std::process::Command::new("open")
+                                            .arg("x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+                                            .spawn();
+                                    }
+                                }
                             },
                         );
                         ui.add_space(10.0);

@@ -72,6 +72,8 @@ pub struct ConsoleState {
     notified_connections: std::collections::HashSet<String>,
     /// 优化后的 settings.json 是否已针对当前实例准备完毕
     settings_prepared: bool,
+    /// 全局数据路径（全局数据模式下用户自定义路径）
+    global_data_path: Option<String>,
 }
 
 impl ConsoleState {
@@ -106,6 +108,7 @@ impl ConsoleState {
             pending_connection_notifications: Vec::new(),
             notified_connections: std::collections::HashSet::new(),
             settings_prepared: false,
+            global_data_path: None,
         }
     }
 
@@ -125,6 +128,7 @@ impl ConsoleState {
         allow_tavern_background: bool,
         server_mode_enabled: bool,
         server_service_mode: ServerServiceMode,
+        global_data_path: Option<String>,
     ) {
         // 检测实例是否变更，重置优化设置标记
         let instance_changed = self.instance_path != instance_path;
@@ -144,6 +148,7 @@ impl ConsoleState {
         self.is_desktop_mode = is_desktop_mode;
         self.is_server_mode = server_mode_enabled;
         self.server_service_mode = server_service_mode.clone();
+        self.global_data_path = global_data_path;
 
         // PM2 接管条件：服务器模式 + 允许酒馆后台运行 + PM2 已安装
         // 仅当服务器模式开启时才能被 PM2 接管，关闭服务器模式后必须切回直接模式
