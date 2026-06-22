@@ -3,7 +3,7 @@ name: 发布 macOS
 on:
   push:
     branches:
-      - main
+      - master
   workflow_dispatch:
 
 permissions:
