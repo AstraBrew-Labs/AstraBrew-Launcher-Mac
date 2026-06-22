@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::fs;
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -66,6 +67,12 @@ pub enum ScanMsg {
     Finished,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum ScanMode {
+    Quick,
+    Full,
+}
+
 pub struct VersionManageState {
     pub active_tab: VersionTab,
 
@@ -107,10 +114,12 @@ pub struct VersionManageState {
     pub scan_finished_time: Option<std::time::Instant>,
     pub cancel_scan_flag: Option<Arc<AtomicBool>>,
     pub show_cancel_scan_confirm: bool,
+    /// 点击自动扫描后先让用户选择模式
+    pub show_scan_mode_dialog: bool,
     /// 点击自动扫描时若无 FDA 权限，弹窗提示
     pub show_fda_dialog: bool,
-    /// 帧末启动扫描线程的标记
-    pub pending_scan_start: bool,
+    /// 待启动的扫描模式（帧末执行，None=空闲）
+    pub pending_scan: Option<ScanMode>,
 }
 
 impl Default for VersionManageState {
@@ -152,8 +161,9 @@ impl VersionManageState {
             scan_finished_time: None,
             cancel_scan_flag: None,
             show_cancel_scan_confirm: false,
+            show_scan_mode_dialog: false,
             show_fda_dialog: false,
-            pending_scan_start: false,
+            pending_scan: None,
         }
     }
 
@@ -348,18 +358,21 @@ pub fn save_current_to_settings(
 }
 
 /// 全盘扫描时跳过的目录名（macOS 版，大小写不敏感）
+///
+/// 注意：jwalk 无法在遍历前裁剪子树，因此需要在遍历线程中对
+/// `$HOME` 下级目录做预过滤，直接跳过整个排除目录，避免无效遍历。
 const SCAN_EXCLUDED_DIRS: &[&str] = &[
-    "node_modules",
-    ".git",
+    // 系统/隐藏
     ".Trash",
-    "System",
-    "private",
     ".DocumentRevisions-V100",
     ".fseventsd",
     ".Spotlight-V100",
     ".TemporaryItems",
     ".VolumeIcon.icns",
-    "Library",
+    ".PKInstallSandboxManager",
+    ".vol",
+    "System",
+    "private",
     "usr",
     "bin",
     "sbin",
@@ -367,7 +380,23 @@ const SCAN_EXCLUDED_DIRS: &[&str] = &[
     "dev",
     "cores",
     "Volumes",
-    ".vol",
+    // macOS 用户目录下大概率无代码的文件夹
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+    "Applications",
+    // 开发工具缓存 / 大型依赖目录
+    "node_modules",
+    ".git",
+    ".npm",
+    ".cargo",
+    ".cache",
+    ".vscode",
+    // 虚拟机（通常很大）
+    "Parallels",
+    "Virtual Machines",
 ];
 
 /// 检查路径是否命中排除目录
@@ -599,10 +628,7 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
             }
         } else {
             if ui.button(lang::t("btn_auto_scan", lang)).clicked() {
-                state.pending_scan_start = true;
-                if !crate::core::app_permissions::is_full_disk_access_granted() {
-                    state.show_fda_dialog = true;
-                }
+                state.show_scan_mode_dialog = true;
             }
         }
         if ui.button(lang::t("btn_manual_add", lang)).clicked() {
@@ -830,7 +856,45 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
         }
     }
 
-    // --- FDA 权限弹窗 ---
+    // --- 扫描模式选择弹窗 ---
+    if state.show_scan_mode_dialog {
+        let mut open = true;
+        egui::Window::new(lang::t("scan_mode_title", lang))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(lang::t("scan_mode_desc", lang));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.button(lang::t("quick_scan", lang))
+                        .on_hover_text(lang::t("quick_scan_desc", lang))
+                        .clicked()
+                    {
+                        state.show_scan_mode_dialog = false;
+                        state.pending_scan = Some(ScanMode::Quick);
+                    }
+                    if ui.button(lang::t("full_scan", lang))
+                        .on_hover_text(lang::t("full_scan_desc", lang))
+                        .clicked()
+                    {
+                        state.show_scan_mode_dialog = false;
+                        let perms = crate::core::app_permissions::probe_scan_permissions();
+                        if perms.all_ok() {
+                            state.pending_scan = Some(ScanMode::Full);
+                        } else {
+                            state.show_fda_dialog = true;
+                        }
+                    }
+                });
+            });
+        if !open {
+            state.show_scan_mode_dialog = false;
+        }
+    }
+
+    // --- FDA 权限弹窗（仅全盘扫描时触发） ---
     if state.show_fda_dialog {
         let mut open = true;
         egui::Window::new(lang::t("fda_access_title", lang))
@@ -845,41 +909,69 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
                     if ui.button(lang::t("fda_access_button", lang)).clicked() {
                         crate::core::app_permissions::open_full_disk_access_settings();
                         state.show_fda_dialog = false;
-                        state.pending_scan_start = false;
+                        state.pending_scan = None;
                     }
                     if ui.button(lang::t("continue_anyway", lang)).clicked() {
                         state.show_fda_dialog = false;
+                        state.pending_scan = Some(ScanMode::Full);
                     }
                 });
             });
         if !open {
             state.show_fda_dialog = false;
-            state.pending_scan_start = false;
+            state.pending_scan = None;
         }
     }
 
     // --- 帧末启动扫描线程 ---
-    if state.pending_scan_start && !state.is_scanning {
-        state.pending_scan_start = false;
-        state.is_scanning = true;
-        state.scanning_paths.clear();
-        state.show_scan_tips = true;
-        state.scan_finished_time = None;
-        let (tx, rx) = mpsc::channel();
-        state.scan_receiver = Some(rx);
-        let cpu_cores = settings.cpu_cores.clone();
-        let cancel_flag = Arc::new(AtomicBool::new(false));
-        state.cancel_scan_flag = Some(cancel_flag.clone());
-        thread::spawn(move || {
-            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-            let threads = match cpu_cores {
-                crate::pages::settings::CpuCores::Auto => std::cmp::max(1, cores.saturating_sub(2)),
-                crate::pages::settings::CpuCores::Half => std::cmp::max(1, cores / 2),
-                crate::pages::settings::CpuCores::All => cores,
-            };
-            let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
-            let _ = tx.send(ScanMsg::ScanningPath(home.to_string_lossy().to_string()));
-            let walk = jwalk::WalkDir::new(&home)
+    if state.pending_scan.is_some() && !state.is_scanning && !state.show_scan_mode_dialog && !state.show_fda_dialog {
+        let mode = state.pending_scan.take().unwrap();
+        match mode {
+            ScanMode::Quick => start_quick_scan(state, settings),
+            ScanMode::Full => start_full_scan(state, settings),
+        }
+    }
+}
+
+/// 全盘扫描：jwalk 多线程遍历 $HOME 下所有非排除目录，匹配 package.json
+fn start_full_scan(state: &mut VersionManageState, settings: &SettingsState) {
+    state.is_scanning = true;
+    state.scanning_paths.clear();
+    state.show_scan_tips = true;
+    state.scan_finished_time = None;
+    let (tx, rx) = mpsc::channel();
+    state.scan_receiver = Some(rx);
+    let cpu_cores = settings.cpu_cores.clone();
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    state.cancel_scan_flag = Some(cancel_flag.clone());
+    thread::spawn(move || {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        let threads = match cpu_cores {
+            crate::pages::settings::CpuCores::Auto => std::cmp::max(1, cores.saturating_sub(2)),
+            crate::pages::settings::CpuCores::Half => std::cmp::max(1, cores / 2),
+            crate::pages::settings::CpuCores::All => cores,
+        };
+        let home = PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+        let _ = tx.send(ScanMsg::ScanningPath(home.to_string_lossy().to_string()));
+        // 预过滤顶层目录，直接跳过排除目录
+        let top_dirs: Vec<PathBuf> = match std::fs::read_dir(&home) {
+            Ok(entries) => entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir() && !is_path_excluded(&e.path()))
+                .map(|e| e.path())
+                .collect(),
+            Err(_) => vec![home.clone()],
+        };
+        if top_dirs.is_empty() {
+            let _ = tx.send(ScanMsg::Finished);
+            return;
+        }
+        for dir in &top_dirs {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(ScanMsg::Finished);
+                return;
+            }
+            let walk = jwalk::WalkDir::new(dir)
                 .parallelism(jwalk::Parallelism::RayonNewPool(threads))
                 .skip_hidden(false);
             for entry in walk.into_iter().filter_map(|e| e.ok()) {
@@ -892,13 +984,18 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
                 }
                 if entry.file_name() == "package.json" {
                     let path = entry.path();
-                    let dir_path = path.parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| path.to_string_lossy().to_string());
+                    let dir_path = path.parent()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|| path.to_string_lossy().to_string());
                     let _ = tx.send(ScanMsg::ScanningPath(dir_path));
                     if let Ok(content) = fs::read_to_string(&path) {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                             if let Some(name) = json.get("name").and_then(|n| n.as_str()) {
                                 if name == "sillytavern" {
-                                    let version = json.get("version").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                                    let version = json.get("version")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("Unknown")
+                                        .to_string();
                                     let mut parent_path = path.clone();
                                     parent_path.pop();
                                     let path_str = parent_path.to_string_lossy().to_string();
@@ -914,9 +1011,95 @@ fn render_local_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings:
                     }
                 }
             }
-            let _ = tx.send(ScanMsg::Finished);
-        });
-    }
+        }
+        let _ = tx.send(ScanMsg::Finished);
+    });
+}
+
+/// 快速扫描：用系统 find 命令定位 package.json，跳过星酿自带酒馆
+fn start_quick_scan(state: &mut VersionManageState, _settings: &SettingsState) {
+    state.is_scanning = true;
+    state.scanning_paths.clear();
+    state.show_scan_tips = true;
+    state.scan_finished_time = None;
+    let (tx, rx) = mpsc::channel();
+    state.scan_receiver = Some(rx);
+    let cancel_flag = Arc::new(AtomicBool::new(false));
+    state.cancel_scan_flag = Some(cancel_flag.clone());
+    thread::spawn(move || {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let _ = tx.send(ScanMsg::ScanningPath(home.clone()));
+        let prune_path = format!(
+            "{}/Library/Application Support/AstraBrew Launcher/sillytavern",
+            home
+        );
+        let mut child = match std::process::Command::new("find")
+            .arg(&home)
+            .arg("-path")
+            .arg(&prune_path)
+            .arg("-prune")
+            .arg("-o")
+            .arg("-type")
+            .arg("f")
+            .arg("-name")
+            .arg("package.json")
+            .arg("-print")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[quick_scan] find spawn failed: {}", e);
+                let _ = tx.send(ScanMsg::Finished);
+                return;
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                let _ = tx.send(ScanMsg::Finished);
+                return;
+            }
+        };
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = child.kill();
+                let _ = tx.send(ScanMsg::Finished);
+                return;
+            }
+            let path_str = match line {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            let path = PathBuf::from(&path_str);
+            let dir_path = path.parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| path_str.clone());
+            let _ = tx.send(ScanMsg::ScanningPath(dir_path.clone()));
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(name) = json.get("name").and_then(|n| n.as_str()) {
+                        if name == "sillytavern" {
+                            let version = json.get("version")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Unknown")
+                                .to_string();
+                            let _ = tx.send(ScanMsg::Found(LocalInstance {
+                                version,
+                                path: dir_path,
+                                is_current: false,
+                                is_online: false,
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        let _ = child.wait();
+        let _ = tx.send(ScanMsg::Finished);
+    });
 }
 
 fn render_online_tab(ui: &mut egui::Ui, state: &mut VersionManageState, settings: &mut SettingsState) {

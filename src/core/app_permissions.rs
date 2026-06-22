@@ -1,13 +1,16 @@
 //! macOS 权限检测与引导
 //!
-//! 目前覆盖「完全磁盘访问权限」（Full Disk Access, FDA）。
+//! 覆盖「完全磁盘访问权限」（Full Disk Access, FDA）和
+//! 「文件与文件夹」TCC 权限。
 //!
-//! 检测原理：macOS 对未授予 FDA 的应用，`NSFileManager` 返回的
-//! `homeDirectoryForCurrentUser` 会被重定向到沙箱容器路径
-//! （`~/Library/Containers/<bundle-id>/...`），而非真实用户主目录。
-//! 通过对比二者路径前缀即可判断权限是否已授予。
-//!
-//! Apple 未提供查询 FDA 状态的官方 API，这是应用层唯一的非侵入检测方式。
+//! 检测原理（两层）：
+//! 1. 沙箱检测（仅对沙箱应用有效）：对比 NSFileManager 返回的
+//!    HOME 与真实 $HOME，若被重定向到
+//!    `~/Library/Containers/<bundle-id>/...` → 判定无权限。
+//! 2. 实际文件访问探测（对沙箱/非沙箱应用均有效）：尝试读取
+//!    macOS 受 FDA 保护的目录（如 ~/Library/Safari），若返回
+//!    PermissionDenied 则判定无权限。同时也探测 Desktop/
+//!    Documents/Downloads 的"文件与文件夹"权限。
 
 #[cfg(target_os = "macos")]
 mod imp {
@@ -85,4 +88,75 @@ pub fn is_full_disk_access_granted() -> bool {
 /// 跳转到「系统设置 → 完全磁盘访问权限」面板
 pub fn open_full_disk_access_settings() {
     imp::open_full_disk_access_settings();
+}
+
+/// 权限探测结果
+#[derive(Debug, Clone)]
+pub struct ScanPermissions {
+    /// 是否至少能成功读取一个 FDA 保护目录
+    pub fda_ok: bool,
+    /// Desktop 是否可访问
+    pub desktop_ok: bool,
+    /// Documents 是否可访问
+    pub documents_ok: bool,
+    /// Downloads 是否可访问
+    pub downloads_ok: bool,
+}
+
+impl ScanPermissions {
+    /// 所有权限都 OK
+    pub fn all_ok(&self) -> bool {
+        self.fda_ok && self.desktop_ok && self.documents_ok && self.downloads_ok
+    }
+}
+
+/// 通过实际文件 I/O 探测扫描所需的各项权限。
+///
+/// 该函数不依赖沙箱机制，对沙箱/非沙箱应用均有效。
+/// 注意：访问受保护目录可能触发 macOS 系统弹窗（TCC 授权请求），
+/// 因此仅在用户主动操作（如点击"自动扫描"）时调用。
+pub fn probe_scan_permissions() -> ScanPermissions {
+    let home = match std::env::var("HOME").ok().filter(|h| !h.is_empty()) {
+        Some(h) => std::path::PathBuf::from(h),
+        None => {
+            return ScanPermissions {
+                fda_ok: false,
+                desktop_ok: false,
+                documents_ok: false,
+                downloads_ok: false,
+            };
+        }
+    };
+
+    // FDA 探测：尝试读取受 FDA 保护的路径
+    // 选几个常见 macOS 应用数据目录，任何一个可读即认为 FDA 正常
+    let fda_paths = [
+        home.join("Library/Safari"),
+        home.join("Library/Mail"),
+        home.join("Library/Messages"),
+        home.join("Library/Calendars"),
+    ];
+    let fda_ok = fda_paths.iter().any(|p| {
+        std::fs::read_dir(p)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false)
+    });
+
+    // 文件与文件夹权限探测
+    let desktop_ok = std::fs::read_dir(home.join("Desktop"))
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    let documents_ok = std::fs::read_dir(home.join("Documents"))
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+    let downloads_ok = std::fs::read_dir(home.join("Downloads"))
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+
+    ScanPermissions {
+        fda_ok,
+        desktop_ok,
+        documents_ok,
+        downloads_ok,
+    }
 }
