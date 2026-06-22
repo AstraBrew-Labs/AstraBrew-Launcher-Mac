@@ -3,7 +3,7 @@
 # 星酿启动器 (AstraBrew Launcher)
 
 
-<div style="text-align: center;">
+<div style="text-align: center;" align="center">
 
 星酿启动器 (AstraBrew Launcher) 是一款专为 MacOS 平台打造的高性能应用程序启动器。它基于 Rust 和 egui 开发，旨在为用户提供快速、轻量、多功能的启动和管理体验。
 
