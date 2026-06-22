@@ -7,14 +7,10 @@ edition = "2024"
 productName = "AstraBrew Launcher"
 identifier = "cn.astrabrew.launcher"
 icons = ["icons/icon.icns"]
-beforePackagingCommand = "cargo build --release"
 outDir = "dist"
-# Universal Binary
-binaries-dir = "target/universal/release"
 
 [package.metadata.packager.macos]
 minimumSystemVersion = "10.15"
-
 [dependencies]
 eframe = { version = "0.33", features = ["default"] }
 egui = "0.33"
