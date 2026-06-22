@@ -23,7 +23,7 @@ const DIRECT_BASE: &str = "https://github.com/";
 const REPO: &str = "AstraBrew-Labs/AstraBrew-Launcher-Mac";
 
 /// 更新签名公钥（与打包时的私钥配对，见 keys/update_key.pem）
-const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDc2NTlGQThGRDRBODY3MDMKUldRRFo2alVqL3BaZHVienhiQitRMHY5TG9RdG1yUjdsY3dCNzUxREpicVprcTZxWk1lRnZXRDUK";
+const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGRjBFQkJCNzUxQjZGNTUKUldSVmJ4dDF1K3Z3ci9oWENPcHUzckVQL2N1OWFqQmc0QUIydzJvUzVadm5SN1NzaGhVdVdpcTEK";
 
 // ─── 数据结构 ─────────────────────────────────────────────────────────────────
 

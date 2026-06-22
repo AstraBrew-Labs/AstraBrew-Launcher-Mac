@@ -5,10 +5,12 @@ edition = "2024"
 
 [package.metadata.packager]
 productName = "AstraBrew Launcher"
-identifier = "cn.al01.astrabrew"
+identifier = "cn.astrabrew.launcher"
 icons = ["icons/icon.icns"]
 beforePackagingCommand = "cargo build --release"
 outDir = "dist"
+# Universal Binary
+binaries-dir = "target/universal/release"
 
 [package.metadata.packager.macos]
 minimumSystemVersion = "10.15"

@@ -18,6 +18,18 @@
 - **eframe (0.33)**: 官方的 egui 原生应用集成框架。
 - **egui_phosphor (0.11)**: 提供丰富的界面图标支持。
 - **Serde**: 高效的序列化与反序列化库（用于配置文件管理）。
+- **serde_json**: 用于 JSON 格式数据的序列化和反序列化。
+- **serde_yaml**: 用于 YAML 格式数据的序列化和反序列化。
+- **reqwest**: 强大的 HTTP 客户端库，用于网络请求和数据
+- **objc2** : Rust 与 macOS 原生 API 的桥接库，用于调用 WKWebView 和其他系统功能。
+- **rfd**: 跨平台的文件对话框库，用于文件选择和保存操作。
+- **jwalk: 高性能的并行文件系统遍历库，用于快速扫描和管理文件资源。
+- **block2**: 用于在 Rust 中实现阻塞操作的库，适用于需要等待的任务。
+- **zip: 用于处理 ZIP 文件的库，支持压缩和解压缩操作。
+- **qrcode: 用于生成二维码的库，支持多种二维码格式和自定义样式。
+- **smappservice-rs**: 用于管理 macOS 自启动服务的库，支持启用、禁用和检查自启动状态。
+- **cargo-packager**: 用于打包和发布 Rust 应用程序的库，支持生成 macOS 可执行文件和安装包。
+- **cargo-packager-updater**: 用于自动更新和版本管理的库，支持从 GitHub 仓库获取最新版本并进行更新。
 
 ## 🚀 安装依赖与运行项目
 
@@ -32,7 +44,7 @@
 1. 克隆或下载本项目到本地。
 2. 进入项目根目录：
    ```bash
-   cd astrabrew-launcher-win
+   cd astrabrew-launcher-mac
    ```
 3. 使用 Cargo 检查或编译项目：
    ```bash
@@ -47,7 +59,7 @@
 ## 📂 项目结构
 
 ```text
-astrabrew-launcher-win/
+astrabrew-launcher-mac/
 ├── assets/                  # 静态资源文件
 │   └── fonts/               # 字体文件（如 MiSans-Regular.ttf）
 ├── data/                    # 本地数据及配置存储
@@ -64,7 +76,35 @@ astrabrew-launcher-win/
 └── README.md                # 项目说明文档
 ```
 
+## 📂 软件目录结构
+
+```text
+ ~/Library/Application Support/AstraBrew Launcher/    ← 根目录 (root)
+ ├── data/                   ← 软件数据目录
+ │   ├── default/            ← 默认数据目录
+ │   │   └── sillytavern/        ← 默认酒馆数据目录
+ │   │       └── config.yaml     ← 默认酒馆配置文件
+ │   │       └── settings.json   ← 默认酒馆WebUI配置文件
+ │   ├── sillytavern/        ← 全局酒馆数据目录
+ │   │   └── data/           ← 全局酒馆数据目录
+ │   │       ├── config.yaml ← 全局酒馆配置文件
+ │   │       └── default-user/
+ │   │           └── settings.json ← 全局酒馆WebUI设置
+ │   └── local_instances.json ← 本地实例列表
+ ├── sillytavern/            ← 酒馆核心文件目录 (ST installation) (对应软件里的`在线下载`实例)
+ └── config.json             ← 启动器配置文件
+
+ ~/Library/Logs/AstraBrew Launcher/      ← 日志目录 (logs)
+
+ ~/Library/Caches/AstraBrew Launcher/    ← 缓存目录 (caches)
+
+ /tmp/AstraBrew Launcher/                ← 临时目录 (temp)
+```
+
 ## 📝 代码规范与注释规范
+
+### AI编程
+- 可使用仓库里的`MEMORY.md`喂给AI，辅助开发。
 
 ### 代码规范
 - **命名规范**：
