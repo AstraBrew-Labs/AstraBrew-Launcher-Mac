@@ -72,7 +72,7 @@ jobs:
             sed -i.bak -e 's/before-packaging-command.*=.*//g' -e 's/before_packaging_command.*=.*//g' Cargo.toml
           fi
 
-      - name: 分阶段生成全架构安装包 (引入双重 Ad-hoc 代码签名机制)
+      - name: 分阶段生成全架构安装包 (修正：移除 DMG 自身的 Ad-hoc 签名)
         shell: bash
         run: |
           # 创建统一暂存区
@@ -97,8 +97,8 @@ jobs:
             tar czf "dist-packages/AstraBrew-Launcher_aarch64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
-            # 【步骤 3】对打包生成的 .dmg 进行代码签名
-            codesign --force --sign - "$DMG_PATH"
+            # 【注意】切勿对 .dmg 本身进行 Ad-hoc 签名，这会导致 dmg 无法挂载。
+            # 直接复制无签名的 .dmg 容器，内部已签名的 .app 会受到保护。
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_aarch64.dmg"
           fi
           rm -rf dist/*
@@ -121,8 +121,7 @@ jobs:
             tar czf "dist-packages/AstraBrew-Launcher_x64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
-            # 【步骤 3】对打包生成的 .dmg 进行代码签名
-            codesign --force --sign - "$DMG_PATH"
+            # 直接复制无签名的 .dmg 容器
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_x64.dmg"
           fi
           rm -rf dist/*
@@ -152,8 +151,7 @@ jobs:
             tar czf "dist-packages/AstraBrew-Launcher_universal.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
-            # 【步骤 3】对打包生成的 .dmg 进行代码签名
-            codesign --force --sign - "$DMG_PATH"
+            # 直接复制无签名的 .dmg 容器
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_universal.dmg"
           fi
           rm -rf dist/*
