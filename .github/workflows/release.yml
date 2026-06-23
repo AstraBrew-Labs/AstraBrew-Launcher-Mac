@@ -59,20 +59,24 @@ jobs:
       - name: 构建 Intel
         run: cargo build --release --target x86_64-apple-darwin
 
-      - name: 合并 Universal Binary
+      - name: 合并 Universal Binary 并覆盖默认 release 路径
         shell: bash
         run: |
-          mkdir -p target/universal/release
+          # 创建默认的 release 目录，供 cargo-packager 读取
+          mkdir -p target/release
 
+          # 使用 lipo 合并架构
           lipo \
-          target/aarch64-apple-darwin/release/astrabrew-launcher-mac \
-          target/x86_64-apple-darwin/release/astrabrew-launcher-mac \
-          -create \
-          -output target/universal/release/astrabrew-launcher-mac
+            target/aarch64-apple-darwin/release/astrabrew-launcher-mac \
+            target/x86_64-apple-darwin/release/astrabrew-launcher-mac \
+            -create \
+            -output target/release/astrabrew-launcher-mac
 
-          file target/universal/release/astrabrew-launcher-mac
+          # 验证合并后的二进制架构
+          echo "===== 验证合并后的二进制架构 ====="
+          file target/release/astrabrew-launcher-mac
 
-      - name: 打包
+      - name: 打包 (此时打包的将是 Universal Binary)
         shell: bash
         run: cargo packager --release
 
