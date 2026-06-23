@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - Cargo.toml
+      - Packager.toml
   workflow_dispatch:
 
 permissions:
@@ -40,6 +41,7 @@ jobs:
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
           if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -58,6 +60,7 @@ jobs:
         run: cargo build --release --target x86_64-apple-darwin
 
       - name: 合并 Universal Binary
+        shell: bash
         run: |
           mkdir -p target/universal/release
 
@@ -67,8 +70,15 @@ jobs:
           -create \
           -output target/universal/release/astrabrew-launcher-mac
 
-      - name: 打包 DMG
+          file target/universal/release/astrabrew-launcher-mac
+
+      - name: 打包
         run: cargo packager --release
+
+      - name: 查看 dist 内容
+        run: |
+          echo "===== dist ====="
+          find dist -type f
 
       - name: 查找更新包
         id: archive
@@ -78,12 +88,9 @@ jobs:
 
           if [ -z "$FILE" ]; then
             echo "没有找到 .app.tar.gz"
-            echo "当前 dist 内容："
-            find dist -type f
             exit 1
           fi
 
-          echo "找到更新包：$FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: 查找 DMG
@@ -94,12 +101,9 @@ jobs:
 
           if [ -z "$FILE" ]; then
             echo "没有找到 .dmg"
-            echo "当前 dist 内容："
-            find dist -type f
             exit 1
           fi
 
-          echo "找到 DMG：$FILE"
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
 
       - name: 对更新包签名
@@ -108,13 +112,13 @@ jobs:
         run: |
           cargo packager signer sign "${{ steps.archive.outputs.file }}"
 
-      - name: 获取签名文件
+      - name: 获取 sig 文件
         id: sig
         shell: bash
         run: |
           echo "file=${{ steps.archive.outputs.file }}.sig" >> "$GITHUB_OUTPUT"
 
-      - name: 读取签名
+      - name: 读取签名内容
         id: signature
         shell: bash
         run: |
@@ -132,7 +136,7 @@ jobs:
             "platforms":{
               "darwin-universal":{
                 "signature":"${{ steps.signature.outputs.signature }}",
-                "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/${APP_NAME}.app.tar.gz"
+                "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/AstraBrew Launcher.app.tar.gz"
               }
             }
           }
@@ -149,3 +153,5 @@ jobs:
             ${{ steps.sig.outputs.file }}
             ${{ steps.dmg.outputs.file }}
             latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
