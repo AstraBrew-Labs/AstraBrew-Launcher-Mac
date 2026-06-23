@@ -878,7 +878,7 @@ pub fn render(
 
                         // 反向代理（仅服务器模式 + 互联网时显示，依赖 Caddy）
                         if state.server_mode_enabled && state.server_service_mode == ServerServiceMode::Internet {
-                            let caddy_installed = state.caddy_version.is_some();
+                            // let caddy_installed = state.caddy_version.is_some();
                             setting_row(
                                 ui,
                                 egui_phosphor::regular::ARROWS_LEFT_RIGHT,
