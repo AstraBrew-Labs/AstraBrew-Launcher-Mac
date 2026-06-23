@@ -72,7 +72,7 @@ jobs:
             sed -i.bak -e 's/before-packaging-command.*=.*//g' -e 's/before_packaging_command.*=.*//g' Cargo.toml
           fi
 
-      - name: 分阶段生成全架构安装包
+      - name: 分阶段生成全架构安装包 (引入双重 Ad-hoc 代码签名机制)
         shell: bash
         run: |
           # 创建统一暂存区
@@ -82,15 +82,23 @@ jobs:
           # -------------------- 1. 打包 ARM64 版本 --------------------
           echo "===== 正在打包 ARM64 ====="
           cp target/aarch64-apple-darwin/release/astrabrew-launcher-mac target/universal/release/astrabrew-launcher-mac
+          
+          # 【步骤 1】打包前：强制对准备封装的二进制文件进行 ad-hoc 签名
+          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
+          
           cargo packager --release
 
           APP_PATH=$(find dist -name "*.app" | head -n1)
           DMG_PATH=$(find dist -name "*.dmg" | head -n1)
           
           if [ -n "$APP_PATH" ]; then
+            # 【步骤 2】打包后：深度签名 .app 目录，确保更新包合规
+            codesign --force --deep --options runtime --sign - "$APP_PATH"
             tar czf "dist-packages/AstraBrew-Launcher_aarch64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
+            # 【步骤 3】对打包生成的 .dmg 进行代码签名
+            codesign --force --sign - "$DMG_PATH"
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_aarch64.dmg"
           fi
           rm -rf dist/*
@@ -98,15 +106,23 @@ jobs:
           # -------------------- 2. 打包 Intel (x64) 版本 --------------------
           echo "===== 正在打包 Intel ====="
           cp target/x86_64-apple-darwin/release/astrabrew-launcher-mac target/universal/release/astrabrew-launcher-mac
+          
+          # 【步骤 1】打包前：强制对准备封装的二进制文件进行 ad-hoc 签名
+          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
+          
           cargo packager --release
 
           APP_PATH=$(find dist -name "*.app" | head -n1)
           DMG_PATH=$(find dist -name "*.dmg" | head -n1)
           
           if [ -n "$APP_PATH" ]; then
+            # 【步骤 2】打包后：深度签名 .app 目录
+            codesign --force --deep --options runtime --sign - "$APP_PATH"
             tar czf "dist-packages/AstraBrew-Launcher_x64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
+            # 【步骤 3】对打包生成的 .dmg 进行代码签名
+            codesign --force --sign - "$DMG_PATH"
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_x64.dmg"
           fi
           rm -rf dist/*
@@ -122,15 +138,22 @@ jobs:
           echo "===== 验证合并后的二进制架构 ====="
           file target/universal/release/astrabrew-launcher-mac
 
+          # 【步骤 1】打包前：强制对准备封装的 Universal 二进制进行 ad-hoc 签名
+          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
+
           cargo packager --release
 
           APP_PATH=$(find dist -name "*.app" | head -n1)
           DMG_PATH=$(find dist -name "*.dmg" | head -n1)
           
           if [ -n "$APP_PATH" ]; then
+            # 【步骤 2】打包后：深度签名 .app 目录
+            codesign --force --deep --options runtime --sign - "$APP_PATH"
             tar czf "dist-packages/AstraBrew-Launcher_universal.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
           fi
           if [ -n "$DMG_PATH" ]; then
+            # 【步骤 3】对打包生成的 .dmg 进行代码签名
+            codesign --force --sign - "$DMG_PATH"
             cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_universal.dmg"
           fi
           rm -rf dist/*
