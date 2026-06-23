@@ -5,6 +5,10 @@ use crate::pages::settings::{Language, ProxyType, ServerServiceMode, TavernDataM
 use egui::text::LayoutJob;
 use egui::{Color32, RichText, TextFormat, Vec2};
 use std::path::PathBuf;
+use std::collections::VecDeque;
+
+// 最大保留日志行数，超过时从头部修剪
+const MAX_LOG_LINES: usize = 2000;
 
 #[derive(PartialEq, Clone)]
 pub enum ConsoleStatus {
@@ -16,7 +20,9 @@ pub enum ConsoleStatus {
 
 pub struct ConsoleState {
     pub status: ConsoleStatus,
-    pub logs: Vec<String>,
+    pub logs: VecDeque<String>,
+    /// 缓存每条日志对应的解析结果（None 表示包含 URL，需要在渲染时动态处理）
+    parsed_layouts: VecDeque<Option<LayoutJob>>,
 
     // 进程管理
     process: TavernProcess,
@@ -80,7 +86,8 @@ impl ConsoleState {
     pub fn new() -> Self {
         Self {
             status: ConsoleStatus::Stopped,
-            logs: vec![String::from("[系统] 控制台已就绪")],
+            logs: VecDeque::from(vec![String::from("[系统] 控制台已就绪")]),
+            
             process: TavernProcess::new(),
             pm2_manager: Pm2Manager::new(),
             use_pm2: false,
@@ -109,6 +116,10 @@ impl ConsoleState {
             notified_connections: std::collections::HashSet::new(),
             settings_prepared: false,
             global_data_path: None,
+            parsed_layouts: VecDeque::from(vec![Some(parse_ansi_line(
+                "[系统] 控制台已就绪",
+                egui::FontId::monospace(12.0),
+            ))]),
         }
     }
 
@@ -302,6 +313,7 @@ impl ConsoleState {
 
         // 启动前清空日志
         self.logs.clear();
+        self.parsed_layouts.clear();
         self.tavern_url = None;
         self.webview_auto_opened = false;
         // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
@@ -369,6 +381,7 @@ impl ConsoleState {
         // 先清空 PM2 日志文件，再清空内存日志（避免下一帧 poll 拉回旧日志）
         let _ = self.pm2_manager.clear_logs();
         self.logs.clear();
+        self.parsed_layouts.clear();
         self.tavern_url = None;
         self.webview_auto_opened = false;
         self.pm2_log_byte_offset = 0;
@@ -529,6 +542,7 @@ impl ConsoleState {
             // 清空 PM2 日志文件 + 内存日志
             let _ = self.pm2_manager.clear_logs();
             self.logs.clear();
+            self.parsed_layouts.clear();
             self.pm2_log_byte_offset = 0;
             // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
             self.notified_connections.clear();
@@ -791,6 +805,7 @@ impl ConsoleState {
                 // 重启流程：停止已完成 → 清空日志并自动启动
                 self.restart_pending = false;
                 self.logs.clear();
+                self.parsed_layouts.clear();
                 // 重置连接去重记录：新进程会重新输出所有连接日志，避免重启后被误判为重复而漏掉通知
                 self.notified_connections.clear();
                 self.add_log(&lang::t("console_log_restarting_start", lang));
@@ -872,7 +887,23 @@ impl ConsoleState {
                 format!("{:02}:{:02}:{:02}", h, m, s)
             })
             .unwrap_or_else(|_| String::from("--:--:--"));
-        self.logs.push(format!("[{}] {}", timestamp, msg));
+        let full = format!("[{}] {}", timestamp, msg);
+        // 推入原始文本
+        self.logs.push_back(full.clone());
+
+        // 缓存解析结果（仅在不包含 URL 时缓存 LayoutJob）
+        if full.contains("http://") || full.contains("https://") {
+            self.parsed_layouts.push_back(None);
+        } else {
+            let job = parse_ansi_line(&full, egui::FontId::monospace(12.0));
+            self.parsed_layouts.push_back(Some(job));
+        }
+
+        // 修剪过多的历史，保留最近 N 行
+        while self.logs.len() > MAX_LOG_LINES {
+            self.logs.pop_front();
+            self.parsed_layouts.pop_front();
+        }
 
         // 检测酒馆连接日志 → 推送通知（仅服务器模式 + 互联网模式启用）
         if let Some(info) = crate::core::network::parse_connection_log(msg) {
@@ -1512,8 +1543,12 @@ pub fn render(ui: &mut egui::Ui, state: &mut ConsoleState, lang: &Language) {
                 .stick_to_bottom(true)
                 .show(ui, |ui| {
                     let monospace = egui::FontId::monospace(12.0);
-                    for line in state.logs.iter() {
-                        render_log_line(ui, line, &monospace);
+                    for (line, cached) in state.logs.iter().zip(state.parsed_layouts.iter()) {
+                        if let Some(job) = cached {
+                            ui.label(job.clone());
+                        } else {
+                            render_log_line(ui, line, &monospace);
+                        }
                     }
                 });
         });
