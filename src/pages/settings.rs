@@ -885,6 +885,13 @@ pub fn render(
                                 lang::t("rp_title", &state.language),
                                 lang::t("rp_manage_desc", &state.language),
                                 |ui| {
+                                    // 暂时将按钮替换为不可交互的文本 "待开发..."，保留原始按钮逻辑为注释以便将来恢复
+                                    ui.label(
+                                        egui::RichText::new("待开发...")
+                                            .color(egui::Color32::GRAY)
+                                            .size(13.0),
+                                    );
+                                    /*
                                     let btn = egui::Button::new(lang::t("rp_manage", &state.language));
                                     let resp = if caddy_installed {
                                         ui.add_enabled(true, btn)
@@ -896,6 +903,7 @@ pub fn render(
                                         let mut popup = crate::pages::reverse_proxy_popup::REVERSE_PROXY_POPUP.lock().unwrap();
                                         popup.show = true;
                                     }
+                                    */
                                 },
                             );
                             ui.add_space(10.0);
