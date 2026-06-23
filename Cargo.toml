@@ -9,7 +9,6 @@ identifier = "cn.astrabrew.launcher"
 icons = ["icons/icon.icns"]
 outDir = "dist"
 binaries-dir = "target/universal/release"
-create-updater-artifacts = true
 [package.metadata.packager.macos]
 minimumSystemVersion = "10.15"
 

@@ -73,25 +73,33 @@ jobs:
           file target/universal/release/astrabrew-launcher-mac
 
       - name: 打包
+        shell: bash
         run: cargo packager --release
 
       - name: 查看 dist 内容
+        shell: bash
         run: |
           echo "===== dist ====="
           find dist -type f
+
+      - name: 生成更新包
+        shell: bash
+        run: |
+          cd dist
+          tar czf "${APP_NAME}.app.tar.gz" "${APP_NAME}.app"
 
       - name: 查找更新包
         id: archive
         shell: bash
         run: |
           FILE=$(find dist -name "*.app.tar.gz" | head -n1)
-
-          if [ -z "$FILE" ]; then
-            echo "没有找到 .app.tar.gz"
-            exit 1
-          fi
-
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: 对更新包签名
+        env:
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.PACKAGER_PRIVATE_KEY }}
+        run: |
+          cargo packager signer sign "${{ steps.archive.outputs.file }}"
 
       - name: 查找 DMG
         id: dmg
@@ -105,12 +113,6 @@ jobs:
           fi
 
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
-
-      - name: 对更新包签名
-        env:
-          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.PACKAGER_PRIVATE_KEY }}
-        run: |
-          cargo packager signer sign "${{ steps.archive.outputs.file }}"
 
       - name: 获取 sig 文件
         id: sig

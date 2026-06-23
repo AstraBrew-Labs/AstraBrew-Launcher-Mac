@@ -9,8 +9,5 @@ out_dir = "dist"
 # 使用我们自己 lipo 合并出来的 Universal Binary
 binaries_dir = "target/universal/release"
 
-# 生成 updater 用的 .app.tar.gz
-create_updater_artifacts = true
-
 [macos]
 minimum_system_version = "10.15"
