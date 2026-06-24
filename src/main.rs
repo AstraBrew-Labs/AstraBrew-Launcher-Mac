@@ -34,18 +34,45 @@ fn set_macos_process_name(lang: &pages::settings::Language) {
 #[cfg(not(target_os = "macos"))]
 fn set_macos_process_name(_lang: &pages::settings::Language) {}
 
+/// 检测是否运行在 .app bundle 内（即已打包的 macOS 应用）
+#[cfg(target_os = "macos")]
+fn is_running_in_bundle() -> bool {
+    std::env::current_exe()
+        .map(|p| {
+            p.to_string_lossy()
+                .contains(".app/Contents/MacOS/")
+        })
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_running_in_bundle() -> bool {
+    false
+}
+
 fn main() -> eframe::Result {
     let settings = pages::settings::SettingsState::load();
 
     // 必须在创建窗口之前设置，否则 Dock/菜单栏会先显示进程名再切换
     set_macos_process_name(&settings.language);
 
+    // eframe 0.33 在不提供图标时会用紫色 e 默认图标覆盖 Dock 图标。
+    // - .app bundle：传 IconData::default() 让 eframe 跳过覆盖，系统使用 bundle 内 icon.icns
+    // - cargo run：加载预处理的 icon_eframe.png（从 ICNS 提取 + macOS 标准圆角/留白）
+    let icon = if is_running_in_bundle() {
+        egui::IconData::default()
+    } else {
+        eframe::icon_data::from_png_bytes(include_bytes!("../icons/icon_eframe.png"))
+            .expect("Failed to load icon_eframe.png")
+    };
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([800.0, 600.0])
         .with_max_inner_size([1280.0, 720.0])
-        .with_app_id("com.astrabrew.launcher")
-        .with_maximize_button(false);
+        .with_app_id("cn.astrabrew.launcher")
+        .with_maximize_button(false)
+        .with_icon(icon);
 
     let mut is_centered = true;
     if settings.remember_window_pos {
