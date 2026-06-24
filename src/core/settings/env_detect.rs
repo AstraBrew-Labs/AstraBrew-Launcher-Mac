@@ -19,9 +19,19 @@ pub fn resolve_command(name: &str) -> String {
     name.to_string()
 }
 
-/// 创建 Command，自动解析路径
+/// 创建 Command，自动解析路径并确保子进程 PATH 包含 Homebrew bin 目录。
+///
+/// 打包后的 .app 中 PATH 极简（/usr/bin:/bin:/usr/sbin:/sbin），
+/// 不包含 Homebrew 路径。即使 resolve_command 找到了命令的绝对路径，
+/// 如果命令内部通过 shebang（如 `#!/usr/bin/env node`）依赖其他工具，
+/// 仍会因子进程找不到依赖而失败。因此必须在启动子进程前补全 PATH。
 fn cmd(name: &str) -> Command {
-    Command::new(resolve_command(name))
+    let mut cmd = Command::new(resolve_command(name));
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let extra_paths = HOMEBREW_BIN_PATHS.join(":");
+    let new_path = format!("{}:{}", extra_paths, current_path);
+    cmd.env("PATH", new_path);
+    cmd
 }
 
 /// 检测 Homebrew 版本，返回版本号字符串，如 "4.2.0"

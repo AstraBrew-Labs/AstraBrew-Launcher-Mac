@@ -17,8 +17,17 @@
 use crate::pages::settings::TavernDataMode;
 use std::process::Command;
 
+/// 构建 PM2 命令，自动解析 pm2 路径并补全子进程 PATH。
+///
+/// 打包后的 .app 中 PATH 不含 Homebrew 路径，
+/// PM2 是 Node.js 脚本（shebang `#!/usr/bin/env node`），
+/// 子进程 PATH 必须包含 node 所在目录。
 fn pm2_cmd() -> Command {
-    Command::new(super::env_detect::resolve_command("pm2"))
+    let mut cmd = Command::new(super::env_detect::resolve_command("pm2"));
+    let current_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("/opt/homebrew/bin:/usr/local/bin:{}", current_path);
+    cmd.env("PATH", new_path);
+    cmd
 }
 
 /// PM2 进程名（固定，避免与用户自行安装的 sillytavern 冲突）

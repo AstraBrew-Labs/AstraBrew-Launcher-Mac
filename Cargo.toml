@@ -8,7 +8,9 @@ productName = "AstraBrew Launcher"
 identifier = "cn.astrabrew.launcher"
 icons = ["icons/icon.icns"]
 outDir = "dist"
+target-triple = "universal-apple-darwin"
 binaries-dir = "target/universal/release"
+
 [package.metadata.packager.macos]
 minimumSystemVersion = "10.15"
 

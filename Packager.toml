@@ -6,6 +6,8 @@ icons = ["icons/icon.icns"]
 
 out_dir = "dist"
 
+target-triple = "universal-apple-darwin"
+
 # 使用我们自己 lipo 合并出来的 Universal Binary
 binaries_dir = "target/universal/release"
 
