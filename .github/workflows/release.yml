@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-latest
 
     env:
-      APP_NAME: AstraBrew Launcher
+      APP_NAME: "AstraBrew Launcher"
 
     steps:
       - name: 检出仓库
@@ -41,7 +41,6 @@ jobs:
         id: check_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
         run: |
           if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -53,160 +52,105 @@ jobs:
         if: steps.check_release.outputs.exists == 'true'
         run: exit 0
 
-      - name: 编译双架构二进制
-        run: |
-          echo "=== 编译 ARM64 架构 ==="
-          cargo build --release --target aarch64-apple-darwin
-          
-          echo "=== 编译 Intel 架构 ==="
-          cargo build --release --target x86_64-apple-darwin
+      - name: 编译 ARM64
+        run: cargo build --release --target aarch64-apple-darwin
 
-      - name: 移除打包配置文件中默认的自动编译命令防止覆盖
-        shell: bash
-        run: |
-          # 移除 Packager.toml 或 Cargo.toml 里的 before-packaging 编译钩子，采用我们手动编译好的二进制进行插拔打包
-          if [ -f Packager.toml ]; then
-            sed -i.bak -e 's/before-packaging-command.*=.*//g' -e 's/beforePackagingCommand.*=.*//g' -e 's/before_packaging_command.*=.*//g' Packager.toml
-          fi
-          if [ -f Cargo.toml ]; then
-            sed -i.bak -e 's/before-packaging-command.*=.*//g' -e 's/before_packaging_command.*=.*//g' Cargo.toml
-          fi
+      - name: 编译 Intel
+        run: cargo build --release --target x86_64-apple-darwin
 
-      - name: 分阶段生成全架构安装包 (修正：移除 DMG 自身的 Ad-hoc 签名)
-        shell: bash
+      - name: 合并 Universal Binary
         run: |
-          # 创建统一暂存区
-          mkdir -p dist-packages
           mkdir -p target/universal/release
 
-          # -------------------- 1. 打包 ARM64 版本 --------------------
-          echo "===== 正在打包 ARM64 ====="
-          cp target/aarch64-apple-darwin/release/astrabrew-launcher-mac target/universal/release/astrabrew-launcher-mac
-          
-          # 【步骤 1】打包前：强制对准备封装的二进制文件进行 ad-hoc 签名
-          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
-          
-          cargo packager --release
-
-          APP_PATH=$(find dist -name "*.app" | head -n1)
-          DMG_PATH=$(find dist -name "*.dmg" | head -n1)
-          
-          if [ -n "$APP_PATH" ]; then
-            # 【步骤 2】打包后：深度签名 .app 目录，确保更新包合规
-            codesign --force --deep --options runtime --sign - "$APP_PATH"
-            tar czf "dist-packages/AstraBrew-Launcher_aarch64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
-          fi
-          if [ -n "$DMG_PATH" ]; then
-            # 【注意】切勿对 .dmg 本身进行 Ad-hoc 签名，这会导致 dmg 无法挂载。
-            # 直接复制无签名的 .dmg 容器，内部已签名的 .app 会受到保护。
-            cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_aarch64.dmg"
-          fi
-          rm -rf dist/*
-
-          # -------------------- 2. 打包 Intel (x64) 版本 --------------------
-          echo "===== 正在打包 Intel ====="
-          cp target/x86_64-apple-darwin/release/astrabrew-launcher-mac target/universal/release/astrabrew-launcher-mac
-          
-          # 【步骤 1】打包前：强制对准备封装的二进制文件进行 ad-hoc 签名
-          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
-          
-          cargo packager --release
-
-          APP_PATH=$(find dist -name "*.app" | head -n1)
-          DMG_PATH=$(find dist -name "*.dmg" | head -n1)
-          
-          if [ -n "$APP_PATH" ]; then
-            # 【步骤 2】打包后：深度签名 .app 目录
-            codesign --force --deep --options runtime --sign - "$APP_PATH"
-            tar czf "dist-packages/AstraBrew-Launcher_x64.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
-          fi
-          if [ -n "$DMG_PATH" ]; then
-            # 直接复制无签名的 .dmg 容器
-            cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_x64.dmg"
-          fi
-          rm -rf dist/*
-
-          # -------------------- 3. 打包 Universal 版本 --------------------
-          echo "===== 正在合成并打包 Universal ====="
           lipo \
             target/aarch64-apple-darwin/release/astrabrew-launcher-mac \
             target/x86_64-apple-darwin/release/astrabrew-launcher-mac \
             -create \
             -output target/universal/release/astrabrew-launcher-mac
 
-          echo "===== 验证合并后的二进制架构 ====="
           file target/universal/release/astrabrew-launcher-mac
 
-          # 【步骤 1】打包前：强制对准备封装的 Universal 二进制进行 ad-hoc 签名
-          codesign --force --options runtime --sign - target/universal/release/astrabrew-launcher-mac
-
+      - name: 打包 Universal DMG
+        run: |
           cargo packager --release
 
-          APP_PATH=$(find dist -name "*.app" | head -n1)
-          DMG_PATH=$(find dist -name "*.dmg" | head -n1)
-          
-          if [ -n "$APP_PATH" ]; then
-            # 【步骤 2】打包后：深度签名 .app 目录
-            codesign --force --deep --options runtime --sign - "$APP_PATH"
-            tar czf "dist-packages/AstraBrew-Launcher_universal.app.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
-          fi
-          if [ -n "$DMG_PATH" ]; then
-            # 直接复制无签名的 .dmg 容器
-            cp "$DMG_PATH" "dist-packages/AstraBrew-Launcher_universal.dmg"
-          fi
-          rm -rf dist/*
+      - name: 查找 .app
+        id: app
+        run: |
+          APP=$(find dist -name "*.app" | head -n1)
 
-      - name: 对所有更新包进行签名
+          if [ -z "$APP" ]; then
+            echo ".app 不存在"
+            find dist
+            exit 1
+          fi
+
+          echo "app=$APP" >> "$GITHUB_OUTPUT"
+
+      # 删除 cargo-packager 自动产生的 ad-hoc 签名
+      - name: 删除签名
+        run: |
+          codesign --remove-signature "${{ steps.app.outputs.app }}" || true
+          xattr -cr "${{ steps.app.outputs.app }}"
+
+      - name: 生成更新包
+        run: |
+          tar czf "AstraBrew-Launcher_universal.app.tar.gz" \
+            -C "$(dirname "${{ steps.app.outputs.app }}")" \
+            "$(basename "${{ steps.app.outputs.app }}")"
+
+      - name: 签名更新包
         env:
           CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.PACKAGER_PRIVATE_KEY }}
           CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.SECRET_PASSWORD }}
         run: |
-          echo "=== 签名 ARM64 升级包 ==="
-          cargo packager signer sign "dist-packages/AstraBrew-Launcher_aarch64.app.tar.gz"
-          
-          echo "=== 签名 Intel 升级包 ==="
-          cargo packager signer sign "dist-packages/AstraBrew-Launcher_x64.app.tar.gz"
-          
-          echo "=== 签名 Universal 升级包 ==="
-          cargo packager signer sign "dist-packages/AstraBrew-Launcher_universal.app.tar.gz"
+          cargo packager signer sign "AstraBrew-Launcher_universal.app.tar.gz"
 
-      - name: 生成包含全架构配置的 latest.json
-        shell: bash
+      - name: 读取更新签名
+        id: signature
         run: |
-          SIG_AARCH64=$(tr -d '\n' < "dist-packages/AstraBrew-Launcher_aarch64.app.tar.gz.sig")
-          SIG_X64=$(tr -d '\n' < "dist-packages/AstraBrew-Launcher_x64.app.tar.gz.sig")
-          SIG_UNIVERSAL=$(tr -d '\n' < "dist-packages/AstraBrew-Launcher_universal.app.tar.gz.sig")
+          SIGNATURE=$(tr -d '\n' < AstraBrew-Launcher_universal.app.tar.gz.sig)
+          echo "signature=$SIGNATURE" >> "$GITHUB_OUTPUT"
 
+      - name: 查找 DMG
+        id: dmg
+        run: |
+          FILE=$(find dist -name "*.dmg" | head -n1)
+
+          if [ -z "$FILE" ]; then
+            echo "没有找到 dmg"
+            find dist
+            exit 1
+          fi
+
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+
+      - name: 生成 latest.json
+        run: |
           cat > latest.json <<EOF
           {
             "version":"${{ steps.version.outputs.version }}",
-            "notes":"新版本全架构发布 (Apple Silicon, Intel & Universal)",
+            "notes":"新版本发布",
             "pub_date":"$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
             "platforms":{
-              "darwin-aarch64":{
-                "signature":"$SIG_AARCH64",
-                "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/AstraBrew-Launcher_aarch64.app.tar.gz"
-              },
-              "darwin-x86_64":{
-                "signature":"$SIG_X64",
-                "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/AstraBrew-Launcher_x64.app.tar.gz"
-              },
               "darwin-universal":{
-                "signature":"$SIG_UNIVERSAL",
+                "signature":"${{ steps.signature.outputs.signature }}",
                 "url":"https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/AstraBrew-Launcher_universal.app.tar.gz"
               }
             }
           }
           EOF
 
-      - name: 创建 Release 并上传全架构文件
+      - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: v${{ steps.version.outputs.version }}
           generate_release_notes: true
           files: |
-            dist-packages/*
+            AstraBrew-Launcher_universal.app.tar.gz
+            AstraBrew-Launcher_universal.app.tar.gz.sig
+            ${{ steps.dmg.outputs.file }}
             latest.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
