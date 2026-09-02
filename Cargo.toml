@@ -11,6 +11,8 @@ iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"]
 lucide-icons = { version = "1.31.0", features = ["iced"] }
 # Astra UI 组件库：从 GitHub beta 分支引入（包名为 iced-astraui，crate 名为 astra_ui）
 astra_ui = { git = "https://github.com/AstraBrew-Labs/iced-astraui", branch = "beta", package = "iced-astraui" }
+serde_json = "1.0"
+rfd = "0.15"
 
 # macOS 原生窗口定制（禁用绿色缩放按钮、移除独占全屏），版本与 winit 保持一致以去重
 [target.'cfg(target_os = "macos")'.dependencies]

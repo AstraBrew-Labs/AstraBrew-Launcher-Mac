@@ -18,12 +18,22 @@ use astra_ui::{
 };
 
 use crate::pages::Page;
+use crate::pages::console::{ConsoleMessage, ConsoleState};
+use crate::pages::extensions::{ExtensionsMessage, ExtensionsState};
+use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
+use crate::pages::settings::{
+    CpuCores, DisplayLanguage, NpmRegistry, ProxyMode, QuickStartMode, ServerServiceMode,
+    SettingsAction, SettingsState, StartMode, TavernDataMode, TavernVersion, ThemeMode,
+};
+use crate::pages::tavern::{BrowserType, TavernMessage, TavernState};
+use crate::pages::versions::{VersionMessage, VersionState};
 use crate::{pages, sidebar};
 
 /// 应用屏幕：初始化流程 / 主界面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
     /// 首次运行的环境初始化流程
+    #[allow(dead_code)]
     Init,
     /// 主界面（左侧导航栏 + 右侧内容区）
     Main,
@@ -120,7 +130,7 @@ fn window_profile(monitor: Option<Size>) -> WindowProfile {
 }
 
 /// 应用消息
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum Message {
     /// 开始初始化
     StartInitialization,
@@ -130,6 +140,52 @@ pub(crate) enum Message {
     FinishInitialization,
     /// 切换主界面左侧导航栏的当前页面
     Navigate(Page),
+    /// 请求一键启动酒馆
+    LaunchTavern,
+    /// 主页快捷切换酒馆版本
+    HomeTavernVersionSelected(TavernVersion),
+    /// 主页快捷切换启动模式
+    HomeStartModeSelected(QuickStartMode),
+    /// 主页启动模式 ToggleButton 焦点变化
+    HomeStartModeFocused,
+    /// 主页普通模式快捷切换浏览器
+    HomeBrowserSelected(BrowserType),
+    /// 修改界面语言
+    SettingsLanguageSelected(DisplayLanguage),
+    /// 修改界面主题
+    SettingsThemeSelected(ThemeMode),
+    /// 切换是否记住窗口位置
+    SettingsRememberWindowPosition(bool),
+    SettingsAutoStart(bool),
+    SettingsCpuCoresSelected(CpuCores),
+    SettingsStartModeSelected(StartMode),
+    SettingsAutoStopTavern(bool),
+    SettingsServerMode(bool),
+    SettingsServerServiceModeSelected(ServerServiceMode),
+    SettingsAllowTavernBackground(bool),
+    SettingsDataModeSelected(TavernDataMode),
+    SettingsShowStartupCommand(bool),
+    /// 修改 NPM 软件源
+    SettingsNpmRegistrySelected(NpmRegistry),
+    SettingsGithubProxyEnabled(bool),
+    SettingsGithubProxyUrlChanged(String),
+    /// 修改网络代理模式
+    SettingsProxyModeSelected(ProxyMode),
+    SettingsCustomProxyChanged(String),
+    /// 触发尚待服务层接入的设置操作
+    SettingsAction(SettingsAction),
+    /// 恢复设置页默认值
+    SettingsRestoreDefaults,
+    /// 更新酒馆配置页的本地配置草稿
+    Tavern(TavernMessage),
+    /// 更新版本管理页的本地界面状态
+    Version(VersionMessage),
+    /// 更新扩展管理页的本地界面状态
+    Extensions(ExtensionsMessage),
+    /// 更新资源管理页状态并执行本地文件操作
+    Resources(ResourceManageMessage),
+    /// 更新控制台页面状态
+    Console(ConsoleMessage),
     /// 主窗口已打开，开始探测显示器并按首开档位校准窗口尺寸
     WindowOpened(window::Id),
     /// 已测得窗口所在显示器的逻辑分辨率。
@@ -154,10 +210,26 @@ pub struct Launcher {
     progress: f32,
     /// 上一次进度更新的时刻
     last_tick: Option<Instant>,
+    /// 设置页面的本地界面状态
+    settings: SettingsState,
+    /// 酒馆配置页面的本地界面状态
+    tavern: TavernState,
+    /// 版本管理页面的本地界面状态
+    versions: VersionState,
+    /// 扩展管理页面的本地界面状态
+    extensions: ExtensionsState,
+    /// 资源管理页面状态
+    resources: ResourceManageState,
+    /// 控制台页面状态
+    console: ConsoleState,
+    /// 主页上的启动请求状态（服务层接入前用于反馈操作结果）
+    launch_requested: bool,
 }
 
 impl Launcher {
     pub fn new() -> (Self, Task<Message>) {
+        // 调试期间暂时跳过首次运行初始化，直接进入主界面。
+        // 初始化状态与视图仍保留，后续恢复时只需将 screen 改回 Screen::Init。
         // 启动即探测主显示器并按宽高比校准窗口尺寸。
         // `Task<Option<_>>::and_then` 仅在取到窗口（Some）时执行后续任务；
         // 若此时窗口尚未注册（None），则依赖 `WindowOpened` 事件订阅再次校准。
@@ -168,11 +240,18 @@ impl Launcher {
 
         (
             Self {
-                screen: Screen::Init,
+                screen: Screen::Main,
                 page: Page::Home,
                 stage: InitStage::Welcome,
                 progress: 0.0,
                 last_tick: None,
+                settings: SettingsState::default(),
+                tavern: TavernState::default(),
+                versions: VersionState::default(),
+                extensions: ExtensionsState::default(),
+                resources: ResourceManageState::default(),
+                console: ConsoleState::default(),
+                launch_requested: false,
             },
             detect,
         )
@@ -224,7 +303,125 @@ impl Launcher {
             Message::Navigate(page) => {
                 // 切换主界面当前页面
                 self.page = page;
+                if page == Page::Resources {
+                    self.resources.configure(&self.settings, &self.versions);
+                    self.resources.refresh_all();
+                }
+                if page == Page::Console {
+                    self.console.network_mode = if self.settings.server_mode_enabled {
+                        Some(match self.settings.server_service_mode {
+                            ServerServiceMode::Lan => crate::pages::console::NetworkMode::Lan,
+                            ServerServiceMode::Internet => {
+                                crate::pages::console::NetworkMode::Internet
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                }
             }
+            Message::LaunchTavern => {
+                self.launch_requested = true;
+                self.console.network_mode = if self.settings.server_mode_enabled {
+                    Some(match self.settings.server_service_mode {
+                        ServerServiceMode::Lan => crate::pages::console::NetworkMode::Lan,
+                        ServerServiceMode::Internet => crate::pages::console::NetworkMode::Internet,
+                    })
+                } else {
+                    None
+                };
+            }
+            Message::HomeTavernVersionSelected(version) => {
+                self.settings.tavern_version = version;
+            }
+            Message::HomeStartModeSelected(mode) => match mode {
+                QuickStartMode::Normal => {
+                    self.settings.server_mode_enabled = false;
+                    self.settings.start_mode = StartMode::Normal;
+                }
+                QuickStartMode::Desktop => {
+                    self.settings.server_mode_enabled = false;
+                    self.settings.start_mode = StartMode::Desktop;
+                }
+                QuickStartMode::Server => {
+                    self.settings.server_mode_enabled = true;
+                    self.settings.start_mode = StartMode::Normal;
+                }
+            },
+            Message::HomeStartModeFocused => {}
+            Message::HomeBrowserSelected(browser) => {
+                self.tavern.update(TavernMessage::SelectBrowser(browser));
+            }
+            Message::SettingsLanguageSelected(language) => {
+                self.settings.language = language;
+            }
+            Message::SettingsThemeSelected(theme) => {
+                self.settings.theme = theme;
+            }
+            Message::SettingsRememberWindowPosition(remember) => {
+                self.settings.remember_window_position = remember;
+            }
+            Message::SettingsAutoStart(enabled) => self.settings.auto_start = enabled,
+            Message::SettingsCpuCoresSelected(value) => self.settings.cpu_cores = value,
+            Message::SettingsStartModeSelected(value) => {
+                self.settings.start_mode = if self.settings.server_mode_enabled {
+                    StartMode::Normal
+                } else {
+                    value
+                };
+            }
+            Message::SettingsAutoStopTavern(enabled) => {
+                self.settings.auto_stop_tavern_on_window_close = enabled
+            }
+            Message::SettingsServerMode(enabled) => {
+                self.settings.server_mode_enabled = enabled;
+                if enabled {
+                    self.settings.start_mode = StartMode::Normal;
+                }
+            }
+            Message::SettingsServerServiceModeSelected(value) => {
+                self.settings.server_service_mode = value
+            }
+            Message::SettingsAllowTavernBackground(enabled) => {
+                self.settings.allow_tavern_background = enabled
+            }
+            Message::SettingsDataModeSelected(value) => self.settings.data_mode = value,
+            Message::SettingsShowStartupCommand(enabled) => {
+                self.settings.show_startup_command = enabled
+            }
+            Message::SettingsNpmRegistrySelected(registry) => {
+                self.settings.npm_registry = registry;
+            }
+            Message::SettingsGithubProxyEnabled(enabled) => {
+                self.settings.github_proxy_enabled = enabled;
+                if enabled {
+                    self.settings.proxy_mode = ProxyMode::None;
+                }
+            }
+            Message::SettingsGithubProxyUrlChanged(value) => self.settings.github_proxy_url = value,
+            Message::SettingsProxyModeSelected(mode) => {
+                self.settings.proxy_mode = mode;
+                if mode != ProxyMode::None {
+                    self.settings.github_proxy_enabled = false;
+                }
+            }
+            Message::SettingsCustomProxyChanged(value) => {
+                self.settings.custom_proxy = value;
+            }
+            Message::SettingsAction(action) => {
+                self.settings.last_action = Some(action);
+            }
+            Message::SettingsRestoreDefaults => {
+                self.settings = SettingsState::default();
+            }
+            Message::Tavern(message) => self.tavern.update(message),
+            Message::Version(message) => self.versions.update(message),
+            Message::Extensions(message) => self.extensions.update(message),
+            Message::Resources(message) => {
+                self.resources.configure(&self.settings, &self.versions);
+                self.resources.update(message);
+            }
+            Message::Console(message) => self.console.update(message),
             Message::WindowOpened(id) => {
                 // 窗口打开：探测显示器并按首开档位校准尺寸（含调整为默认尺寸）
                 return window::monitor_size(id)
@@ -293,10 +490,22 @@ impl Launcher {
 
     /// 主界面视图：左侧导航栏 + 右侧内容区。
     fn main_view(&self) -> Element<'_, Message> {
-        row![sidebar::sidebar(self.page), pages::page_view(self.page),]
-            .width(Fill)
-            .height(Fill)
-            .into()
+        row![
+            sidebar::sidebar(self.page),
+            pages::page_view(
+                self.page,
+                &self.settings,
+                &self.tavern,
+                &self.versions,
+                &self.extensions,
+                &self.resources,
+                self.launch_requested,
+                &self.console,
+            ),
+        ]
+        .width(Fill)
+        .height(Fill)
+        .into()
     }
 
     /// 顶部品牌区：Logo、应用名与标语
@@ -307,7 +516,7 @@ impl Launcher {
                 .size(AvatarSize::Large)
                 .shape(AvatarShape::Rounded)
                 .color(AvatarColor::Accent),
-            text("AstraBrew Launcher").size(30).font(fonts::BLACK),
+            text("AstraBrew Launcher").size(30).font(fonts::MEDIUM),
             text("Native macOS launcher for AstraBrew-Labs")
                 .size(14)
                 .font(fonts::REGULAR)
@@ -330,7 +539,7 @@ impl Launcher {
         };
 
         let header = column![
-            text(title).size(18).font(fonts::BOLD),
+            text(title).size(18).font(fonts::MEDIUM),
             text(description)
                 .size(12)
                 .font(fonts::REGULAR)
@@ -498,6 +707,7 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::{InitStage, Launcher, Message};
+    use crate::pages::settings::{DisplayLanguage, StartMode};
 
     #[test]
     fn start_then_cancel_resets_progress() {
@@ -529,5 +739,29 @@ mod tests {
         ));
         assert_eq!(launcher.stage, InitStage::Complete);
         assert_eq!(launcher.progress, 100.0);
+    }
+
+    #[test]
+    fn settings_restore_defaults_resets_local_preferences() {
+        let (mut launcher, _) = Launcher::new();
+
+        let _ = launcher.update(Message::SettingsLanguageSelected(DisplayLanguage::English));
+        let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
+        let _ = launcher.update(Message::SettingsStartModeSelected(StartMode::Desktop));
+        let _ = launcher.update(Message::SettingsRestoreDefaults);
+
+        assert_eq!(launcher.settings.language, DisplayLanguage::System);
+        assert_eq!(launcher.settings.start_mode, StartMode::Normal);
+        assert!(launcher.settings.remember_window_position);
+    }
+
+    #[test]
+    fn proxy_and_github_acceleration_are_mutually_exclusive() {
+        let (mut launcher, _) = Launcher::new();
+        let _ = launcher.update(Message::SettingsGithubProxyEnabled(true));
+        let _ = launcher.update(Message::SettingsProxyModeSelected(
+            crate::pages::settings::ProxyMode::System,
+        ));
+        assert!(!launcher.settings.github_proxy_enabled);
     }
 }
