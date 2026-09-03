@@ -9,18 +9,20 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use iced::widget::{
-    button, column, container, image, row, scrollable, space, text, text_input, tooltip,
+    button, column, container, image, row, scrollable, space, text_input, tooltip,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, LINE, SUCCESS, SURFACE,
-    SURFACE_ALT, WARNING, WHITE, button_style, canvas, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS,
+    WARNING, WHITE, fonts, icons,
 };
 
 use super::settings::{SettingsState, TavernDataMode};
 use super::versions::VersionState;
+use crate::lang::text;
+use crate::theme::button_style;
 
 const LIST_WIDTH: f32 = 390.0;
 const CHARACTER_THUMB_WIDTH: f32 = 52.0;
@@ -1039,11 +1041,11 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                     .align_y(Alignment::Center)
                     .style(page_icon_surface),
                 column![
-                    text("资源管理").size(20).font(fonts::MEDIUM).color(INK),
+                    text("资源管理").size(20).font(fonts::MEDIUM).style(crate::theme::text_style),
                     text("统一查看与整理 SillyTavern 本地资源")
                         .size(11)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED),
+                        .style(crate::theme::muted_text_style),
                 ]
                 .spacing(3),
             ]
@@ -1070,11 +1072,11 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                     text(&state.source_label)
                         .size(11)
                         .font(fonts::MEDIUM)
-                        .color(INK),
+                        .style(crate::theme::text_style),
                     text(state.current_directory())
                         .size(9)
                         .font(fonts::REGULAR)
-                        .color(INK_SUBTLE),
+                        .style(crate::theme::subtle_text_style),
                 ]
                 .spacing(2),
             ]
@@ -1116,7 +1118,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     let toolbar = row![
         container(
             row![
-                icons::icon(Icon::Search, 14, INK_SUBTLE),
+                crate::theme::subtle_icon(Icon::Search, 14),
                 text_input("搜索名称、文件名或标签", &state.search)
                     .on_input(ResourceManageMessage::SearchChanged)
                     .padding([7, 2])
@@ -1135,7 +1137,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 text(format!("{} 项", state.current_count()))
                     .size(10)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -1144,7 +1146,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         .style(count_surface),
         space::horizontal(),
         tooltip(
-            button(icons::icon(Icon::FolderOpen, 15, INK_MUTED))
+            button(crate::theme::muted_icon(Icon::FolderOpen, 15))
                 .on_press(ResourceManageMessage::OpenDirectory)
                 .width(34)
                 .height(34)
@@ -1155,7 +1157,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             tooltip::Position::Bottom,
         ),
         tooltip(
-            button(icons::icon(Icon::RefreshCw, 15, INK_MUTED))
+            button(crate::theme::muted_icon(Icon::RefreshCw, 15))
                 .on_press(ResourceManageMessage::Refresh)
                 .width(34)
                 .height(34)
@@ -1177,7 +1179,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 text(format!("确定删除“{}”吗？此操作无法撤销。", pending.label))
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK),
+                    .style(crate::theme::text_style),
                 space::horizontal(),
                 button(text("取消").size(10).font(fonts::MEDIUM))
                     .on_press(ResourceManageMessage::CancelDelete)
@@ -1197,9 +1199,9 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         container(
             row![
                 icons::icon(Icon::Info, 14, BLUE_600),
-                text(notice).size(10).font(fonts::REGULAR).color(INK_MUTED),
+                text(notice).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style),
                 space::horizontal(),
-                button(icons::icon(Icon::X, 13, INK_SUBTLE))
+                button(crate::theme::subtle_icon(Icon::X, 13))
                     .on_press(ResourceManageMessage::ClearNotice)
                     .padding(4)
                     .style(quiet_button_style),
@@ -1241,7 +1243,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     .height(Fill)
     .padding([22, 28])
     .align_x(Alignment::Center)
-    .style(canvas)
+    .style(crate::theme::canvas_style)
     .into()
 }
 
@@ -1298,12 +1300,12 @@ fn resource_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessa
                     text(format!("{}列表", state.tab.label()))
                         .size(12)
                         .font(fonts::MEDIUM)
-                        .color(INK),
+                        .style(crate::theme::text_style),
                     space::horizontal(),
                     text("按修改时间排序")
                         .size(9)
                         .font(fonts::REGULAR)
-                        .color(INK_SUBTLE),
+                        .style(crate::theme::subtle_text_style),
                 ]
                 .align_y(Alignment::Center),
             )
@@ -1349,7 +1351,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                     .height(CHARACTER_THUMB_HEIGHT)
                     .style(thumbnail_surface),
                     column![
-                        text(&item.name).size(12).font(fonts::MEDIUM).color(INK),
+                        text(&item.name).size(12).font(fonts::MEDIUM).style(crate::theme::text_style),
                         text(if item.creator.is_empty() {
                             "未知作者".to_owned()
                         } else {
@@ -1357,7 +1359,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                         })
                         .size(9)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED),
+                        .style(crate::theme::muted_text_style),
                         text(format!(
                             "{} · {}×{} · {} 个标签",
                             format_size(item.file_size),
@@ -1367,7 +1369,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                         ))
                         .size(9)
                         .font(fonts::REGULAR)
-                        .color(INK_SUBTLE),
+                        .style(crate::theme::subtle_text_style),
                     ]
                     .spacing(5),
                     space::horizontal(),
@@ -1383,7 +1385,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
             .on_press(ResourceManageMessage::SelectCharacter(index))
             .width(Fill)
             .padding([9, 11])
-            .style(move |_theme, status| list_item_style(selected, status))
+            .style(move |theme, status| list_item_style(theme, selected, status))
             .into()
         })
         .collect::<Vec<Element<'_, ResourceManageMessage>>>();
@@ -1445,12 +1447,12 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
             container(
                 row![
                     icons::icon(Icon::UserRound, 13, BLUE_600),
-                    text(&group.name).size(10).font(fonts::MEDIUM).color(INK),
+                    text(&group.name).size(10).font(fonts::MEDIUM).style(crate::theme::text_style),
                     space::horizontal(),
                     text(format!("{} 个会话", matching.len()))
                         .size(9)
                         .font(fonts::REGULAR)
-                        .color(INK_SUBTLE),
+                        .style(crate::theme::subtle_text_style),
                 ]
                 .spacing(7)
                 .align_y(Alignment::Center),
@@ -1532,12 +1534,12 @@ fn simple_list_item<'a>(
             .align_y(Alignment::Center)
             .style(move |_theme| item_icon_surface(selected)),
             column![
-                text(title).size(11).font(fonts::MEDIUM).color(INK),
+                text(title).size(11).font(fonts::MEDIUM).style(crate::theme::text_style),
                 text(truncate(subtitle, 35))
                     .size(9)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED),
-                text(meta).size(9).font(fonts::REGULAR).color(INK_SUBTLE),
+                    .style(crate::theme::muted_text_style),
+                text(meta).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
             ]
             .spacing(3),
             space::horizontal(),
@@ -1553,7 +1555,7 @@ fn simple_list_item<'a>(
     .on_press(message)
     .width(Fill)
     .padding([9, 11])
-    .style(move |_theme, status| list_item_style(selected, status))
+    .style(move |theme, status| list_item_style(theme, selected, status))
     .into()
 }
 
@@ -1565,12 +1567,12 @@ fn list_scroll<'a>(
     if rows.is_empty() {
         return container(
             column![
-                icons::icon(Icon::Inbox, 25, INK_SUBTLE),
-                text(title).size(11).font(fonts::MEDIUM).color(INK_MUTED),
+                crate::theme::subtle_icon(Icon::Inbox, 25),
+                text(title).size(11).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
                 text(description)
                     .size(9)
                     .font(fonts::REGULAR)
-                    .color(INK_SUBTLE),
+                    .style(crate::theme::subtle_text_style),
             ]
             .spacing(7)
             .align_x(Alignment::Center),
@@ -1642,11 +1644,11 @@ fn detail_header<'a>(
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
             column![
-                text(title).size(15).font(fonts::MEDIUM).color(INK),
+                text(title).size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
                 text(subtitle)
                     .size(9)
                     .font(fonts::REGULAR)
-                    .color(INK_SUBTLE),
+                    .style(crate::theme::subtle_text_style),
             ]
             .spacing(3),
             space::horizontal(),
@@ -1676,7 +1678,7 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
         text("无标签")
             .size(9)
             .font(fonts::REGULAR)
-            .color(INK_SUBTLE)
+            .style(crate::theme::subtle_text_style)
             .into()
     } else {
         row(item.tags.iter().take(8).map(|tag| tag_chip(tag, BLUE_600)))
@@ -1717,7 +1719,7 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
                         format!("{} 条", item.world_entries.len())
                     }
                 ),
-                text("标签").size(9).font(fonts::MEDIUM).color(INK_SUBTLE),
+                text("标签").size(9).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
                 tags,
             ]
             .spacing(9),
@@ -1956,7 +1958,7 @@ fn preset_detail(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
 fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, ResourceManageMessage> {
     container(
         column![
-            text(title).size(10).font(fonts::MEDIUM).color(INK_MUTED),
+            text(title).size(10).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
             text(if value.trim().is_empty() {
                 "未填写"
             } else {
@@ -1995,8 +1997,8 @@ fn info_grid_row<'a>(
 fn info_pair<'a>(label: &'static str, value: String) -> Element<'a, ResourceManageMessage> {
     container(
         column![
-            text(label).size(8).font(fonts::MEDIUM).color(INK_SUBTLE),
-            text(value).size(10).font(fonts::MEDIUM).color(INK),
+            text(label).size(8).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
+            text(value).size(10).font(fonts::MEDIUM).style(crate::theme::text_style),
         ]
         .spacing(2),
     )
@@ -2021,8 +2023,8 @@ fn metric_card(
                 .align_y(Alignment::Center)
                 .style(move |_theme| accent_surface(accent)),
             column![
-                text(label).size(8).font(fonts::MEDIUM).color(INK_SUBTLE),
-                text(value).size(12).font(fonts::MEDIUM).color(INK),
+                text(label).size(8).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
+                text(value).size(12).font(fonts::MEDIUM).style(crate::theme::text_style),
             ]
             .spacing(2),
         ]
@@ -2042,9 +2044,9 @@ fn section_heading<'a>(
 ) -> Element<'a, ResourceManageMessage> {
     row![
         icons::icon(icon, 14, BLUE_600),
-        text(title).size(11).font(fonts::MEDIUM).color(INK),
+        text(title).size(11).font(fonts::MEDIUM).style(crate::theme::text_style),
         space::horizontal(),
-        text(meta).size(9).font(fonts::REGULAR).color(INK_SUBTLE),
+        text(meta).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
     ]
     .spacing(7)
     .align_y(Alignment::Center)
@@ -2077,7 +2079,7 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
                 })
                 .size(10)
                 .font(fonts::MEDIUM)
-                .color(INK),
+                .style(crate::theme::text_style),
                 space::horizontal(),
                 text(if entry.enabled {
                     "已启用"
@@ -2092,7 +2094,7 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
             text(format!("关键词：{}", truncate(&keywords, 80)))
                 .size(9)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
             text(if entry.content.trim().is_empty() {
                 "无正文".into()
             } else {
@@ -2100,7 +2102,7 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
             })
             .size(9)
             .font(fonts::REGULAR)
-            .color(INK),
+            .style(crate::theme::text_style),
         ]
         .spacing(6),
     )
@@ -2140,14 +2142,14 @@ fn chat_bubble(message: &ChatMessage) -> Element<'_, ResourceManageMessage> {
                 text(&message.send_date)
                     .size(8)
                     .font(fonts::REGULAR)
-                    .color(INK_SUBTLE),
+                    .style(crate::theme::subtle_text_style),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
             text(&message.content)
                 .size(9)
                 .font(fonts::REGULAR)
-                .color(INK),
+                .style(crate::theme::text_style),
         ]
         .spacing(6),
     )
@@ -2179,7 +2181,7 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
                 })
                 .size(10)
                 .font(fonts::MEDIUM)
-                .color(INK),
+                .style(crate::theme::text_style),
                 space::horizontal(),
                 tag_chip(
                     if prompt.role.is_empty() {
@@ -2225,8 +2227,8 @@ fn tag_chip<'a>(label: &'a str, color: Color) -> Element<'a, ResourceManageMessa
 fn inline_empty(message: &str) -> Element<'_, ResourceManageMessage> {
     container(
         row![
-            icons::icon(Icon::Inbox, 15, INK_SUBTLE),
-            text(message).size(9).font(fonts::REGULAR).color(INK_MUTED),
+            crate::theme::subtle_icon(Icon::Inbox, 15),
+            text(message).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style),
         ]
         .spacing(7)
         .align_y(Alignment::Center),
@@ -2250,11 +2252,11 @@ fn empty_page(
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
-            text(title).size(13).font(fonts::MEDIUM).color(INK),
+            text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
             text(description)
                 .size(10)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(9)
         .align_x(Alignment::Center),
@@ -2299,11 +2301,11 @@ fn page_icon_surface(_theme: &Theme) -> container::Style {
     accent_surface(BLUE_600)
 }
 
-fn source_surface(_theme: &Theme) -> container::Style {
+fn source_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -2311,11 +2313,11 @@ fn source_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn panel_surface(_theme: &Theme) -> container::Style {
+fn panel_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -2323,11 +2325,11 @@ fn panel_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn panel_header_surface(_theme: &Theme) -> container::Style {
+fn panel_header_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE_ALT)),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 0.0,
             radius: 8.0.into(),
         },
@@ -2335,11 +2337,11 @@ fn panel_header_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn search_surface(_theme: &Theme) -> container::Style {
+fn search_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 7.0.into(),
         },
@@ -2359,10 +2361,10 @@ fn tab_count_surface(active: bool) -> container::Style {
     }
 }
 
-fn tab_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+fn tab_button_style(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: matches!(status, button::Status::Hovered)
-            .then_some(Background::Color(SURFACE_ALT)),
+            .then_some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
             radius: 6.0.into(),
             ..Border::default()
@@ -2382,11 +2384,16 @@ fn tab_indicator(active: bool) -> container::Style {
     }
 }
 
-fn list_item_style(selected: bool, status: button::Status) -> button::Style {
+fn list_item_style(theme: &Theme, selected: bool, status: button::Status) -> button::Style {
     let background = if selected {
-        Some(Background::Color(Color::from_rgb8(232, 241, 250)))
+        Some(Background::Color(Color::from_rgba(
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.24 } else { 0.12 },
+        )))
     } else if matches!(status, button::Status::Hovered) {
-        Some(Background::Color(SURFACE_ALT))
+        Some(Background::Color(crate::theme::surface_alt(theme)))
     } else {
         None
     };
@@ -2394,7 +2401,12 @@ fn list_item_style(selected: bool, status: button::Status) -> button::Style {
         background,
         border: Border {
             color: if selected {
-                Color::from_rgb8(183, 211, 239)
+                Color::from_rgba(
+                    theme.palette().primary.r,
+                    theme.palette().primary.g,
+                    theme.palette().primary.b,
+                    0.45,
+                )
             } else {
                 Color::TRANSPARENT
             },
@@ -2409,11 +2421,11 @@ fn item_icon_surface(selected: bool) -> container::Style {
     accent_surface(if selected { BLUE_600 } else { INK_SUBTLE })
 }
 
-fn thumbnail_surface(_theme: &Theme) -> container::Style {
+fn thumbnail_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE_ALT)),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 6.0.into(),
         },
@@ -2421,11 +2433,11 @@ fn thumbnail_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn detail_image_surface(_theme: &Theme) -> container::Style {
+fn detail_image_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE_ALT)),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 8.0.into(),
         },
@@ -2433,11 +2445,11 @@ fn detail_image_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn group_header_surface(_theme: &Theme) -> container::Style {
+fn group_header_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(247, 249, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 0.0,
             radius: 6.0.into(),
         },
@@ -2445,11 +2457,11 @@ fn group_header_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn info_surface(_theme: &Theme) -> container::Style {
+fn info_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(248, 250, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 7.0.into(),
         },
@@ -2457,11 +2469,11 @@ fn info_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn meta_surface(_theme: &Theme) -> container::Style {
+fn meta_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE_ALT)),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 6.0.into(),
         },
@@ -2536,10 +2548,10 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn quiet_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+fn quiet_button_style(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: matches!(status, button::Status::Hovered)
-            .then_some(Background::Color(SURFACE_ALT)),
+            .then_some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
             radius: 5.0.into(),
             ..Border::default()

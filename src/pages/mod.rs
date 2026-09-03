@@ -2,17 +2,15 @@
 //!
 //! 设置页和酒馆配置页已经接入真实视图，其余页面暂时提供居中的占位内容。
 
-use iced::widget::{Id, button, column, container, image, pick_list, row, scrollable, space, text};
+use iced::widget::{button, column, container, image, pick_list, row, scrollable, space};
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{
-    BLUE_600, ButtonVariant, Card, INK_MUTED, Orientation, SUCCESS, SelectionMode,
-    ToggleButtonGroupItem, WHITE, button_style, canvas, fonts, icons, pick_list_handle,
-    pick_list_menu_style, pick_list_style, toggle_button_group,
-};
+use astra_ui::{BLUE_600, ButtonVariant, SUCCESS, ToggleButtonGroupItem, WHITE, fonts, icons, pick_list_handle};
 
 use crate::app::Message;
+use crate::lang::text;
+use crate::theme::{button_style, pick_list_menu_style, pick_list_style};
 pub(crate) mod console;
 pub(crate) mod extensions;
 pub(crate) mod resource_manage;
@@ -115,16 +113,16 @@ fn home_view<'a>(
     };
     let launch_color = if launch_requested { SUCCESS } else { WHITE };
 
-    let hero = Card::new(
+    let hero = crate::theme::card(
         image("assets/imgs/og.png")
             .width(Fill)
             .height(Length::Fixed(HOME_HERO_HEIGHT))
             .content_fit(ContentFit::Cover),
-    )
-    .width(Fill)
-    .padding(0);
+        Fill,
+        0,
+    );
 
-    let environment = Card::new(
+    let environment = crate::theme::card(
         column![
             row![
                 column![
@@ -132,7 +130,7 @@ fn home_view<'a>(
                     text("启动器检测到的本机依赖与当前配置")
                         .size(11)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED),
+                        .style(crate::theme::muted_text_style),
                 ]
                 .spacing(4),
                 space::horizontal(),
@@ -154,15 +152,15 @@ fn home_view<'a>(
             .style(info_surface),
         ]
         .spacing(16),
-    )
-    .width(Fill)
-    .padding(20);
+        Fill,
+        20,
+    );
 
     let version_select = column![
         text("酒馆版本")
             .size(11)
             .font(fonts::MEDIUM)
-            .color(INK_MUTED),
+            .style(crate::theme::muted_text_style),
         pick_list(
             TavernVersion::ALL,
             Some(state.tavern_version),
@@ -193,18 +191,10 @@ fn home_view<'a>(
         text("启动模式")
             .size(11)
             .font(fonts::MEDIUM)
-            .color(INK_MUTED),
-        toggle_button_group(
-            Id::new("home-start-mode"),
-            mode_items,
-            quick_mode_index(selected_mode),
-            true,
-            SelectionMode::Single,
-            Orientation::Horizontal,
-            false,
-            |_| Message::HomeStartModeFocused,
-            |index| Message::HomeStartModeSelected(quick_mode_from_index(index)),
-        ),
+            .style(crate::theme::muted_text_style),
+        themed_segmented_group(mode_items, |index| {
+            Message::HomeStartModeSelected(quick_mode_from_index(index))
+        }),
     ]
     .spacing(6);
 
@@ -228,18 +218,10 @@ fn home_view<'a>(
             .collect();
 
             column![
-                text("浏览器").size(11).font(fonts::MEDIUM).color(INK_MUTED),
-                toggle_button_group(
-                    Id::new("home-browser"),
-                    browser_items,
-                    browser_type_index(tavern.browser_type()),
-                    true,
-                    SelectionMode::Single,
-                    Orientation::Horizontal,
-                    false,
-                    |_| Message::HomeStartModeFocused,
-                    |index| Message::HomeBrowserSelected(browser_type_from_index(index)),
-                ),
+                text("浏览器").size(11).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+                themed_segmented_group(browser_items, |index| {
+                    Message::HomeBrowserSelected(browser_type_from_index(index))
+                }),
             ]
             .spacing(6)
             .into()
@@ -260,20 +242,10 @@ fn home_view<'a>(
             text("服务模式")
                 .size(11)
                 .font(fonts::MEDIUM)
-                .color(INK_MUTED),
-            toggle_button_group(
-                Id::new("home-server-service-mode"),
-                items,
-                server_service_mode_index(state.server_service_mode),
-                true,
-                SelectionMode::Single,
-                Orientation::Horizontal,
-                false,
-                |_| Message::HomeStartModeFocused,
-                |index| Message::SettingsServerServiceModeSelected(server_service_mode_from_index(
-                    index
-                ),),
-            ),
+                .style(crate::theme::muted_text_style),
+            themed_segmented_group(items, |index| {
+                Message::SettingsServerServiceModeSelected(server_service_mode_from_index(index))
+            }),
         ]
         .spacing(6)
         .into()
@@ -308,13 +280,13 @@ fn home_view<'a>(
     } else {
         launch_controls
     };
-    let launch_panel = Card::new(
+    let launch_panel = crate::theme::card(
         launch_controls
             .push(space::horizontal())
             .push(launch_button),
-    )
-    .width(Fill)
-    .padding(18);
+        Fill,
+        18,
+    );
 
     container(
         column![
@@ -325,7 +297,7 @@ fn home_view<'a>(
                         text("AstraBrew Launcher")
                             .size(12)
                             .font(fonts::REGULAR)
-                            .color(INK_MUTED),
+                            .style(crate::theme::muted_text_style),
                     ]
                     .spacing(4),
                     hero,
@@ -345,7 +317,7 @@ fn home_view<'a>(
     .width(Fill)
     .height(Fill)
     .padding([26, 30])
-    .style(canvas)
+    .style(crate::theme::canvas_style)
     .into()
 }
 
@@ -359,11 +331,87 @@ fn current_quick_mode(state: &SettingsState) -> QuickStartMode {
     }
 }
 
-fn quick_mode_index(mode: QuickStartMode) -> usize {
-    match mode {
-        QuickStartMode::Normal => 0,
-        QuickStartMode::Desktop => 1,
-        QuickStartMode::Server => 2,
+/// 主页使用的主题感知分段选择器，避免 Astra UI 默认的固定浅色背景。
+fn themed_segmented_group<'a>(
+    items: Vec<ToggleButtonGroupItem<'a>>,
+    on_toggle: impl Fn(usize) -> Message + Clone + 'a,
+) -> Element<'a, Message> {
+    let item_count = items.len();
+    let controls = items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let selected = item.selected;
+            let label = item.label.unwrap_or_default();
+            let icon = item.icon;
+            let mut content = row![].spacing(6).align_y(Alignment::Center);
+            if let Some(icon) = icon {
+                let icon_text: iced::widget::Text<'a> = icon.into();
+                content = content.push(
+                    icon_text
+                        .size(15)
+                        .style(move |theme| iced::widget::text::Style {
+                            color: Some(if selected {
+                                WHITE
+                            } else {
+                                crate::theme::text_muted(theme)
+                            }),
+                        }),
+                );
+            }
+            content = content.push(text(label).size(11).font(fonts::MEDIUM));
+            button(container(content).align_x(Alignment::Center).align_y(Alignment::Center))
+                .height(34)
+                .padding([0, 11])
+                .on_press(on_toggle.clone()(index))
+                .style(move |theme, status| {
+                    segmented_button_style(theme, selected, status, index, item_count)
+                })
+                .into()
+        })
+        .collect::<Vec<_>>();
+
+    container(row(controls).spacing(0))
+        .style(crate::theme::segmented_group_style)
+        .into()
+}
+
+fn segmented_button_style(
+    theme: &Theme,
+    selected: bool,
+    status: button::Status,
+    index: usize,
+    item_count: usize,
+) -> button::Style {
+    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let background = if selected {
+        theme.palette().primary
+    } else if hovered {
+        crate::theme::surface(theme)
+    } else {
+        crate::theme::surface_alt(theme)
+    };
+    let radius = if item_count <= 1 {
+        iced::border::Radius::from(10.0)
+    } else if index == 0 {
+        iced::border::Radius::default().left(10.0)
+    } else if index + 1 == item_count {
+        iced::border::Radius::default().right(10.0)
+    } else {
+        iced::border::Radius::default()
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: if selected {
+            WHITE
+        } else {
+            crate::theme::text(theme)
+        },
+        border: Border {
+            radius,
+            ..Border::default()
+        },
+        ..button::Style::default()
     }
 }
 
@@ -375,27 +423,10 @@ fn quick_mode_from_index(index: usize) -> QuickStartMode {
     }
 }
 
-fn server_service_mode_index(mode: ServerServiceMode) -> usize {
-    match mode {
-        ServerServiceMode::Lan => 0,
-        ServerServiceMode::Internet => 1,
-    }
-}
-
 fn server_service_mode_from_index(index: usize) -> ServerServiceMode {
     match index {
         1 => ServerServiceMode::Internet,
         _ => ServerServiceMode::Lan,
-    }
-}
-
-fn browser_type_index(browser: BrowserType) -> usize {
-    match browser {
-        BrowserType::System => 0,
-        BrowserType::Chrome => 1,
-        BrowserType::Firefox => 2,
-        BrowserType::Edge => 3,
-        BrowserType::Safari => 4,
     }
 }
 
@@ -419,7 +450,7 @@ fn info_item(icon: Icon, label: &'static str, value: &'static str) -> Element<'s
                 .align_y(Alignment::Center)
                 .style(icon_surface),
             column![
-                text(label).size(11).font(fonts::REGULAR).color(INK_MUTED),
+                text(label).size(11).font(fonts::REGULAR).style(crate::theme::muted_text_style),
                 text(value).size(13).font(fonts::MEDIUM),
             ]
             .spacing(2),
@@ -445,21 +476,34 @@ fn status_badge(label: &'static str) -> Element<'static, Message> {
     .into()
 }
 
-fn info_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn info_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(246, 250, 255))),
+        background: Some(Background::Color(if crate::theme::is_dark(theme) {
+            crate::theme::surface_alt(theme)
+        } else {
+            Color::from_rgb8(246, 250, 255)
+        })),
         border: Border {
             radius: 12.0.into(),
-            color: Color::from_rgb8(224, 235, 248),
+            color: if crate::theme::is_dark(theme) {
+                crate::theme::line(theme)
+            } else {
+                Color::from_rgb8(224, 235, 248)
+            },
             width: 1.0,
         },
         ..iced::widget::container::Style::default()
     }
 }
 
-fn icon_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn icon_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(228, 241, 255))),
+        background: Some(Background::Color(Color::from_rgba(
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.18 } else { 0.10 },
+        ))),
         border: Border {
             radius: 8.0.into(),
             ..Border::default()
@@ -468,9 +512,14 @@ fn icon_surface(_theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-fn status_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn status_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(230, 250, 239))),
+        background: Some(Background::Color(Color::from_rgba(
+            theme.palette().success.r,
+            theme.palette().success.g,
+            theme.palette().success.b,
+            if crate::theme::is_dark(theme) { 0.18 } else { 0.12 },
+        ))),
         border: Border {
             radius: 20.0.into(),
             ..Border::default()

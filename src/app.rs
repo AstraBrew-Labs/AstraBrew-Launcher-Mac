@@ -5,18 +5,21 @@
 //! 界面组件统一来自 astra_ui（Astra UI）组件库。
 
 use iced::time::{self, Duration, Instant};
-use iced::widget::{button, column, container, row, space, text};
-use iced::{Alignment, Element, Fill, Size, Subscription, Task, Theme, window};
+use iced::widget::{button, column, container, row, space};
+use iced::{Alignment, Element, Fill, Point, Size, Subscription, Task, Theme, theme, window};
 use lucide_icons::Icon;
 
 use astra_ui::fonts;
 use astra_ui::icons;
 use astra_ui::{
-    Alert, AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500, Card,
-    ChipVariant, INK_MUTED, INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, Separator, WHITE,
-    app_theme, button_style, canvas, chip, tag_style,
+    AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500,
+    ChipVariant, INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, WHITE,
+    chip, tag_style,
 };
 
+use crate::core::settings::{PersistentPreferences, SettingsStore};
+use crate::lang::{effective_language, t, text};
+use crate::theme::button_style;
 use crate::pages::Page;
 use crate::pages::console::{ConsoleMessage, ConsoleState};
 use crate::pages::extensions::{ExtensionsMessage, ExtensionsState};
@@ -95,14 +98,10 @@ enum StepStatus {
     Done,
 }
 
-/// 窗口尺寸档位（默认 / 最小 / 最大尺寸）
+/// 窗口固定尺寸档位。
 struct WindowProfile {
-    /// 档位默认尺寸（窗口首开时调整到此尺寸）
+    /// 当前显示器对应的固定窗口尺寸。
     default_size: Size,
-    /// 允许的最小尺寸
-    min_size: Size,
-    /// 允许的最大尺寸（窗口不能超过此大小，即“不可最大化”到任意尺寸）
-    max_size: Size,
 }
 
 /// 依据窗口所在显示器的逻辑分辨率宽高比推断窗口尺寸档位。
@@ -117,14 +116,10 @@ fn window_profile(monitor: Option<Size>) -> WindowProfile {
     if widescreen {
         WindowProfile {
             default_size: Size::new(1280.0, 720.0),
-            min_size: Size::new(800.0, 600.0),
-            max_size: Size::new(1280.0, 720.0),
         }
     } else {
         WindowProfile {
-            default_size: Size::new(800.0, 600.0),
-            min_size: Size::new(800.0, 600.0),
-            max_size: Size::new(1200.0, 800.0),
+            default_size: Size::new(1280.0, 800.0),
         }
     }
 }
@@ -146,8 +141,6 @@ pub(crate) enum Message {
     HomeTavernVersionSelected(TavernVersion),
     /// 主页快捷切换启动模式
     HomeStartModeSelected(QuickStartMode),
-    /// 主页启动模式 ToggleButton 焦点变化
-    HomeStartModeFocused,
     /// 主页普通模式快捷切换浏览器
     HomeBrowserSelected(BrowserType),
     /// 修改界面语言
@@ -186,14 +179,20 @@ pub(crate) enum Message {
     Resources(ResourceManageMessage),
     /// 更新控制台页面状态
     Console(ConsoleMessage),
-    /// 主窗口已打开，开始探测显示器并按首开档位校准窗口尺寸
-    WindowOpened(window::Id),
+    /// 主窗口已打开，记录初始坐标并校准固定尺寸。
+    WindowOpened(window::Id, Option<Point>),
     /// 已测得窗口所在显示器的逻辑分辨率。
     /// `apply_default` 为 true 表示首开，需要把窗口调整为档位默认尺寸；
     /// 为 false 表示跨屏拖动，仅更新尺寸约束、不强制改变当前窗口大小。
     MonitorMeasured(window::Id, Option<Size>, bool),
     /// 窗口缩放因子变化（跨屏拖动到不同 DPI / 比例的显示器）
     WindowRescaled(window::Id),
+    /// 窗口移动后更新内存中的最新坐标。
+    WindowMoved(Point),
+    /// 用户请求关闭窗口，保存位置后显式关闭。
+    WindowCloseRequested(window::Id),
+    /// macOS 系统明暗外观发生变化。
+    SystemThemeChanged(theme::Mode),
     /// 定时器消息，驱动初始化进度
     Tick(Instant),
 }
@@ -224,10 +223,19 @@ pub struct Launcher {
     console: ConsoleState,
     /// 主页上的启动请求状态（服务层接入前用于反馈操作结果）
     launch_requested: bool,
+    /// 保留旧版未知字段的配置存储器。
+    settings_store: SettingsStore,
+    /// 当前窗口最新的逻辑坐标，仅在正常关闭时写入磁盘。
+    window_position: Option<[f32; 2]>,
+    /// iced 当前检测到的系统明暗模式。
+    system_theme: theme::Mode,
 }
 
 impl Launcher {
-    pub fn new() -> (Self, Task<Message>) {
+    pub fn new(
+        settings_store: SettingsStore,
+        preferences: PersistentPreferences,
+    ) -> (Self, Task<Message>) {
         // 调试期间暂时跳过首次运行初始化，直接进入主界面。
         // 初始化状态与视图仍保留，后续恢复时只需将 screen 改回 Screen::Init。
         // 启动即探测主显示器并按宽高比校准窗口尺寸。
@@ -238,6 +246,9 @@ impl Launcher {
             window::monitor_size(id).map(move |size| Message::MonitorMeasured(id, size, true))
         });
 
+        let mut settings = SettingsState::default();
+        settings.apply_persistent_preferences(preferences);
+
         (
             Self {
                 screen: Screen::Main,
@@ -245,24 +256,30 @@ impl Launcher {
                 stage: InitStage::Welcome,
                 progress: 0.0,
                 last_tick: None,
-                settings: SettingsState::default(),
+                settings,
                 tavern: TavernState::default(),
                 versions: VersionState::default(),
                 extensions: ExtensionsState::default(),
                 resources: ResourceManageState::default(),
                 console: ConsoleState::default(),
                 launch_requested: false,
+                settings_store,
+                window_position: preferences.window_position,
+                system_theme: theme::Mode::Light,
             },
-            detect,
+            Task::batch([
+                detect,
+                iced::system::theme().map(Message::SystemThemeChanged),
+            ]),
         )
     }
 
     pub fn title(&self) -> String {
-        "AstraBrew Launcher".to_owned()
+        t("星酿启动器", effective_language(self.settings.language)).to_owned()
     }
 
     pub fn theme(&self) -> Theme {
-        app_theme()
+        crate::theme::resolve(self.settings.theme, self.system_theme)
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -276,12 +293,16 @@ impl Launcher {
         // 订阅窗口事件：首开（探测显示器并按档位校准尺寸）与缩放变化
         //（跨屏拖动到不同 DPI / 比例显示器时更新尺寸约束）
         let window_events = window::events().filter_map(|(id, event)| match event {
-            window::Event::Opened { .. } => Some(Message::WindowOpened(id)),
+            window::Event::Opened { position, .. } => Some(Message::WindowOpened(id, position)),
             window::Event::Rescaled(_) => Some(Message::WindowRescaled(id)),
+            window::Event::Moved(position) => Some(Message::WindowMoved(position)),
+            window::Event::CloseRequested => Some(Message::WindowCloseRequested(id)),
             _ => None,
         });
 
-        Subscription::batch([init_timer, window_events])
+        let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
+
+        Subscription::batch([init_timer, window_events, system_theme])
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -348,18 +369,23 @@ impl Launcher {
                     self.settings.start_mode = StartMode::Normal;
                 }
             },
-            Message::HomeStartModeFocused => {}
             Message::HomeBrowserSelected(browser) => {
                 self.tavern.update(TavernMessage::SelectBrowser(browser));
             }
             Message::SettingsLanguageSelected(language) => {
                 self.settings.language = language;
+                self.persist_preferences();
             }
             Message::SettingsThemeSelected(theme) => {
                 self.settings.theme = theme;
+                self.persist_preferences();
             }
             Message::SettingsRememberWindowPosition(remember) => {
                 self.settings.remember_window_position = remember;
+                if !remember {
+                    self.window_position = None;
+                }
+                self.persist_preferences();
             }
             Message::SettingsAutoStart(enabled) => self.settings.auto_start = enabled,
             Message::SettingsCpuCoresSelected(value) => self.settings.cpu_cores = value,
@@ -413,6 +439,8 @@ impl Launcher {
             }
             Message::SettingsRestoreDefaults => {
                 self.settings = SettingsState::default();
+                self.window_position = None;
+                self.persist_preferences();
             }
             Message::Tavern(message) => self.tavern.update(message),
             Message::Version(message) => self.versions.update(message),
@@ -422,7 +450,10 @@ impl Launcher {
                 self.resources.update(message);
             }
             Message::Console(message) => self.console.update(message),
-            Message::WindowOpened(id) => {
+            Message::WindowOpened(id, position) => {
+                if let Some(position) = position {
+                    self.window_position = Some([position.x, position.y]);
+                }
                 // 窗口打开：探测显示器并按首开档位校准尺寸（含调整为默认尺寸）
                 return window::monitor_size(id)
                     .map(move |size| Message::MonitorMeasured(id, size, true));
@@ -434,17 +465,30 @@ impl Launcher {
             }
             Message::MonitorMeasured(id, monitor, apply_default) => {
                 let profile = window_profile(monitor);
-                let mut tasks = vec![
-                    window::set_min_size(id, Some(profile.min_size)),
-                    window::set_max_size(id, Some(profile.max_size)),
+                let tasks = vec![
+                    window::set_min_size(id, Some(profile.default_size)),
+                    window::set_max_size(id, Some(profile.default_size)),
+                    // 跨屏后也恢复到目标显示器对应的固定尺寸档位。
+                    window::resize(id, profile.default_size),
                 ];
                 if apply_default {
-                    tasks.push(window::resize(id, profile.default_size));
                     // 首开时通过原生 API 禁用绿色缩放按钮并移除独占全屏能力
                     #[cfg(target_os = "macos")]
                     crate::platform::disable_zoom_button_and_fullscreen();
                 }
                 return Task::batch(tasks);
+            }
+            Message::WindowMoved(position) => {
+                self.window_position = Some([position.x, position.y]);
+            }
+            Message::WindowCloseRequested(id) => {
+                if self.settings.remember_window_position {
+                    self.persist_preferences();
+                }
+                return window::close(id);
+            }
+            Message::SystemThemeChanged(mode) => {
+                self.system_theme = mode;
             }
             Message::Tick(now) => {
                 if self.stage == InitStage::Initializing {
@@ -465,7 +509,27 @@ impl Launcher {
         Task::none()
     }
 
+    /// 保存已接入的偏好，同时把失败原因交给设置页展示。
+    fn persist_preferences(&mut self) {
+        let preferences = PersistentPreferences {
+            language: self.settings.language,
+            theme: self.settings.theme,
+            remember_window_position: self.settings.remember_window_position,
+            window_position: if self.settings.remember_window_position {
+                self.window_position
+            } else {
+                None
+            },
+        };
+        self.settings.save_error = self
+            .settings_store
+            .save(preferences)
+            .err()
+            .map(|error| error.to_string());
+    }
+
     pub fn view(&self) -> Element<'_, Message> {
+        crate::lang::set_language(effective_language(self.settings.language));
         match self.screen {
             Screen::Init => self.init_view(),
             Screen::Main => self.main_view(),
@@ -484,7 +548,7 @@ impl Launcher {
         .height(Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center)
-        .style(canvas)
+        .style(crate::theme::canvas_style)
         .into()
     }
 
@@ -520,7 +584,7 @@ impl Launcher {
             text("Native macOS launcher for AstraBrew-Labs")
                 .size(14)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(14)
         .align_x(Alignment::Center)
@@ -543,24 +607,23 @@ impl Launcher {
             text(description)
                 .size(12)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(6);
 
-        Card::new(
+        crate::theme::card(
             column![
                 header,
-                Separator::new(),
+                crate::theme::separator(),
                 self.steps(),
                 self.progress_bar(),
                 self.status_alert(),
                 self.actions(),
             ]
             .spacing(18),
+            600,
+            28,
         )
-        .width(600)
-        .padding(28)
-        .into()
     }
 
     /// 环境准备步骤清单，每项根据进度显示等待 / 进行中 / 完成
@@ -604,7 +667,7 @@ impl Launcher {
                 text(step.path)
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(2),
             space::horizontal(),
@@ -632,17 +695,23 @@ impl Launcher {
     /// 状态提示，随初始化阶段切换语义与文案
     fn status_alert(&self) -> Element<'_, Message> {
         let alert = match self.stage {
-            InitStage::Welcome => Alert::new("准备就绪")
-                .description("点击下方按钮开始初始化运行环境。")
-                .kind(AlertKind::Info),
-            InitStage::Initializing => Alert::new("正在初始化")
-                .description("初始化过程中请保持应用运行，完成后会自动进入就绪状态。")
-                .kind(AlertKind::Info),
-            InitStage::Complete => Alert::new("初始化完成")
-                .description("运行环境已准备完毕，可以开始使用 AstraBrew Launcher。")
-                .kind(AlertKind::Success),
+            InitStage::Welcome => crate::theme::alert(
+                "准备就绪",
+                "点击下方按钮开始初始化运行环境。",
+                AlertKind::Info,
+            ),
+            InitStage::Initializing => crate::theme::alert(
+                "正在初始化",
+                "初始化过程中请保持应用运行，完成后会自动进入就绪状态。",
+                AlertKind::Info,
+            ),
+            InitStage::Complete => crate::theme::alert(
+                "初始化完成",
+                "运行环境已准备完毕，可以开始使用 AstraBrew Launcher。",
+                AlertKind::Success,
+            ),
         };
-        alert.into()
+        alert
     }
 
     /// 底部操作按钮区，随初始化阶段切换
@@ -707,11 +776,26 @@ impl Launcher {
 #[cfg(test)]
 mod tests {
     use super::{InitStage, Launcher, Message};
-    use crate::pages::settings::{DisplayLanguage, StartMode};
+    use crate::core::settings::{PersistentPreferences, SettingsStore};
+    use crate::pages::settings::{DisplayLanguage, StartMode, ThemeMode};
+
+    fn test_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "astrabrew-app-test-{name}-{}-{:?}.json",
+            std::process::id(),
+            std::thread::current().id()
+        ))
+    }
+
+    fn launcher() -> Launcher {
+        let path = test_path("state");
+        let (store, _) = SettingsStore::load(path);
+        Launcher::new(store, PersistentPreferences::default()).0
+    }
 
     #[test]
     fn start_then_cancel_resets_progress() {
-        let (mut launcher, _) = Launcher::new();
+        let mut launcher = launcher();
         assert_eq!(launcher.stage, InitStage::Welcome);
 
         let _ = launcher.update(Message::StartInitialization);
@@ -725,7 +809,7 @@ mod tests {
 
     #[test]
     fn progress_advances_toward_completion() {
-        let (mut launcher, _) = Launcher::new();
+        let mut launcher = launcher();
         let start = iced::time::Instant::now();
         let _ = launcher.update(Message::StartInitialization);
 
@@ -743,9 +827,10 @@ mod tests {
 
     #[test]
     fn settings_restore_defaults_resets_local_preferences() {
-        let (mut launcher, _) = Launcher::new();
+        let mut launcher = launcher();
 
         let _ = launcher.update(Message::SettingsLanguageSelected(DisplayLanguage::English));
+        assert_eq!(launcher.title(), "AstraBrew Launcher");
         let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
         let _ = launcher.update(Message::SettingsStartModeSelected(StartMode::Desktop));
         let _ = launcher.update(Message::SettingsRestoreDefaults);
@@ -757,11 +842,40 @@ mod tests {
 
     #[test]
     fn proxy_and_github_acceleration_are_mutually_exclusive() {
-        let (mut launcher, _) = Launcher::new();
+        let mut launcher = launcher();
         let _ = launcher.update(Message::SettingsGithubProxyEnabled(true));
         let _ = launcher.update(Message::SettingsProxyModeSelected(
             crate::pages::settings::ProxyMode::System,
         ));
         assert!(!launcher.settings.github_proxy_enabled);
+    }
+
+    #[test]
+    fn disabling_window_restore_clears_saved_coordinate() {
+        let path = test_path("window-position");
+        let (store, _) = SettingsStore::load(&path);
+        let mut launcher = Launcher::new(store, PersistentPreferences::default()).0;
+
+        let _ = launcher.update(Message::WindowMoved(iced::Point::new(-320.0, 96.0)));
+        let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
+
+        let document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&path).expect("read persisted settings"),
+        )
+        .expect("parse persisted settings");
+        assert_eq!(document["remember_window_pos"], false);
+        assert!(document["window_position"].is_null());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn system_theme_only_changes_follow_system_mode() {
+        let mut launcher = launcher();
+        let _ = launcher.update(Message::SettingsThemeSelected(ThemeMode::Light));
+        let _ = launcher.update(Message::SystemThemeChanged(iced::theme::Mode::Dark));
+        assert_eq!(launcher.theme().palette().background, crate::theme::light_theme().palette().background);
+
+        let _ = launcher.update(Message::SettingsThemeSelected(ThemeMode::System));
+        assert_eq!(launcher.theme().palette().background, crate::theme::dark_theme().palette().background);
     }
 }

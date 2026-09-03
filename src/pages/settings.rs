@@ -2,19 +2,19 @@
 
 use std::fmt;
 
-use iced::widget::{
-    button, column, container, pick_list, row, scrollable, space, text, text_input,
-};
+use iced::widget::{button, column, container, pick_list, row, rule, scrollable, space, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    Alert, AlertKind, BLUE_600, ButtonVariant, Card, ChipVariant, INK, INK_MUTED, INK_SUBTLE,
-    RADIUS_FIELD, Separator, SeparatorVariant, WARNING, button_style, chip, fonts, icons,
-    pick_list_handle, pick_list_menu_style, pick_list_style, switch, text_input_style,
+    AlertKind, BLUE_600, ButtonVariant, ChipVariant, INK_SUBTLE,
+    RADIUS_FIELD, WARNING, chip, fonts, icons, pick_list_handle,
 };
 
 use crate::app::Message;
+use crate::lang::text;
+use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
+pub use crate::core::settings::{DisplayLanguage, ThemeMode};
 
 const SELECT_WIDTH: f32 = 190.0;
 const INPUT_WIDTH: f32 = 250.0;
@@ -23,45 +23,11 @@ macro_rules! enum_text {
     ($ty:ident, $([$variant:ident, $label:literal]),+ $(,)?) => {
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(match self { $(Self::$variant => $label,)+ })
+                f.write_str(&crate::lang::display_label(match self { $(Self::$variant => $label,)+ }))
             }
         }
     };
 }
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DisplayLanguage {
-    SimplifiedChinese,
-    English,
-    #[default]
-    System,
-}
-impl DisplayLanguage {
-    pub const ALL: [Self; 3] = [Self::System, Self::SimplifiedChinese, Self::English];
-}
-enum_text!(
-    DisplayLanguage,
-    [SimplifiedChinese, "简体中文"],
-    [English, "English"],
-    [System, "跟随系统"]
-);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    System,
-}
-impl ThemeMode {
-    pub const ALL: [Self; 3] = [Self::System, Self::Light, Self::Dark];
-}
-enum_text!(
-    ThemeMode,
-    [Light, "浅色"],
-    [Dark, "深色"],
-    [System, "跟随系统"]
-);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CpuCores {
@@ -181,12 +147,16 @@ pub enum ProxyMode {
 impl ProxyMode {
     pub const ALL: [Self; 3] = [Self::None, Self::System, Self::Custom];
 }
-enum_text!(
-    ProxyMode,
-    [None, "关闭"],
-    [System, "跟随系统"],
-    [Custom, "自定义代理"]
-);
+impl fmt::Display for ProxyMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            Self::None => "代理关闭",
+            Self::System => "跟随系统",
+            Self::Custom => "自定义代理",
+        };
+        f.write_str(&crate::lang::display_label(label))
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsAction {
@@ -247,6 +217,8 @@ pub struct SettingsState {
     pub proxy_mode: ProxyMode,
     pub custom_proxy: String,
     pub last_action: Option<SettingsAction>,
+    /// 最近一次偏好设置保存失败的错误信息。
+    pub save_error: Option<String>,
 }
 
 impl Default for SettingsState {
@@ -273,7 +245,20 @@ impl Default for SettingsState {
             proxy_mode: ProxyMode::None,
             custom_proxy: String::new(),
             last_action: None,
+            save_error: None,
         }
+    }
+}
+
+impl SettingsState {
+    /// 将磁盘偏好应用到设置页状态。
+    pub fn apply_persistent_preferences(
+        &mut self,
+        preferences: crate::core::settings::PersistentPreferences,
+    ) {
+        self.language = preferences.language;
+        self.theme = preferences.theme;
+        self.remember_window_position = preferences.remember_window_position;
     }
 }
 
@@ -284,13 +269,13 @@ pub fn settings_view(state: &SettingsState) -> Element<'_, Message> {
             text("管理启动器外观、酒馆运行方式、环境依赖与网络连接")
                 .size(12)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED)
+                .style(crate::theme::muted_text_style)
         ]
         .spacing(4),
         space::horizontal(),
         button(
             row![
-                icons::icon(Icon::RotateCcw, 15, INK_MUTED),
+                crate::theme::muted_icon(Icon::RotateCcw, 15),
                 text("恢复默认").size(12).font(fonts::MEDIUM)
             ]
             .spacing(7)
@@ -317,9 +302,16 @@ pub fn settings_view(state: &SettingsState) -> Element<'_, Message> {
     .width(Fill);
     if let Some(action) = state.last_action {
         sections = sections.push(
-            Alert::new("功能入口已保留")
-                .description(action.feedback())
-                .kind(AlertKind::Info),
+            crate::theme::alert(
+                "功能入口已保留",
+                action.feedback(),
+                AlertKind::Info,
+            ),
+        );
+    }
+    if let Some(error) = &state.save_error {
+        sections = sections.push(
+            crate::theme::alert("设置未能保存", error, AlertKind::Danger),
         );
     }
 
@@ -335,7 +327,7 @@ pub fn settings_view(state: &SettingsState) -> Element<'_, Message> {
     .width(Fill)
     .height(Fill)
     .padding([24, 28])
-    .style(astra_ui::canvas)
+    .style(crate::theme::canvas_style)
     .into()
 }
 
@@ -364,7 +356,7 @@ fn interface_settings(state: &SettingsState) -> Element<'_, Message> {
             setting_row(
                 Icon::PanelsTopLeft,
                 "记住上次窗口位置",
-                "启动时恢复上次窗口的位置和大小。",
+                "启动时恢复上次窗口的位置。",
                 toggle_control(
                     state.remember_window_position,
                     Message::SettingsRememberWindowPosition,
@@ -518,7 +510,7 @@ fn environment_settings(state: &SettingsState) -> Element<'_, Message> {
                     text("Caddy 与 PM2 会在启用对应功能时使用")
                         .size(10)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED)
+                        .style(crate::theme::muted_text_style)
                 ]
                 .spacing(2)
             ]
@@ -703,13 +695,13 @@ fn section<'a>(
                 text(description)
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED)
+                    .style(crate::theme::muted_text_style)
             ]
             .spacing(3)
         ]
         .spacing(10)
         .align_y(Alignment::Center),
-        Card::new(content).width(Fill).padding(0)
+        crate::theme::card(content, Fill, 0)
     ]
     .spacing(11)
     .width(Fill)
@@ -722,7 +714,7 @@ fn section_rows<'a>(rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     for (index, item) in rows.into_iter().enumerate() {
         content = content.push(item);
         if index + 1 < count {
-            content = content.push(Separator::new().variant(SeparatorVariant::Tertiary));
+            content = content.push(rule::horizontal(1.0).style(crate::theme::separator_style));
         }
     }
     content.into()
@@ -737,11 +729,11 @@ fn setting_row<'a>(
     row![
         setting_icon(icon),
         column![
-            text(title).size(13).font(fonts::MEDIUM).color(INK),
+            text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
             text(description)
                 .size(11)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED)
+                .style(crate::theme::muted_text_style)
         ]
         .spacing(3)
         .width(Fill),
@@ -770,7 +762,7 @@ fn environment_row(
         setting_icon(icon),
         column![
             row![
-                text(title).size(13).font(fonts::MEDIUM).color(INK),
+                text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
                 requirement
             ]
             .spacing(8)
@@ -778,16 +770,16 @@ fn environment_row(
             text(description)
                 .size(11)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED)
+                .style(crate::theme::muted_text_style)
         ]
         .spacing(4)
         .width(Fill),
         row![
-            icons::icon(Icon::Circle, 13, INK_SUBTLE),
+            crate::theme::subtle_icon(Icon::Circle, 13),
             text("未检测")
                 .size(11)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED)
+                .style(crate::theme::muted_text_style)
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -841,17 +833,16 @@ fn input_control<'a>(
 }
 
 fn toggle_control(is_toggled: bool, on_toggle: fn(bool) -> Message) -> Element<'static, Message> {
-    switch(
+    crate::theme::switch(
         "",
         is_toggled,
-        if is_toggled { 1.0 } else { 0.0 },
         on_toggle,
     )
 }
 
 fn path_control(path: &str, action: SettingsAction) -> Element<'_, Message> {
     row![
-        container(text(path).size(10).font(fonts::REGULAR).color(INK_MUTED)).width(190),
+        container(text(path).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style)).width(190),
         action_button("更改", Icon::FolderOpen, action)
     ]
     .spacing(8)
@@ -866,7 +857,7 @@ fn action_button(
 ) -> Element<'static, Message> {
     button(
         row![
-            icons::icon(icon, 14, INK_MUTED),
+            crate::theme::muted_icon(icon, 14),
             text(label).size(11).font(fonts::MEDIUM)
         ]
         .spacing(6)
@@ -879,10 +870,13 @@ fn action_button(
     .into()
 }
 
-fn setting_icon_style(_theme: &Theme) -> container::Style {
+fn setting_icon_style(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            BLUE_600.r, BLUE_600.g, BLUE_600.b, 0.09,
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.18 } else { 0.09 },
         ))),
         border: Border {
             radius: 9.0.into(),
@@ -892,13 +886,21 @@ fn setting_icon_style(_theme: &Theme) -> container::Style {
     }
 }
 
-fn environment_overview_style(_theme: &Theme) -> container::Style {
+fn environment_overview_style(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            WARNING.r, WARNING.g, WARNING.b, 0.08,
+            theme.palette().warning.r,
+            theme.palette().warning.g,
+            theme.palette().warning.b,
+            if crate::theme::is_dark(theme) { 0.14 } else { 0.08 },
         ))),
         border: Border {
-            color: Color::from_rgba(WARNING.r, WARNING.g, WARNING.b, 0.22),
+            color: Color::from_rgba(
+                theme.palette().warning.r,
+                theme.palette().warning.g,
+                theme.palette().warning.b,
+                0.42,
+            ),
             width: 1.0,
             radius: RADIUS_FIELD.into(),
         },

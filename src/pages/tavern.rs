@@ -3,16 +3,17 @@
 use std::fmt;
 
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, space, text, text_input,
+    button, column, container, pick_list, row, scrollable, space, text_input,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
+use crate::lang::text;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK, INK_MUTED, LINE, SUCCESS, SURFACE, SURFACE_ALT,
-    Separator, SeparatorVariant, WARNING, WHITE, button_style, canvas, fonts, icons,
-    pick_list_handle, pick_list_menu_style, pick_list_style, switch, text_input_style,
+    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK_MUTED, SUCCESS,
+    WARNING, WHITE, fonts, icons, pick_list_handle,
 };
+use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
 
 const CONTROL_WIDTH: f32 = 270.0;
 const LIST_WIDTH: f32 = 330.0;
@@ -22,7 +23,7 @@ macro_rules! enum_text {
     ($ty:ident, $([$variant:ident, $label:literal]),+ $(,)?) => {
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(match self { $(Self::$variant => $label,)+ })
+                f.write_str(&crate::lang::display_label(match self { $(Self::$variant => $label,)+ }))
             }
         }
     };
@@ -517,11 +518,11 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
         column![
             text("酒馆配置").size(19).font(fonts::MEDIUM),
             row![
-                icons::icon(Icon::Settings, 10, INK_MUTED),
+                crate::theme::muted_icon(Icon::Settings, 10),
                 text("管理当前版本的 config.yaml 选项")
                     .size(10)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED)
+                    .style(crate::theme::muted_text_style)
             ]
             .spacing(5)
             .align_y(Alignment::Center)
@@ -540,7 +541,7 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
     .align_y(Alignment::Center)
     .width(Fill);
 
-    let header = column![header, Separator::new().variant(SeparatorVariant::Tertiary)]
+    let header = column![header, crate::theme::separator()]
         .spacing(20)
         .width(Fill);
 
@@ -569,7 +570,7 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
         .height(Fill)
         .padding([26, 32])
         .align_x(Alignment::Center)
-        .style(canvas)
+        .style(crate::theme::canvas_style)
         .into()
 }
 
@@ -662,10 +663,10 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
 
     let content = column![
         port,
-        Separator::new().variant(SeparatorVariant::Tertiary),
+        crate::theme::separator(),
         listen_addresses,
         protocol_options,
-        Separator::new().variant(SeparatorVariant::Tertiary),
+        crate::theme::separator(),
         launch_options,
         pill_toggle(
             "自动启动浏览器",
@@ -1274,7 +1275,7 @@ fn header_button(
 ) -> Element<'static, TavernMessage> {
     button(
         row![
-            icons::icon(icon, 14, INK_MUTED),
+            crate::theme::muted_icon(icon, 14),
             text(label).size(11).font(fonts::MEDIUM)
         ]
         .spacing(6)
@@ -1306,11 +1307,11 @@ fn advanced_group<'a>(
                 .align_y(Alignment::Center)
                 .style(section_icon_style(accent)),
             column![
-                text(title).size(15).font(fonts::MEDIUM).color(INK),
+                text(title).size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
                 text(description)
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED)
+                    .style(crate::theme::muted_text_style)
             ]
             .spacing(3)
             .width(Fill),
@@ -1335,7 +1336,7 @@ fn advanced_group<'a>(
     let mut group = column![header].width(Fill);
     if expanded {
         group = group
-            .push(Separator::new().variant(SeparatorVariant::Tertiary))
+            .push(crate::theme::separator())
             .push(content);
     }
 
@@ -1354,11 +1355,11 @@ fn field_row<'a>(
     container(
         row![
             column![
-                text(title).size(13).font(fonts::MEDIUM).color(INK),
+                text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
                 text(description)
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED)
+                    .style(crate::theme::muted_text_style)
             ]
             .spacing(3)
             .width(Fill),
@@ -1386,7 +1387,7 @@ fn dimension_row<'a>(
         "宽度 × 高度，单位为像素。",
         row![
             compact_text_control("宽", width, width_field),
-            text("×").size(12).color(INK_MUTED),
+            text("×").size(12).style(crate::theme::muted_text_style),
             compact_text_control("高", height, height_field),
         ]
         .spacing(7)
@@ -1411,7 +1412,7 @@ fn compact_text_control<'a>(
 }
 
 fn toggle_control(field: BoolField, value: bool) -> Element<'static, TavernMessage> {
-    switch("", value, if value { 1.0 } else { 0.0 }, move |enabled| {
+    crate::theme::switch("", value, move |enabled| {
         TavernMessage::Toggle(field, enabled)
     })
 }
@@ -1421,19 +1422,19 @@ fn pill_toggle(
     field: BoolField,
     value: bool,
 ) -> Element<'static, TavernMessage> {
-    let color = if value { WHITE } else { INK_MUTED };
     button(
         row![
-            icons::icon(
-                if value {
-                    Icon::CircleCheck
-                } else {
-                    Icon::Circle
-                },
-                13,
-                color,
-            ),
-            text(label).size(11).font(fonts::MEDIUM).color(color),
+            if value {
+                icons::icon(Icon::CircleCheck, 13, WHITE)
+            } else {
+                crate::theme::muted_icon(Icon::Circle, 13)
+            },
+            text(label)
+                .size(11)
+                .font(fonts::MEDIUM)
+                .style(move |theme| iced::widget::text::Style {
+                    color: Some(if value { WHITE } else { crate::theme::text_muted(theme) }),
+                }),
         ]
         .spacing(7)
         .align_y(Alignment::Center),
@@ -1451,13 +1452,13 @@ fn stacked_field<'a>(
     help: Option<&'static str>,
 ) -> Element<'a, TavernMessage> {
     let mut content = column![
-        text(label).size(10).font(fonts::MEDIUM).color(INK_MUTED),
+        text(label).size(10).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
         control,
     ]
     .spacing(7)
     .width(Fill);
     if let Some(help) = help {
-        content = content.push(text(help).size(10).font(fonts::REGULAR).color(INK_MUTED));
+        content = content.push(text(help).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style));
     }
     content.into()
 }
@@ -1541,7 +1542,7 @@ fn list_control<'a>(
                     .padding([8, 11])
                     .size(12)
                     .style(text_input_style),
-                button(centered_icon(Icon::Trash2, 14, INK_MUTED))
+                button(container(crate::theme::muted_icon(Icon::Trash2, 14)))
                     .on_press(TavernMessage::RemoveListItem(field, index))
                     .width(34)
                     .height(34)
@@ -1569,16 +1570,6 @@ fn list_control<'a>(
     items.into()
 }
 
-/// iced 的零内边距按钮不会自动居中内容，图标需用填充容器明确对齐。
-fn centered_icon(icon: Icon, size: u32, color: Color) -> Element<'static, TavernMessage> {
-    container(icons::icon(icon, size, color))
-        .width(Fill)
-        .height(Fill)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center)
-        .into()
-}
-
 fn page_icon_style(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(BLUE_600)),
@@ -1603,11 +1594,11 @@ fn section_icon_style(accent: Color) -> impl Fn(&Theme) -> container::Style {
     }
 }
 
-fn config_card_style(_theme: &Theme) -> container::Style {
+fn config_card_style(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 14.0.into(),
         },
@@ -1615,16 +1606,18 @@ fn config_card_style(_theme: &Theme) -> container::Style {
     }
 }
 
-fn setting_row_style(_theme: &Theme) -> container::Style {
+fn setting_row_style(theme: &Theme) -> container::Style {
+    let surface_alt = crate::theme::surface_alt(theme);
+    let line = crate::theme::line(theme);
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            SURFACE_ALT.r,
-            SURFACE_ALT.g,
-            SURFACE_ALT.b,
+            surface_alt.r,
+            surface_alt.g,
+            surface_alt.b,
             0.55,
         ))),
         border: Border {
-            color: Color::from_rgba(LINE.r, LINE.g, LINE.b, 0.65),
+            color: Color::from_rgba(line.r, line.g, line.b, 0.85),
             width: 1.0,
             radius: 10.0.into(),
         },
@@ -1633,20 +1626,22 @@ fn setting_row_style(_theme: &Theme) -> container::Style {
 }
 
 fn pill_toggle_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_theme, status| {
+    move |theme, status| {
         let hovered = matches!(status, button::Status::Hovered);
+        let surface_alt = crate::theme::surface_alt(theme);
+        let line = crate::theme::line(theme);
         let background = if active {
-            Color::from_rgb8(20, 105, 245)
+            theme.palette().primary
         } else if hovered {
-            Color::from_rgba(BLUE_600.r, BLUE_600.g, BLUE_600.b, 0.10)
+            Color::from_rgba(theme.palette().primary.r, theme.palette().primary.g, theme.palette().primary.b, 0.16)
         } else {
-            SURFACE_ALT
+            surface_alt
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active { WHITE } else { INK_MUTED },
+            text_color: if active { WHITE } else { crate::theme::text_muted(theme) },
             border: Border {
-                color: if active { BLUE_600 } else { LINE },
+                color: if active { theme.palette().primary } else { line },
                 width: 1.0,
                 radius: 10.0.into(),
             },

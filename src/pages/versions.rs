@@ -3,14 +3,16 @@
 //! 页面复刻旧版启动器的信息结构，并以独立状态承载 Tab、实例列表与操作反馈。
 //! 当前服务层尚未接入，因此扫描、安装和切换操作先在本地状态中完成可视反馈。
 
-use iced::widget::{button, column, container, row, scrollable, space, text, tooltip};
+use iced::widget::{button, column, container, row, scrollable, space, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, LINE, SUCCESS, SURFACE, Separator,
-    WARNING, WHITE, button_style, canvas, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS,
+    WHITE, fonts, icons,
 };
+use crate::lang::text;
+use crate::theme::button_style;
 
 /// 版本页当前展示的实例类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -290,7 +292,7 @@ pub fn versions_view(state: &VersionState) -> Element<'_, VersionMessage> {
     .height(Fill)
     .padding([26, 30])
     .align_x(Alignment::Center)
-    .style(canvas)
+    .style(crate::theme::canvas_style)
     .into()
 }
 
@@ -303,8 +305,8 @@ fn summary_card<'a>(
     container(
         row![
             column![
-                text(label).size(11).font(fonts::MEDIUM).color(INK_SUBTLE),
-                text(value).size(24).font(fonts::MEDIUM).color(INK),
+                text(label).size(11).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
+                text(value).size(24).font(fonts::MEDIUM).style(crate::theme::text_style),
             ]
             .spacing(5),
             space::horizontal(),
@@ -353,7 +355,7 @@ fn notice_badge(notice: &str) -> Element<'_, VersionMessage> {
     container(
         row![
             icons::icon(Icon::Info, 13, BLUE_600),
-            text(notice).size(10).font(fonts::REGULAR).color(INK_MUTED),
+            text(notice).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -385,11 +387,11 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let list = if state.local_instances.is_empty() {
         container(
             column![
-                icons::icon(Icon::FolderSearch, 36, INK_SUBTLE),
+                crate::theme::subtle_icon(Icon::FolderSearch, 36),
                 text("尚未发现本地实例")
                     .size(13)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
                 button("开始扫描")
                     .on_press(VersionMessage::ScanLocal)
                     .padding([8, 16])
@@ -414,7 +416,7 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 if index + 1 == state.local_instances.len() {
                     rows
                 } else {
-                    rows.push(Separator::new())
+                    rows.push(crate::theme::separator())
                 }
             },
         );
@@ -498,11 +500,11 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                 .spacing(8)
                 .align_y(Alignment::Center),
                 row![
-                    icons::icon(Icon::MapPin, 12, INK_SUBTLE),
+                    crate::theme::subtle_icon(Icon::MapPin, 12),
                     text(&item.path)
                         .size(10)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED),
+                        .style(crate::theme::muted_text_style),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -545,7 +547,7 @@ fn online_panel(state: &VersionState) -> Element<'_, VersionMessage> {
             if index + 1 == state.online_releases.len() {
                 rows
             } else {
-                rows.push(Separator::new())
+                rows.push(crate::theme::separator())
             }
         },
     );
@@ -565,7 +567,7 @@ fn online_release_row<'a>(
         };
         let mut switch = button(
             row![
-                icons::icon(Icon::Power, 15, INK_MUTED),
+                crate::theme::muted_icon(Icon::Power, 15),
                 text(label).size(12).font(fonts::MEDIUM),
             ]
             .spacing(7)
@@ -622,20 +624,20 @@ fn online_release_row<'a>(
                 .align_y(Alignment::Center),
                 row![
                     row![
-                        icons::icon(Icon::Calendar, 12, INK_SUBTLE),
+                        crate::theme::subtle_icon(Icon::Calendar, 12),
                         text(format!("发布于 {}", release.published_at))
                             .size(10)
                             .font(fonts::REGULAR)
-                            .color(INK_MUTED),
+                            .style(crate::theme::muted_text_style),
                     ]
                     .spacing(5)
                     .align_y(Alignment::Center),
                     row![
-                        icons::icon(Icon::Clock, 12, INK_SUBTLE),
+                        crate::theme::subtle_icon(Icon::Clock, 12),
                         text(format!("创建于 {}", release.created_at))
                             .size(10)
                             .font(fonts::REGULAR)
-                            .color(INK_MUTED),
+                            .style(crate::theme::muted_text_style),
                     ]
                     .spacing(5)
                     .align_y(Alignment::Center),
@@ -644,7 +646,7 @@ fn online_release_row<'a>(
                 text(&release.summary)
                     .size(11)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(7)
             .width(Fill),
@@ -663,7 +665,7 @@ fn panel<'a>(
     content: Element<'a, VersionMessage>,
 ) -> Element<'a, VersionMessage> {
     container(
-        column![header, Separator::new(), content]
+        column![header, crate::theme::separator(), content]
             .width(Fill)
             .height(Fill),
     )
@@ -680,14 +682,14 @@ fn panel_header<'a>(
     actions: Vec<Element<'a, VersionMessage>>,
 ) -> Element<'a, VersionMessage> {
     let mut title_row = row![
-        icons::icon(icon, 19, INK_MUTED),
+        crate::theme::muted_icon(icon, 19),
         text(title).size(15).font(fonts::MEDIUM),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
     if let Some(meta) = meta {
         title_row = title_row.push(
-            container(text(meta).size(9).font(fonts::REGULAR).color(INK_MUTED))
+            container(text(meta).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style))
                 .padding([5, 9])
                 .style(meta_surface),
         );
@@ -713,7 +715,7 @@ fn icon_button(
     message: VersionMessage,
 ) -> Element<'static, VersionMessage> {
     let action = button(
-        container(icons::icon(icon, 16, INK_MUTED))
+        container(crate::theme::muted_icon(icon, 16))
             .width(28)
             .height(28)
             .align_x(Alignment::Center)
@@ -761,11 +763,11 @@ fn optional_badge(
         .into()
 }
 
-fn summary_surface(_theme: &Theme) -> container::Style {
+fn summary_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 16.0.into(),
         },
@@ -786,10 +788,10 @@ fn accent_surface(accent: Color) -> container::Style {
     }
 }
 
-fn tab_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+fn tab_button_style(theme: &Theme, status: button::Status) -> button::Style {
     button::Style {
         background: matches!(status, button::Status::Hovered)
-            .then_some(Background::Color(Color::from_rgb8(238, 244, 250))),
+            .then_some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
             radius: 8.0.into(),
             ..Border::default()
@@ -809,11 +811,11 @@ fn tab_indicator(active: bool) -> container::Style {
     }
 }
 
-fn panel_surface(_theme: &Theme) -> container::Style {
+fn panel_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 16.0.into(),
         },
@@ -821,10 +823,10 @@ fn panel_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn panel_header_surface(_theme: &Theme) -> container::Style {
+fn panel_header_surface(theme: &Theme) -> container::Style {
     container::Style {
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 0.0,
             radius: 16.0.into(),
         },
@@ -832,11 +834,11 @@ fn panel_header_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn meta_surface(_theme: &Theme) -> container::Style {
+fn meta_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(247, 249, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 12.0.into(),
         },
@@ -855,11 +857,21 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn notice_surface(_theme: &Theme) -> container::Style {
+fn notice_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(235, 245, 255))),
+        background: Some(Background::Color(Color::from_rgba(
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.14 } else { 0.08 },
+        ))),
         border: Border {
-            color: Color::from_rgb8(205, 227, 249),
+            color: Color::from_rgba(
+                theme.palette().primary.r,
+                theme.palette().primary.g,
+                theme.palette().primary.b,
+                if crate::theme::is_dark(theme) { 0.38 } else { 0.18 },
+            ),
             width: 1.0,
             radius: 12.0.into(),
         },
@@ -867,9 +879,9 @@ fn notice_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn indigo_icon_surface(_theme: &Theme) -> container::Style {
+fn indigo_icon_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(238, 237, 255))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
             radius: 10.0.into(),
             ..Border::default()
@@ -891,11 +903,16 @@ fn badge_surface(color: Color) -> container::Style {
     }
 }
 
-fn warning_button_style(_theme: &Theme, status: button::Status) -> button::Style {
+fn warning_button_style(theme: &Theme, status: button::Status) -> button::Style {
     let background = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        Color::from_rgb8(230, 145, 16)
+        Color::from_rgba(
+            theme.palette().warning.r,
+            theme.palette().warning.g,
+            theme.palette().warning.b,
+            0.86,
+        )
     } else {
-        WARNING
+        theme.palette().warning
     };
     button::Style {
         background: Some(Background::Color(background)),

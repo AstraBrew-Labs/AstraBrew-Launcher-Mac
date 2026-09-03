@@ -4,16 +4,18 @@
 //! 以及每个扩展的启用、自动更新和目录操作。服务层尚未接入，页面先以
 //! 本地状态承载交互反馈，后续扫描接口可直接替换默认数据来源。
 
-use iced::widget::{button, column, container, row, scrollable, space, text, tooltip};
+use iced::widget::{button, column, container, row, scrollable, space, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, LINE, SUCCESS, SURFACE,
-    SURFACE_ALT, WARNING, WHITE, button_style, canvas, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS,
+    SURFACE_ALT, WARNING, WHITE, fonts, icons,
 };
 
 use super::versions::VersionState;
+use crate::lang::text;
+use crate::theme::button_style;
 
 const PURPLE: Color = Color::from_rgb8(142, 68, 220);
 
@@ -257,11 +259,11 @@ pub fn extensions_view<'a>(
 ) -> Element<'a, ExtensionsMessage> {
     let header = row![
         column![
-            text("扩展管理").size(24).font(fonts::MEDIUM).color(INK),
+            text("扩展管理").size(24).font(fonts::MEDIUM).style(crate::theme::text_style),
             text("管理酒馆已安装的第三方扩展")
                 .size(12)
                 .font(fonts::REGULAR)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(4),
         space::horizontal(),
@@ -270,7 +272,7 @@ pub fn extensions_view<'a>(
                 text("自动修复")
                     .size(11)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
                 compact_switch(
                     state.auto_repair_git,
                     BLUE_600,
@@ -319,7 +321,7 @@ pub fn extensions_view<'a>(
     .height(Fill)
     .padding([26, 30])
     .align_x(Alignment::Center)
-    .style(canvas)
+    .style(crate::theme::canvas_style)
     .into()
 }
 
@@ -357,19 +359,19 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
                 text("当前选择的酒馆版本")
                     .size(14)
                     .font(fonts::MEDIUM)
-                    .color(INK),
+                    .style(crate::theme::text_style),
                 row![
                     text(format!("当前版本：{version}"))
                         .size(10)
                         .font(fonts::REGULAR)
-                        .color(INK_MUTED),
+                        .style(crate::theme::muted_text_style),
                     badge(source, WARNING),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
                 row![
-                    icons::icon(Icon::Folder, 12, INK_SUBTLE),
-                    text(path).size(9).font(fonts::REGULAR).color(INK_SUBTLE),
+                    crate::theme::subtle_icon(Icon::Folder, 12),
+                    text(path).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -395,13 +397,13 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
 
     let header = container(
         row![
-            icons::icon(Icon::Puzzle, 18, INK_MUTED),
-            text("已安装扩展").size(15).font(fonts::MEDIUM).color(INK),
+            crate::theme::muted_icon(Icon::Puzzle, 18),
+            text("已安装扩展").size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
             container(
                 text(format!("{} 项", visible.len()))
                     .size(9)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
             )
             .padding([4, 8])
             .style(meta_surface),
@@ -414,7 +416,7 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
             text("显示系统扩展")
                 .size(11)
                 .font(fonts::MEDIUM)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
             compact_switch(
                 state.show_system_extensions,
                 BLUE_600,
@@ -438,15 +440,15 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
     let list: Element<'_, ExtensionsMessage> = if visible.is_empty() {
         container(
             column![
-                icons::icon(Icon::Puzzle, 34, INK_SUBTLE),
+                crate::theme::subtle_icon(Icon::Puzzle, 34),
                 text("没有找到扩展")
                     .size(13)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
                 text("安装扩展后，它们会显示在这里。")
                     .size(10)
                     .font(fonts::REGULAR)
-                    .color(INK_SUBTLE),
+                    .style(crate::theme::subtle_text_style),
             ]
             .spacing(8)
             .align_x(Alignment::Center),
@@ -508,17 +510,17 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
     }
 
     let mut meta = row![
-        icons::icon(Icon::User, 12, INK_SUBTLE),
+        crate::theme::subtle_icon(Icon::User, 12),
         text(&extension.author)
             .size(10)
             .font(fonts::REGULAR)
-            .color(INK_MUTED),
-        text("|").size(10).color(INK_SUBTLE),
-        icons::icon(Icon::Folder, 12, INK_SUBTLE),
+            .style(crate::theme::muted_text_style),
+        text("|").size(10).style(crate::theme::subtle_text_style),
+        crate::theme::subtle_icon(Icon::Folder, 12),
         text(&extension.id)
             .size(10)
             .font(fonts::REGULAR)
-            .color(INK_MUTED),
+            .style(crate::theme::muted_text_style),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -575,7 +577,7 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
                 text("自动更新")
                     .size(11)
                     .font(fonts::MEDIUM)
-                    .color(INK_MUTED),
+                    .style(crate::theme::muted_text_style),
                 compact_switch(
                     enabled,
                     SUCCESS,
@@ -637,8 +639,8 @@ fn small_action(
 ) -> Element<'static, ExtensionsMessage> {
     button(
         row![
-            icons::icon(icon, 11, INK_MUTED),
-            text(label).size(9).font(fonts::MEDIUM).color(INK_MUTED),
+            crate::theme::muted_icon(icon, 11),
+            text(label).size(9).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -747,7 +749,7 @@ fn notice_badge(notice: &str) -> Element<'_, ExtensionsMessage> {
     container(
         row![
             icons::icon(Icon::Info, 11, BLUE_600),
-            text(notice).size(9).font(fonts::REGULAR).color(INK_MUTED),
+            text(notice).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style),
         ]
         .spacing(5)
         .align_y(Alignment::Center),
@@ -765,11 +767,11 @@ fn separator_line<'a>() -> Element<'a, ExtensionsMessage> {
         .into()
 }
 
-fn panel_surface(_theme: &Theme) -> container::Style {
+fn panel_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 12.0.into(),
         },
@@ -777,11 +779,11 @@ fn panel_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn control_surface(_theme: &Theme) -> container::Style {
+fn control_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(247, 249, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 12.0.into(),
         },
@@ -789,10 +791,13 @@ fn control_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn blue_icon_surface(_theme: &Theme) -> container::Style {
+fn blue_icon_surface(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            BLUE_600.r, BLUE_600.g, BLUE_600.b, 0.10,
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.18 } else { 0.10 },
         ))),
         border: Border {
             radius: 9.0.into(),
@@ -815,11 +820,11 @@ fn badge_surface(color: Color) -> container::Style {
     }
 }
 
-fn meta_surface(_theme: &Theme) -> container::Style {
+fn meta_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(247, 249, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 10.0.into(),
         },
@@ -827,11 +832,21 @@ fn meta_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn notice_surface(_theme: &Theme) -> container::Style {
+fn notice_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(Color::from_rgb8(235, 245, 255))),
+        background: Some(Background::Color(Color::from_rgba(
+            theme.palette().primary.r,
+            theme.palette().primary.g,
+            theme.palette().primary.b,
+            if crate::theme::is_dark(theme) { 0.14 } else { 0.08 },
+        ))),
         border: Border {
-            color: Color::from_rgb8(205, 227, 249),
+            color: Color::from_rgba(
+                theme.palette().primary.r,
+                theme.palette().primary.g,
+                theme.palette().primary.b,
+                if crate::theme::is_dark(theme) { 0.38 } else { 0.18 },
+            ),
             width: 1.0,
             radius: 10.0.into(),
         },
@@ -839,11 +854,11 @@ fn notice_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn small_action_style(_theme: &Theme, status: button::Status) -> button::Style {
+fn small_action_style(theme: &Theme, status: button::Status) -> button::Style {
     let background = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-        Color::from_rgb8(232, 238, 244)
+        crate::theme::surface_alt(theme)
     } else {
-        Color::from_rgb8(244, 246, 249)
+        crate::theme::surface(theme)
     };
     button::Style {
         background: Some(Background::Color(background)),
@@ -866,9 +881,9 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
     }
 }
 
-fn separator_surface(_theme: &Theme) -> container::Style {
+fn separator_surface(theme: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(LINE)),
+        background: Some(Background::Color(crate::theme::line(theme))),
         ..container::Style::default()
     }
 }

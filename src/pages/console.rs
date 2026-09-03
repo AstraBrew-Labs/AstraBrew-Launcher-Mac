@@ -4,16 +4,17 @@
 //! 连接信息。当前项目的进程服务尚未接入，因此交互先由本地状态承载；消息
 //! 边界保持独立，接入真实服务时无需改动视图结构。
 
-use iced::widget::{button, column, container, row, scrollable, space, stack, text};
+use iced::widget::{button, column, container, row, scrollable, space, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, LINE, SUCCESS, SURFACE,
-    SURFACE_ALT, button_style, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, fonts, icons,
 };
 
 use crate::app::Message;
+use crate::lang::text;
+use crate::theme::button_style;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleStatus {
@@ -249,7 +250,7 @@ pub fn console_view(state: &ConsoleState) -> Element<'_, Message> {
 fn header_view(state: &ConsoleState) -> Element<'_, Message> {
     let status = status_badge(state.status);
     let mut left = row![
-        icons::icon(Icon::SquareTerminal, 20, INK_MUTED),
+        crate::theme::muted_icon(Icon::SquareTerminal, 20),
         text("服务控制台").size(15).font(fonts::MEDIUM),
         status
     ]
@@ -261,7 +262,7 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
             text(format!("PID: {pid}"))
                 .size(11)
                 .font(Font::MONOSPACE)
-                .color(INK_MUTED),
+                .style(crate::theme::muted_text_style),
         );
     }
 
@@ -294,7 +295,7 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
         }
     }
 
-    let clear = button(icons::icon(Icon::Trash2, 16, INK_MUTED))
+    let clear = button(crate::theme::muted_icon(Icon::Trash2, 16))
         .padding(8)
         .style(icon_button_style())
         .on_press(Message::Console(ConsoleMessage::ClearLogs));
@@ -361,11 +362,11 @@ fn logs_view(state: &ConsoleState) -> Element<'_, Message> {
     let content: Element<'_, Message> = if state.logs.is_empty() {
         container(
             column![
-                icons::icon(Icon::SquareTerminal, 44, INK_SUBTLE),
+                crate::theme::subtle_icon(Icon::SquareTerminal, 44),
                 text("控制台已就绪，等待启动服务")
                     .size(13)
                     .font(fonts::REGULAR)
-                    .color(INK_MUTED)
+                    .style(crate::theme::muted_text_style)
             ]
             .spacing(12)
             .align_x(Alignment::Center),
@@ -381,7 +382,7 @@ fn logs_view(state: &ConsoleState) -> Element<'_, Message> {
                 text(format!("[{}]", log.time))
                     .size(11)
                     .font(Font::MONOSPACE)
-                    .color(INK_SUBTLE)
+                    .style(crate::theme::subtle_text_style)
                     .width(Length::Fixed(72.0)),
                 text(log.kind.label().to_uppercase())
                     .size(10)
@@ -391,7 +392,7 @@ fn logs_view(state: &ConsoleState) -> Element<'_, Message> {
                 text(&log.text)
                     .size(12)
                     .font(Font::MONOSPACE)
-                    .color(INK)
+                    .style(crate::theme::text_style)
                     .width(Fill)
             ]
             .spacing(10)
@@ -422,7 +423,7 @@ fn network_dialog(state: &ConsoleState) -> Element<'_, Message> {
         row![
             text(mode.label()).size(17).font(fonts::MEDIUM),
             space::horizontal(),
-            button(icons::icon(Icon::X, 16, INK_MUTED))
+            button(crate::theme::muted_icon(Icon::X, 16))
                 .padding(6)
                 .style(icon_button_style())
                 .on_press(Message::Console(ConsoleMessage::ToggleNetworkDialog))
@@ -431,10 +432,10 @@ fn network_dialog(state: &ConsoleState) -> Element<'_, Message> {
         text("将此地址复制到同一网络中的设备，即可访问当前酒馆实例。")
             .size(12)
             .font(fonts::REGULAR)
-            .color(INK_MUTED),
+            .style(crate::theme::muted_text_style),
         container(
             row![
-                text(url).size(13).font(Font::MONOSPACE).color(INK),
+                text(url).size(13).font(Font::MONOSPACE).style(crate::theme::text_style),
                 space::horizontal(),
                 button(icons::icon(Icon::ExternalLink, 15, BLUE_600))
                     .padding(7)
@@ -494,26 +495,26 @@ fn separator() -> Element<'static, Message> {
         .into()
 }
 
-fn header_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn header_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(250, 251, 253))),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             ..Border::default()
         },
         ..Default::default()
     }
 }
-fn log_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn log_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(247, 249, 252))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         ..Default::default()
     }
 }
-fn separator_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn separator_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(LINE)),
+        background: Some(Background::Color(crate::theme::line(theme))),
         ..Default::default()
     }
 }
@@ -549,9 +550,9 @@ fn soft_button(color: Color) -> impl Fn(&Theme, button::Status) -> button::Style
     }
 }
 fn icon_button_style() -> impl Fn(&Theme, button::Status) -> button::Style {
-    |_theme, status| button::Style {
+    |theme, status| button::Style {
         background: matches!(status, button::Status::Hovered)
-            .then_some(Background::Color(SURFACE_ALT)),
+            .then_some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
             radius: 8.0.into(),
             ..Border::default()
@@ -559,22 +560,22 @@ fn icon_button_style() -> impl Fn(&Theme, button::Status) -> button::Style {
         ..Default::default()
     }
 }
-fn dialog_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn dialog_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(SURFACE)),
+        background: Some(Background::Color(crate::theme::surface(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 14.0.into(),
         },
         ..Default::default()
     }
 }
-fn dialog_code_surface(_theme: &Theme) -> iced::widget::container::Style {
+fn dialog_code_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
-        background: Some(Background::Color(Color::from_rgb8(244, 247, 250))),
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
         border: Border {
-            color: LINE,
+            color: crate::theme::line(theme),
             width: 1.0,
             radius: 8.0.into(),
         },

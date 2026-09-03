@@ -4,17 +4,28 @@
 //! UI 组件统一来自 astra_ui（Astra UI）组件库。
 
 mod app;
+mod core;
+mod lang;
 mod pages;
 #[cfg(target_os = "macos")]
 mod platform;
 mod sidebar;
+mod theme;
 
-use iced::{Size, window};
+use iced::window;
 use lucide_icons::LUCIDE_FONT_BYTES;
 
 fn main() -> iced::Result {
+    let (settings_store, preferences) = core::settings::SettingsStore::load_default();
+    let saved_position = preferences
+        .remember_window_position
+        .then_some(preferences.window_position)
+        .flatten();
+    let placement = platform::initial_window_placement(saved_position);
+    let initial_store = settings_store.clone();
+
     let mut application = iced::application(
-        app::Launcher::new,
+        move || app::Launcher::new(initial_store.clone(), preferences),
         app::Launcher::update,
         app::Launcher::view,
     )
@@ -31,20 +42,20 @@ fn main() -> iced::Result {
     application
         .default_font(astra_ui::fonts::REGULAR)
         .window(window::Settings {
-            // 默认按 16:9 宽屏档位 1280×720；运行时根据实际显示器宽高比再校准
-            size: Size::new(1280.0, 720.0),
-            // 手动调整大小的下限 / 上限（上限即“不可最大化”到任意尺寸）
-            min_size: Some(Size::new(800.0, 600.0)),
-            max_size: Some(Size::new(1280.0, 720.0)),
-            // 在（主）屏幕上居中显示；副屏断开时 macOS 会自动将窗口移回主屏
-            position: window::Position::Centered,
-            // 允许手动调整大小，但不以最大化 / 全屏方式启动。
+            // 启动前已经按显示器比例选择固定尺寸，并验证历史窗口坐标。
+            size: placement.size,
+            min_size: Some(placement.size),
+            max_size: Some(placement.size),
+            position: placement.position,
+            // 窗口尺寸固定，不以最大化 / 全屏方式启动。
             // 绿色缩放按钮与独占全屏在首开时由 platform::disable_zoom_button_and_fullscreen 关闭。
-            resizable: true,
+            resizable: false,
             maximized: false,
             fullscreen: false,
             minimizable: true,
             closeable: true,
+            // 关闭事件交给应用保存窗口位置后再显式退出。
+            exit_on_close_request: false,
             ..window::Settings::default()
         })
         .antialiasing(true)

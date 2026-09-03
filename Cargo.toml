@@ -11,6 +11,7 @@ iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"]
 lucide-icons = { version = "1.31.0", features = ["iced"] }
 # Astra UI 组件库：从 GitHub beta 分支引入（包名为 iced-astraui，crate 名为 astra_ui）
 astra_ui = { git = "https://github.com/AstraBrew-Labs/iced-astraui", branch = "beta", package = "iced-astraui" }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rfd = "0.15"
 
@@ -18,7 +19,7 @@ rfd = "0.15"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSEnumerator", "NSThread", "dispatch"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSWindow", "NSButton", "NSControl"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSWindow", "NSButton", "NSControl", "NSScreen"] }
 
 [profile.release]
 lto = "thin"
