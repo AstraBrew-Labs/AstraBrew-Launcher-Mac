@@ -2,18 +2,16 @@
 
 use std::fmt;
 
-use iced::widget::{
-    button, column, container, pick_list, row, scrollable, space, text_input,
-};
+use crate::lang::text;
+use iced::widget::{button, column, container, pick_list, row, scrollable, space, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
-use crate::lang::text;
 
-use astra_ui::{
-    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK_MUTED, SUCCESS,
-    WARNING, WHITE, fonts, icons, pick_list_handle,
-};
 use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
+use astra_ui::{
+    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK_MUTED, SUCCESS, WARNING, WHITE, fonts, icons,
+    pick_list_handle,
+};
 
 const CONTROL_WIDTH: f32 = 270.0;
 const LIST_WIDTH: f32 = 330.0;
@@ -1307,7 +1305,10 @@ fn advanced_group<'a>(
                 .align_y(Alignment::Center)
                 .style(section_icon_style(accent)),
             column![
-                text(title).size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(title)
+                    .size(15)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
                 text(description)
                     .size(11)
                     .font(fonts::REGULAR)
@@ -1335,9 +1336,7 @@ fn advanced_group<'a>(
 
     let mut group = column![header].width(Fill);
     if expanded {
-        group = group
-            .push(crate::theme::separator())
-            .push(content);
+        group = group.push(crate::theme::separator()).push(content);
     }
 
     container(group).width(Fill).style(config_card_style).into()
@@ -1355,7 +1354,10 @@ fn field_row<'a>(
     container(
         row![
             column![
-                text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(title)
+                    .size(13)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
                 text(description)
                     .size(11)
                     .font(fonts::REGULAR)
@@ -1433,7 +1435,11 @@ fn pill_toggle(
                 .size(11)
                 .font(fonts::MEDIUM)
                 .style(move |theme| iced::widget::text::Style {
-                    color: Some(if value { WHITE } else { crate::theme::text_muted(theme) }),
+                    color: Some(if value {
+                        WHITE
+                    } else {
+                        crate::theme::text_muted(theme)
+                    }),
                 }),
         ]
         .spacing(7)
@@ -1452,13 +1458,21 @@ fn stacked_field<'a>(
     help: Option<&'static str>,
 ) -> Element<'a, TavernMessage> {
     let mut content = column![
-        text(label).size(10).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+        text(label)
+            .size(10)
+            .font(fonts::MEDIUM)
+            .style(crate::theme::muted_text_style),
         control,
     ]
     .spacing(7)
     .width(Fill);
     if let Some(help) = help {
-        content = content.push(text(help).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style));
+        content = content.push(
+            text(help)
+                .size(10)
+                .font(fonts::REGULAR)
+                .style(crate::theme::muted_text_style),
+        );
     }
     content.into()
 }
@@ -1633,15 +1647,28 @@ fn pill_toggle_style(active: bool) -> impl Fn(&Theme, button::Status) -> button:
         let background = if active {
             theme.palette().primary
         } else if hovered {
-            Color::from_rgba(theme.palette().primary.r, theme.palette().primary.g, theme.palette().primary.b, 0.16)
+            Color::from_rgba(
+                theme.palette().primary.r,
+                theme.palette().primary.g,
+                theme.palette().primary.b,
+                0.16,
+            )
         } else {
             surface_alt
         };
         button::Style {
             background: Some(Background::Color(background)),
-            text_color: if active { WHITE } else { crate::theme::text_muted(theme) },
+            text_color: if active {
+                WHITE
+            } else {
+                crate::theme::text_muted(theme)
+            },
             border: Border {
-                color: if active { theme.palette().primary } else { line },
+                color: if active {
+                    theme.palette().primary
+                } else {
+                    line
+                },
                 width: 1.0,
                 radius: 10.0.into(),
             },

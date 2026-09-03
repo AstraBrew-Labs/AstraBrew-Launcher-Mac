@@ -25,7 +25,7 @@ fn main() -> iced::Result {
     let initial_store = settings_store.clone();
 
     let mut application = iced::application(
-        move || app::Launcher::new(initial_store.clone(), preferences),
+        move || app::Launcher::new(initial_store.clone(), preferences.clone()),
         app::Launcher::update,
         app::Launcher::view,
     )

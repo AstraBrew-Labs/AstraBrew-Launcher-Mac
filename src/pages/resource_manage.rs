@@ -8,15 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-use iced::widget::{
-    button, column, container, image, row, scrollable, space, text_input, tooltip,
-};
+use iced::widget::{button, column, container, image, row, scrollable, space, text_input, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS,
-    WARNING, WHITE, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS, WARNING, WHITE, fonts,
+    icons,
 };
 
 use super::settings::{SettingsState, TavernDataMode};
@@ -1041,7 +1039,10 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                     .align_y(Alignment::Center)
                     .style(page_icon_surface),
                 column![
-                    text("资源管理").size(20).font(fonts::MEDIUM).style(crate::theme::text_style),
+                    text("资源管理")
+                        .size(20)
+                        .font(fonts::MEDIUM)
+                        .style(crate::theme::text_style),
                     text("统一查看与整理 SillyTavern 本地资源")
                         .size(11)
                         .font(fonts::REGULAR)
@@ -1199,7 +1200,10 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         container(
             row![
                 icons::icon(Icon::Info, 14, BLUE_600),
-                text(notice).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style),
+                text(notice)
+                    .size(10)
+                    .font(fonts::REGULAR)
+                    .style(crate::theme::muted_text_style),
                 space::horizontal(),
                 button(crate::theme::subtle_icon(Icon::X, 13))
                     .on_press(ResourceManageMessage::ClearNotice)
@@ -1351,7 +1355,10 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                     .height(CHARACTER_THUMB_HEIGHT)
                     .style(thumbnail_surface),
                     column![
-                        text(&item.name).size(12).font(fonts::MEDIUM).style(crate::theme::text_style),
+                        text(&item.name)
+                            .size(12)
+                            .font(fonts::MEDIUM)
+                            .style(crate::theme::text_style),
                         text(if item.creator.is_empty() {
                             "未知作者".to_owned()
                         } else {
@@ -1447,7 +1454,10 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
             container(
                 row![
                     icons::icon(Icon::UserRound, 13, BLUE_600),
-                    text(&group.name).size(10).font(fonts::MEDIUM).style(crate::theme::text_style),
+                    text(&group.name)
+                        .size(10)
+                        .font(fonts::MEDIUM)
+                        .style(crate::theme::text_style),
                     space::horizontal(),
                     text(format!("{} 个会话", matching.len()))
                         .size(9)
@@ -1534,12 +1544,18 @@ fn simple_list_item<'a>(
             .align_y(Alignment::Center)
             .style(move |_theme| item_icon_surface(selected)),
             column![
-                text(title).size(11).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(title)
+                    .size(11)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
                 text(truncate(subtitle, 35))
                     .size(9)
                     .font(fonts::REGULAR)
                     .style(crate::theme::muted_text_style),
-                text(meta).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
+                text(meta)
+                    .size(9)
+                    .font(fonts::REGULAR)
+                    .style(crate::theme::subtle_text_style),
             ]
             .spacing(3),
             space::horizontal(),
@@ -1568,7 +1584,10 @@ fn list_scroll<'a>(
         return container(
             column![
                 crate::theme::subtle_icon(Icon::Inbox, 25),
-                text(title).size(11).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+                text(title)
+                    .size(11)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::muted_text_style),
                 text(description)
                     .size(9)
                     .font(fonts::REGULAR)
@@ -1644,7 +1663,10 @@ fn detail_header<'a>(
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
             column![
-                text(title).size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(title)
+                    .size(15)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
                 text(subtitle)
                     .size(9)
                     .font(fonts::REGULAR)
@@ -1719,7 +1741,10 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
                         format!("{} 条", item.world_entries.len())
                     }
                 ),
-                text("标签").size(9).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
+                text("标签")
+                    .size(9)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::subtle_text_style),
                 tags,
             ]
             .spacing(9),
@@ -1958,7 +1983,10 @@ fn preset_detail(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
 fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, ResourceManageMessage> {
     container(
         column![
-            text(title).size(10).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+            text(title)
+                .size(10)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::muted_text_style),
             text(if value.trim().is_empty() {
                 "未填写"
             } else {
@@ -1997,8 +2025,14 @@ fn info_grid_row<'a>(
 fn info_pair<'a>(label: &'static str, value: String) -> Element<'a, ResourceManageMessage> {
     container(
         column![
-            text(label).size(8).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
-            text(value).size(10).font(fonts::MEDIUM).style(crate::theme::text_style),
+            text(label)
+                .size(8)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::subtle_text_style),
+            text(value)
+                .size(10)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::text_style),
         ]
         .spacing(2),
     )
@@ -2023,8 +2057,14 @@ fn metric_card(
                 .align_y(Alignment::Center)
                 .style(move |_theme| accent_surface(accent)),
             column![
-                text(label).size(8).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
-                text(value).size(12).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(label)
+                    .size(8)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::subtle_text_style),
+                text(value)
+                    .size(12)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
             ]
             .spacing(2),
         ]
@@ -2044,9 +2084,15 @@ fn section_heading<'a>(
 ) -> Element<'a, ResourceManageMessage> {
     row![
         icons::icon(icon, 14, BLUE_600),
-        text(title).size(11).font(fonts::MEDIUM).style(crate::theme::text_style),
+        text(title)
+            .size(11)
+            .font(fonts::MEDIUM)
+            .style(crate::theme::text_style),
         space::horizontal(),
-        text(meta).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
+        text(meta)
+            .size(9)
+            .font(fonts::REGULAR)
+            .style(crate::theme::subtle_text_style),
     ]
     .spacing(7)
     .align_y(Alignment::Center)
@@ -2228,7 +2274,10 @@ fn inline_empty(message: &str) -> Element<'_, ResourceManageMessage> {
     container(
         row![
             crate::theme::subtle_icon(Icon::Inbox, 15),
-            text(message).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style),
+            text(message)
+                .size(9)
+                .font(fonts::REGULAR)
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(7)
         .align_y(Alignment::Center),
@@ -2252,7 +2301,10 @@ fn empty_page(
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
-            text(title).size(13).font(fonts::MEDIUM).style(crate::theme::text_style),
+            text(title)
+                .size(13)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::text_style),
             text(description)
                 .size(10)
                 .font(fonts::REGULAR)
@@ -2390,7 +2442,11 @@ fn list_item_style(theme: &Theme, selected: bool, status: button::Status) -> but
             theme.palette().primary.r,
             theme.palette().primary.g,
             theme.palette().primary.b,
-            if crate::theme::is_dark(theme) { 0.24 } else { 0.12 },
+            if crate::theme::is_dark(theme) {
+                0.24
+            } else {
+                0.12
+            },
         )))
     } else if matches!(status, button::Status::Hovered) {
         Some(Background::Color(crate::theme::surface_alt(theme)))

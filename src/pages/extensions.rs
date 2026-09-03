@@ -9,8 +9,8 @@ use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS,
-    SURFACE_ALT, WARNING, WHITE, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS, SURFACE_ALT, WARNING,
+    WHITE, fonts, icons,
 };
 
 use super::versions::VersionState;
@@ -259,7 +259,10 @@ pub fn extensions_view<'a>(
 ) -> Element<'a, ExtensionsMessage> {
     let header = row![
         column![
-            text("扩展管理").size(24).font(fonts::MEDIUM).style(crate::theme::text_style),
+            text("扩展管理")
+                .size(24)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::text_style),
             text("管理酒馆已安装的第三方扩展")
                 .size(12)
                 .font(fonts::REGULAR)
@@ -371,7 +374,10 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
                 .align_y(Alignment::Center),
                 row![
                     crate::theme::subtle_icon(Icon::Folder, 12),
-                    text(path).size(9).font(fonts::REGULAR).style(crate::theme::subtle_text_style),
+                    text(path)
+                        .size(9)
+                        .font(fonts::REGULAR)
+                        .style(crate::theme::subtle_text_style),
                 ]
                 .spacing(5)
                 .align_y(Alignment::Center),
@@ -398,7 +404,10 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
     let header = container(
         row![
             crate::theme::muted_icon(Icon::Puzzle, 18),
-            text("已安装扩展").size(15).font(fonts::MEDIUM).style(crate::theme::text_style),
+            text("已安装扩展")
+                .size(15)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::text_style),
             container(
                 text(format!("{} 项", visible.len()))
                     .size(9)
@@ -640,7 +649,10 @@ fn small_action(
     button(
         row![
             crate::theme::muted_icon(icon, 11),
-            text(label).size(9).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+            text(label)
+                .size(9)
+                .font(fonts::MEDIUM)
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(4)
         .align_y(Alignment::Center),
@@ -749,7 +761,10 @@ fn notice_badge(notice: &str) -> Element<'_, ExtensionsMessage> {
     container(
         row![
             icons::icon(Icon::Info, 11, BLUE_600),
-            text(notice).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style),
+            text(notice)
+                .size(9)
+                .font(fonts::REGULAR)
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(5)
         .align_y(Alignment::Center),
@@ -797,7 +812,11 @@ fn blue_icon_surface(theme: &Theme) -> container::Style {
             theme.palette().primary.r,
             theme.palette().primary.g,
             theme.palette().primary.b,
-            if crate::theme::is_dark(theme) { 0.18 } else { 0.10 },
+            if crate::theme::is_dark(theme) {
+                0.18
+            } else {
+                0.10
+            },
         ))),
         border: Border {
             radius: 9.0.into(),
@@ -838,14 +857,22 @@ fn notice_surface(theme: &Theme) -> container::Style {
             theme.palette().primary.r,
             theme.palette().primary.g,
             theme.palette().primary.b,
-            if crate::theme::is_dark(theme) { 0.14 } else { 0.08 },
+            if crate::theme::is_dark(theme) {
+                0.14
+            } else {
+                0.08
+            },
         ))),
         border: Border {
             color: Color::from_rgba(
                 theme.palette().primary.r,
                 theme.palette().primary.g,
                 theme.palette().primary.b,
-                if crate::theme::is_dark(theme) { 0.38 } else { 0.18 },
+                if crate::theme::is_dark(theme) {
+                    0.38
+                } else {
+                    0.18
+                },
             ),
             width: 1.0,
             radius: 10.0.into(),

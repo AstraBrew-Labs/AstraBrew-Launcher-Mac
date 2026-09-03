@@ -6,7 +6,9 @@ use iced::widget::{button, column, container, image, pick_list, row, scrollable,
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{BLUE_600, ButtonVariant, SUCCESS, ToggleButtonGroupItem, WHITE, fonts, icons, pick_list_handle};
+use astra_ui::{
+    BLUE_600, ButtonVariant, SUCCESS, ToggleButtonGroupItem, WHITE, fonts, icons, pick_list_handle,
+};
 
 use crate::app::Message;
 use crate::lang::text;
@@ -193,7 +195,7 @@ fn home_view<'a>(
             .font(fonts::MEDIUM)
             .style(crate::theme::muted_text_style),
         themed_segmented_group(mode_items, |index| {
-            Message::HomeStartModeSelected(quick_mode_from_index(index))
+            Message::SettingsLaunchModeSelected(quick_mode_from_index(index))
         }),
     ]
     .spacing(6);
@@ -218,7 +220,10 @@ fn home_view<'a>(
             .collect();
 
             column![
-                text("浏览器").size(11).font(fonts::MEDIUM).style(crate::theme::muted_text_style),
+                text("浏览器")
+                    .size(11)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::muted_text_style),
                 themed_segmented_group(browser_items, |index| {
                     Message::HomeBrowserSelected(browser_type_from_index(index))
                 }),
@@ -332,7 +337,7 @@ fn current_quick_mode(state: &SettingsState) -> QuickStartMode {
 }
 
 /// 主页使用的主题感知分段选择器，避免 Astra UI 默认的固定浅色背景。
-fn themed_segmented_group<'a>(
+pub(crate) fn themed_segmented_group<'a>(
     items: Vec<ToggleButtonGroupItem<'a>>,
     on_toggle: impl Fn(usize) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
@@ -347,27 +352,29 @@ fn themed_segmented_group<'a>(
             let mut content = row![].spacing(6).align_y(Alignment::Center);
             if let Some(icon) = icon {
                 let icon_text: iced::widget::Text<'a> = icon.into();
-                content = content.push(
-                    icon_text
-                        .size(15)
-                        .style(move |theme| iced::widget::text::Style {
-                            color: Some(if selected {
-                                WHITE
-                            } else {
-                                crate::theme::text_muted(theme)
-                            }),
+                content = content.push(icon_text.size(15).style(move |theme| {
+                    iced::widget::text::Style {
+                        color: Some(if selected {
+                            WHITE
+                        } else {
+                            crate::theme::text_muted(theme)
                         }),
-                );
+                    }
+                }));
             }
             content = content.push(text(label).size(11).font(fonts::MEDIUM));
-            button(container(content).align_x(Alignment::Center).align_y(Alignment::Center))
-                .height(34)
-                .padding([0, 11])
-                .on_press(on_toggle.clone()(index))
-                .style(move |theme, status| {
-                    segmented_button_style(theme, selected, status, index, item_count)
-                })
-                .into()
+            button(
+                container(content)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            )
+            .height(34)
+            .padding([0, 11])
+            .on_press(on_toggle.clone()(index))
+            .style(move |theme, status| {
+                segmented_button_style(theme, selected, status, index, item_count)
+            })
+            .into()
         })
         .collect::<Vec<_>>();
 
@@ -450,7 +457,10 @@ fn info_item(icon: Icon, label: &'static str, value: &'static str) -> Element<'s
                 .align_y(Alignment::Center)
                 .style(icon_surface),
             column![
-                text(label).size(11).font(fonts::REGULAR).style(crate::theme::muted_text_style),
+                text(label)
+                    .size(11)
+                    .font(fonts::REGULAR)
+                    .style(crate::theme::muted_text_style),
                 text(value).size(13).font(fonts::MEDIUM),
             ]
             .spacing(2),
@@ -502,7 +512,11 @@ fn icon_surface(theme: &Theme) -> iced::widget::container::Style {
             theme.palette().primary.r,
             theme.palette().primary.g,
             theme.palette().primary.b,
-            if crate::theme::is_dark(theme) { 0.18 } else { 0.10 },
+            if crate::theme::is_dark(theme) {
+                0.18
+            } else {
+                0.10
+            },
         ))),
         border: Border {
             radius: 8.0.into(),
@@ -518,7 +532,11 @@ fn status_surface(theme: &Theme) -> iced::widget::container::Style {
             theme.palette().success.r,
             theme.palette().success.g,
             theme.palette().success.b,
-            if crate::theme::is_dark(theme) { 0.18 } else { 0.12 },
+            if crate::theme::is_dark(theme) {
+                0.18
+            } else {
+                0.12
+            },
         ))),
         border: Border {
             radius: 20.0.into(),

@@ -8,9 +8,7 @@ use iced::widget::{button, column, container, row, scrollable, space, stack};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Length, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, fonts, icons,
-};
+use astra_ui::{BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, fonts, icons};
 
 use crate::app::Message;
 use crate::lang::text;
@@ -435,7 +433,10 @@ fn network_dialog(state: &ConsoleState) -> Element<'_, Message> {
             .style(crate::theme::muted_text_style),
         container(
             row![
-                text(url).size(13).font(Font::MONOSPACE).style(crate::theme::text_style),
+                text(url)
+                    .size(13)
+                    .font(Font::MONOSPACE)
+                    .style(crate::theme::text_style),
                 space::horizontal(),
                 button(icons::icon(Icon::ExternalLink, 15, BLUE_600))
                     .padding(7)

@@ -7,12 +7,11 @@ use iced::widget::{button, column, container, row, scrollable, space, tooltip};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS,
-    WHITE, fonts, icons,
-};
 use crate::lang::text;
 use crate::theme::button_style;
+use astra_ui::{
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS, WHITE, fonts, icons,
+};
 
 /// 版本页当前展示的实例类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -305,8 +304,14 @@ fn summary_card<'a>(
     container(
         row![
             column![
-                text(label).size(11).font(fonts::MEDIUM).style(crate::theme::subtle_text_style),
-                text(value).size(24).font(fonts::MEDIUM).style(crate::theme::text_style),
+                text(label)
+                    .size(11)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::subtle_text_style),
+                text(value)
+                    .size(24)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::text_style),
             ]
             .spacing(5),
             space::horizontal(),
@@ -355,7 +360,10 @@ fn notice_badge(notice: &str) -> Element<'_, VersionMessage> {
     container(
         row![
             icons::icon(Icon::Info, 13, BLUE_600),
-            text(notice).size(10).font(fonts::REGULAR).style(crate::theme::muted_text_style),
+            text(notice)
+                .size(10)
+                .font(fonts::REGULAR)
+                .style(crate::theme::muted_text_style),
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -689,9 +697,14 @@ fn panel_header<'a>(
     .align_y(Alignment::Center);
     if let Some(meta) = meta {
         title_row = title_row.push(
-            container(text(meta).size(9).font(fonts::REGULAR).style(crate::theme::muted_text_style))
-                .padding([5, 9])
-                .style(meta_surface),
+            container(
+                text(meta)
+                    .size(9)
+                    .font(fonts::REGULAR)
+                    .style(crate::theme::muted_text_style),
+            )
+            .padding([5, 9])
+            .style(meta_surface),
         );
     }
 
@@ -863,14 +876,22 @@ fn notice_surface(theme: &Theme) -> container::Style {
             theme.palette().primary.r,
             theme.palette().primary.g,
             theme.palette().primary.b,
-            if crate::theme::is_dark(theme) { 0.14 } else { 0.08 },
+            if crate::theme::is_dark(theme) {
+                0.14
+            } else {
+                0.08
+            },
         ))),
         border: Border {
             color: Color::from_rgba(
                 theme.palette().primary.r,
                 theme.palette().primary.g,
                 theme.palette().primary.b,
-                if crate::theme::is_dark(theme) { 0.38 } else { 0.18 },
+                if crate::theme::is_dark(theme) {
+                    0.38
+                } else {
+                    0.18
+                },
             ),
             width: 1.0,
             radius: 12.0.into(),

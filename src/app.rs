@@ -4,6 +4,11 @@
 //! 运行环境初始化，完成后进入主界面（左侧导航栏 + 右侧内容区）。
 //! 界面组件统一来自 astra_ui（Astra UI）组件库。
 
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+
 use iced::time::{self, Duration, Instant};
 use iced::widget::{button, column, container, row, space};
 use iced::{Alignment, Element, Fill, Point, Size, Subscription, Task, Theme, theme, window};
@@ -12,24 +17,28 @@ use lucide_icons::Icon;
 use astra_ui::fonts;
 use astra_ui::icons;
 use astra_ui::{
-    AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500,
-    ChipVariant, INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, WHITE,
-    chip, tag_style,
+    AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500, ChipVariant,
+    INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, WHITE, chip, tag_style,
 };
 
+use crate::core::network::GithubTestEvent;
 use crate::core::settings::{PersistentPreferences, SettingsStore};
 use crate::lang::{effective_language, t, text};
-use crate::theme::button_style;
 use crate::pages::Page;
 use crate::pages::console::{ConsoleMessage, ConsoleState};
 use crate::pages::extensions::{ExtensionsMessage, ExtensionsState};
 use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
+#[cfg(not(test))]
+use crate::pages::settings::EnvironmentVersions;
 use crate::pages::settings::{
-    CpuCores, DisplayLanguage, NpmRegistry, ProxyMode, QuickStartMode, ServerServiceMode,
-    SettingsAction, SettingsState, StartMode, TavernDataMode, TavernVersion, ThemeMode,
+    CpuCores, DisplayLanguage, EnvironmentDependency, EnvironmentTaskState, GithubLiveItem,
+    GithubLiveItemStatus, GithubTestState, NpmRegistry, ProxyMode, QuickStartMode,
+    ServerServiceMode, SettingsAction, SettingsState, StartMode, SystemProxyStatus, TavernDataMode,
+    TavernVersion, ThemeMode,
 };
 use crate::pages::tavern::{BrowserType, TavernMessage, TavernState};
 use crate::pages::versions::{VersionMessage, VersionState};
+use crate::theme::button_style;
 use crate::{pages, sidebar};
 
 /// 应用屏幕：初始化流程 / 主界面。
@@ -139,8 +148,8 @@ pub(crate) enum Message {
     LaunchTavern,
     /// 主页快捷切换酒馆版本
     HomeTavernVersionSelected(TavernVersion),
-    /// 主页快捷切换启动模式
-    HomeStartModeSelected(QuickStartMode),
+    /// 修改酒馆启动模式；主页与设置页共用此消息，主页只提供快捷入口。
+    SettingsLaunchModeSelected(QuickStartMode),
     /// 主页普通模式快捷切换浏览器
     HomeBrowserSelected(BrowserType),
     /// 修改界面语言
@@ -151,7 +160,6 @@ pub(crate) enum Message {
     SettingsRememberWindowPosition(bool),
     SettingsAutoStart(bool),
     SettingsCpuCoresSelected(CpuCores),
-    SettingsStartModeSelected(StartMode),
     SettingsAutoStopTavern(bool),
     SettingsServerMode(bool),
     SettingsServerServiceModeSelected(ServerServiceMode),
@@ -167,6 +175,20 @@ pub(crate) enum Message {
     SettingsCustomProxyChanged(String),
     /// 触发尚待服务层接入的设置操作
     SettingsAction(SettingsAction),
+    /// 驱动 GitHub 连接测试的后台轮询。
+    GithubTestTick(Instant),
+    /// 关闭 GitHub 测试结果。
+    GithubTestClose,
+    /// 消费 GitHub 测试弹窗内部及遮罩点击。
+    GithubTestInteract,
+    /// 安装或更新旧版环境依赖。
+    EnvironmentInstall(EnvironmentDependency),
+    /// 驱动旧版安装任务的日志轮询、超时与自动关闭。
+    EnvironmentTaskTick(Instant),
+    /// 关闭已经完成或超时的安装窗口。
+    EnvironmentTaskClose,
+    /// 消费环境安装弹窗内部及遮罩点击。
+    EnvironmentModalInteract,
     /// 恢复设置页默认值
     SettingsRestoreDefaults,
     /// 更新酒馆配置页的本地配置草稿
@@ -211,6 +233,14 @@ pub struct Launcher {
     last_tick: Option<Instant>,
     /// 设置页面的本地界面状态
     settings: SettingsState,
+    /// 旧版环境安装任务的后台日志通道。
+    environment_task_receiver: Option<Receiver<String>>,
+    /// GitHub 测试完成结果的后台通道。
+    github_test_receiver: Option<Receiver<GithubTestEvent>>,
+    /// 当前 GitHub 测试序号，用于丢弃取消后的旧结果。
+    github_test_id: u64,
+    /// 当前 GitHub 测试的取消信号。
+    github_test_cancel: Option<Arc<AtomicBool>>,
     /// 酒馆配置页面的本地界面状态
     tavern: TavernState,
     /// 版本管理页面的本地界面状态
@@ -247,26 +277,44 @@ impl Launcher {
         });
 
         let mut settings = SettingsState::default();
-        settings.apply_persistent_preferences(preferences);
+        settings.apply_persistent_preferences(&preferences);
+        settings.auto_start = crate::core::auto_launch::is_auto_launch_enabled();
+        if settings.proxy_mode == ProxyMode::System {
+            settings.system_proxy_status = Self::current_system_proxy_status();
+        }
+        // 与旧版一致：应用创建时同步检测全部环境依赖。
+        #[cfg(not(test))]
+        {
+            settings.environment = EnvironmentVersions::detect_all();
+        }
+
+        let mut launcher = Self {
+            screen: Screen::Main,
+            page: Page::Home,
+            stage: InitStage::Welcome,
+            progress: 0.0,
+            last_tick: None,
+            settings,
+            environment_task_receiver: None,
+            github_test_receiver: None,
+            github_test_id: 0,
+            github_test_cancel: None,
+            tavern: TavernState::default(),
+            versions: VersionState::default(),
+            extensions: ExtensionsState::default(),
+            resources: ResourceManageState::default(),
+            console: ConsoleState::default(),
+            launch_requested: false,
+            settings_store,
+            window_position: preferences.window_position,
+            system_theme: theme::Mode::Light,
+        };
+        if launcher.settings.auto_start != preferences.auto_start {
+            launcher.persist_preferences();
+        }
 
         (
-            Self {
-                screen: Screen::Main,
-                page: Page::Home,
-                stage: InitStage::Welcome,
-                progress: 0.0,
-                last_tick: None,
-                settings,
-                tavern: TavernState::default(),
-                versions: VersionState::default(),
-                extensions: ExtensionsState::default(),
-                resources: ResourceManageState::default(),
-                console: ConsoleState::default(),
-                launch_requested: false,
-                settings_store,
-                window_position: preferences.window_position,
-                system_theme: theme::Mode::Light,
-            },
+            launcher,
             Task::batch([
                 detect,
                 iced::system::theme().map(Message::SystemThemeChanged),
@@ -300,9 +348,29 @@ impl Launcher {
             _ => None,
         });
 
+        let environment_timer = if self.settings.environment_task.running
+            || self.settings.environment_task.done_at.is_some()
+        {
+            time::every(Duration::from_millis(100)).map(Message::EnvironmentTaskTick)
+        } else {
+            Subscription::none()
+        };
+
+        let github_test_timer = if self.settings.github_test.running {
+            time::every(Duration::from_millis(100)).map(Message::GithubTestTick)
+        } else {
+            Subscription::none()
+        };
+
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
-        Subscription::batch([init_timer, window_events, system_theme])
+        Subscription::batch([
+            init_timer,
+            environment_timer,
+            github_test_timer,
+            window_events,
+            system_theme,
+        ])
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -355,20 +423,10 @@ impl Launcher {
             Message::HomeTavernVersionSelected(version) => {
                 self.settings.tavern_version = version;
             }
-            Message::HomeStartModeSelected(mode) => match mode {
-                QuickStartMode::Normal => {
-                    self.settings.server_mode_enabled = false;
-                    self.settings.start_mode = StartMode::Normal;
-                }
-                QuickStartMode::Desktop => {
-                    self.settings.server_mode_enabled = false;
-                    self.settings.start_mode = StartMode::Desktop;
-                }
-                QuickStartMode::Server => {
-                    self.settings.server_mode_enabled = true;
-                    self.settings.start_mode = StartMode::Normal;
-                }
-            },
+            Message::SettingsLaunchModeSelected(mode) => {
+                self.apply_launch_mode(mode);
+                self.persist_preferences();
+            }
             Message::HomeBrowserSelected(browser) => {
                 self.tavern.update(TavernMessage::SelectBrowser(browser));
             }
@@ -387,23 +445,31 @@ impl Launcher {
                 }
                 self.persist_preferences();
             }
-            Message::SettingsAutoStart(enabled) => self.settings.auto_start = enabled,
-            Message::SettingsCpuCoresSelected(value) => self.settings.cpu_cores = value,
-            Message::SettingsStartModeSelected(value) => {
-                self.settings.start_mode = if self.settings.server_mode_enabled {
-                    StartMode::Normal
-                } else {
-                    value
-                };
+            Message::SettingsAutoStart(enabled) => {
+                match crate::core::auto_launch::set_auto_launch(enabled) {
+                    Ok(()) => {
+                        self.settings.auto_start = enabled;
+                        self.persist_preferences();
+                    }
+                    Err(error) => {
+                        self.settings.auto_start =
+                            crate::core::auto_launch::is_auto_launch_enabled();
+                        self.persist_preferences();
+                        self.settings.save_error = Some(error);
+                    }
+                }
             }
+            Message::SettingsCpuCoresSelected(value) => self.settings.cpu_cores = value,
             Message::SettingsAutoStopTavern(enabled) => {
                 self.settings.auto_stop_tavern_on_window_close = enabled
             }
             Message::SettingsServerMode(enabled) => {
-                self.settings.server_mode_enabled = enabled;
-                if enabled {
-                    self.settings.start_mode = StartMode::Normal;
-                }
+                self.apply_launch_mode(if enabled {
+                    QuickStartMode::Server
+                } else {
+                    QuickStartMode::Normal
+                });
+                self.persist_preferences();
             }
             Message::SettingsServerServiceModeSelected(value) => {
                 self.settings.server_service_mode = value
@@ -411,34 +477,112 @@ impl Launcher {
             Message::SettingsAllowTavernBackground(enabled) => {
                 self.settings.allow_tavern_background = enabled
             }
-            Message::SettingsDataModeSelected(value) => self.settings.data_mode = value,
+            Message::SettingsDataModeSelected(value) => {
+                self.settings.data_mode = value;
+                self.resources.configure(&self.settings, &self.versions);
+                self.resources.refresh_all();
+                self.persist_preferences();
+            }
             Message::SettingsShowStartupCommand(enabled) => {
                 self.settings.show_startup_command = enabled
             }
             Message::SettingsNpmRegistrySelected(registry) => {
                 self.settings.npm_registry = registry;
+                self.persist_preferences();
             }
             Message::SettingsGithubProxyEnabled(enabled) => {
                 self.settings.github_proxy_enabled = enabled;
                 if enabled {
                     self.settings.proxy_mode = ProxyMode::None;
                 }
+                self.persist_preferences();
             }
-            Message::SettingsGithubProxyUrlChanged(value) => self.settings.github_proxy_url = value,
+            Message::SettingsGithubProxyUrlChanged(value) => {
+                self.settings.github_proxy_url = value;
+                self.persist_preferences();
+            }
             Message::SettingsProxyModeSelected(mode) => {
                 self.settings.proxy_mode = mode;
+                self.settings.system_proxy_status = if mode == ProxyMode::System {
+                    Self::current_system_proxy_status()
+                } else {
+                    SystemProxyStatus::Unknown
+                };
                 if mode != ProxyMode::None {
                     self.settings.github_proxy_enabled = false;
                 }
+                self.persist_preferences();
             }
             Message::SettingsCustomProxyChanged(value) => {
                 self.settings.custom_proxy = value;
+                self.persist_preferences();
             }
-            Message::SettingsAction(action) => {
-                self.settings.last_action = Some(action);
+            Message::SettingsAction(action) => match action {
+                SettingsAction::TestGithub => self.start_github_test(),
+                SettingsAction::OpenLoginItemSettings => {
+                    match crate::core::auto_launch::open_login_item_settings() {
+                        Ok(()) => self.settings.last_action = Some(action),
+                        Err(error) => self.settings.save_error = Some(error),
+                    }
+                }
+                SettingsAction::ChooseExportPath => {
+                    if let Some(path) = Self::pick_directory(&self.settings.tavern_export_path) {
+                        self.settings.tavern_export_path = path;
+                        self.persist_preferences();
+                        self.settings.last_action = Some(action);
+                    }
+                }
+                SettingsAction::ChooseGlobalDataPath => {
+                    if let Some(path) = Self::pick_directory(&self.settings.global_data_path) {
+                        self.settings.global_data_path = path;
+                        self.resources.configure(&self.settings, &self.versions);
+                        self.resources.refresh_all();
+                        self.persist_preferences();
+                        self.settings.last_action = Some(action);
+                    }
+                }
+                _ => self.settings.last_action = Some(action),
+            },
+            Message::GithubTestTick(now) => {
+                self.poll_github_test(now);
             }
+            Message::GithubTestClose => {
+                self.github_test_id = self.github_test_id.wrapping_add(1);
+                if let Some(cancel) = &self.github_test_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.github_test_cancel = None;
+                self.github_test_receiver = None;
+                self.settings.github_test = GithubTestState::default();
+            }
+            Message::GithubTestInteract => {}
+            Message::EnvironmentInstall(dependency) => {
+                self.start_environment_install(dependency);
+            }
+            Message::EnvironmentTaskTick(now) => {
+                self.poll_environment_task(now);
+            }
+            Message::EnvironmentTaskClose => {
+                if !self.settings.environment_task.running {
+                    self.settings.environment_task.show = false;
+                    self.settings.environment_task.timed_out = false;
+                    self.settings.environment_task.failed = false;
+                    self.settings.environment_task.started_at = None;
+                    self.settings.environment_task.done_at = None;
+                }
+            }
+            Message::EnvironmentModalInteract => {}
             Message::SettingsRestoreDefaults => {
+                let environment = self.settings.environment.clone();
                 self.settings = SettingsState::default();
+                self.settings.environment = environment;
+                self.environment_task_receiver = None;
+                if let Some(cancel) = &self.github_test_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.github_test_cancel = None;
+                self.github_test_receiver = None;
+                self.github_test_id = self.github_test_id.wrapping_add(1);
                 self.window_position = None;
                 self.persist_preferences();
             }
@@ -509,6 +653,393 @@ impl Launcher {
         Task::none()
     }
 
+    /// 统一更新启动模式，设置页为唯一状态源，主页仅调用同一入口进行快捷切换。
+    fn apply_launch_mode(&mut self, mode: QuickStartMode) {
+        match mode {
+            QuickStartMode::Normal => {
+                self.settings.server_mode_enabled = false;
+                self.settings.start_mode = StartMode::Normal;
+            }
+            QuickStartMode::Desktop => {
+                self.settings.server_mode_enabled = false;
+                self.settings.start_mode = StartMode::Desktop;
+            }
+            QuickStartMode::Server => {
+                self.settings.server_mode_enabled = true;
+                self.settings.start_mode = StartMode::Normal;
+            }
+        }
+    }
+
+    fn start_github_test(&mut self) {
+        if self.settings.github_test.running {
+            return;
+        }
+
+        self.github_test_id = self.github_test_id.wrapping_add(1);
+        let proxy_mode = match self.settings.proxy_mode {
+            ProxyMode::None => "none",
+            ProxyMode::System => "system",
+            ProxyMode::Custom => "custom",
+        };
+        let proxy_host = self.settings.custom_proxy.clone();
+        let accelerate_url = self
+            .settings
+            .github_proxy_enabled
+            .then(|| self.settings.github_proxy_url.trim().to_owned())
+            .filter(|url| !url.is_empty());
+        let proxy_address = match self.settings.proxy_mode {
+            ProxyMode::None => None,
+            ProxyMode::Custom => (!proxy_host.trim().is_empty()).then_some(proxy_host.clone()),
+            ProxyMode::System => crate::core::network::read_system_proxy()
+                .filter(|(_, enabled)| *enabled)
+                .map(|(address, _)| address),
+        };
+        let mode_label = match (self.settings.proxy_mode, accelerate_url.is_some()) {
+            (ProxyMode::None, false) => "直连",
+            (ProxyMode::System, false) => "系统代理",
+            (ProxyMode::Custom, false) => "自定义代理",
+            (ProxyMode::None, true) => "GitHub 加速",
+            (ProxyMode::System, true) => "系统代理 + GitHub 加速",
+            (ProxyMode::Custom, true) => "自定义代理 + GitHub 加速",
+        };
+
+        if let Some(cancel) = &self.github_test_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        self.github_test_cancel = Some(cancel.clone());
+        self.github_test_receiver = Some(receiver);
+        self.settings.github_test = GithubTestState {
+            show: true,
+            running: true,
+            timed_out: false,
+            results: None,
+            error: None,
+            mode_label: mode_label.to_owned(),
+            proxy_address,
+            accelerate_url: accelerate_url.clone(),
+            started_at: Some(Instant::now()),
+            current_key: None,
+            current_name: None,
+            clone_stage: None,
+            clone_current: None,
+            clone_total: None,
+            clone_percentage: None,
+            download_total_bytes: None,
+            download_downloaded_bytes: 0,
+            download_bytes_per_second: 0,
+            download_percentage: None,
+            live_items: [
+                ("raw", "文件访问"),
+                ("repo", "仓库访问"),
+                ("homepage", "首页访问"),
+                ("api", "API 访问"),
+                ("clone", "仓库克隆"),
+                ("speed", "下载速度"),
+            ]
+            .into_iter()
+            .map(|(key, name)| GithubLiveItem {
+                key: key.to_owned(),
+                name: name.to_owned(),
+                status: GithubLiveItemStatus::Running,
+                result: None,
+            })
+            .collect(),
+        };
+
+        std::thread::spawn(move || {
+            crate::core::network::run_github_test_with_cancel(
+                proxy_mode,
+                &proxy_host,
+                accelerate_url,
+                true,
+                Some(sender),
+                cancel,
+            );
+        });
+    }
+
+    fn poll_github_test(&mut self, now: Instant) {
+        const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+        if self.settings.github_test.running
+            && self
+                .settings
+                .github_test
+                .started_at
+                .is_some_and(|started| now.duration_since(started) >= TEST_TIMEOUT)
+        {
+            self.settings.github_test.running = false;
+            self.settings.github_test.timed_out = true;
+            self.settings.github_test.results = Some(crate::core::network::timeout_results());
+            self.settings.github_test.error = Some("GitHub 连接测试超过 60 秒。".to_owned());
+            if let Some(cancel) = &self.github_test_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.github_test_cancel = None;
+            self.github_test_receiver = None;
+            return;
+        }
+
+        let Some(receiver) = self.github_test_receiver.take() else {
+            return;
+        };
+        let mut keep_receiver = true;
+        loop {
+            match receiver.try_recv() {
+                Ok(GithubTestEvent::ItemStarted { key, name }) => {
+                    self.settings.github_test.current_key = Some(key.clone());
+                    self.settings.github_test.current_name = Some(name.clone());
+                    self.upsert_github_live_item(key, name, GithubLiveItemStatus::Running, None);
+                }
+                Ok(GithubTestEvent::CloneProgress {
+                    stage,
+                    current,
+                    total,
+                    percentage,
+                }) => {
+                    self.settings.github_test.current_key = Some("clone".to_owned());
+                    self.settings.github_test.clone_stage = Some(stage);
+                    self.settings.github_test.clone_current = current;
+                    self.settings.github_test.clone_total = total;
+                    self.settings.github_test.clone_percentage = percentage;
+                }
+                Ok(GithubTestEvent::DownloadProgress {
+                    total_bytes,
+                    downloaded_bytes,
+                    bytes_per_second,
+                    percentage,
+                }) => {
+                    self.settings.github_test.current_key = Some("speed".to_owned());
+                    self.settings.github_test.download_total_bytes = total_bytes;
+                    self.settings.github_test.download_downloaded_bytes = downloaded_bytes;
+                    self.settings.github_test.download_bytes_per_second = bytes_per_second;
+                    self.settings.github_test.download_percentage = percentage;
+                }
+                Ok(GithubTestEvent::ItemFinished(item)) => {
+                    self.upsert_github_live_item(
+                        item.key.clone(),
+                        item.name.clone(),
+                        GithubLiveItemStatus::Finished,
+                        Some(item),
+                    );
+                }
+                Ok(GithubTestEvent::Completed(results)) => {
+                    self.settings.github_test.running = false;
+                    self.settings.github_test.timed_out = false;
+                    self.settings.github_test.results = Some(results);
+                    self.settings.github_test.error = None;
+                    self.settings.github_test.started_at = None;
+                    self.github_test_cancel = None;
+                    keep_receiver = false;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    keep_receiver = false;
+                    if self.settings.github_test.running {
+                        self.settings.github_test.running = false;
+                        self.settings.github_test.results = None;
+                        self.settings.github_test.error =
+                            Some("GitHub 测试进程意外结束。".to_owned());
+                        self.settings.github_test.started_at = None;
+                    }
+                    break;
+                }
+            }
+        }
+        if keep_receiver {
+            self.github_test_receiver = Some(receiver);
+        }
+    }
+
+    fn upsert_github_live_item(
+        &mut self,
+        key: String,
+        name: String,
+        status: GithubLiveItemStatus,
+        result: Option<crate::core::network::GithubMultiTestItem>,
+    ) {
+        if let Some(item) = self
+            .settings
+            .github_test
+            .live_items
+            .iter_mut()
+            .find(|item| item.key == key)
+        {
+            item.status = status;
+            if result.is_some() {
+                item.result = result;
+            }
+        } else {
+            self.settings.github_test.live_items.push(GithubLiveItem {
+                key,
+                name,
+                status,
+                result,
+            });
+        }
+    }
+
+    fn start_environment_install(&mut self, dependency: EnvironmentDependency) {
+        // 旧版 Homebrew 安装按钮本身就是占位入口，保持其原有行为。
+        if dependency == EnvironmentDependency::Homebrew {
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        self.environment_task_receiver = Some(receiver);
+        self.settings.environment_task = EnvironmentTaskState {
+            dependency: Some(dependency),
+            show: true,
+            log: String::new(),
+            running: true,
+            done_at: None,
+            started_at: Some(Instant::now()),
+            timed_out: false,
+            failed: false,
+        };
+
+        std::thread::spawn(move || match dependency {
+            EnvironmentDependency::Git => {
+                crate::core::settings::env_detect::run_brew_install("git", sender)
+            }
+            EnvironmentDependency::NodeJs => {
+                crate::core::settings::env_detect::run_brew_install("node@24", sender)
+            }
+            EnvironmentDependency::Caddy => {
+                crate::core::settings::env_detect::run_brew_install("caddy", sender)
+            }
+            EnvironmentDependency::Pm2 => {
+                crate::core::settings::env_detect::run_npm_install_global("pm2", sender)
+            }
+            EnvironmentDependency::Homebrew => {}
+        });
+    }
+
+    fn poll_environment_task(&mut self, now: Instant) {
+        const TASK_TIMEOUT: Duration = Duration::from_secs(300);
+        const AUTO_CLOSE_DELAY: Duration = Duration::from_secs(3);
+
+        if self.settings.environment_task.running
+            && self
+                .settings
+                .environment_task
+                .started_at
+                .is_some_and(|started| now.duration_since(started) >= TASK_TIMEOUT)
+        {
+            self.settings.environment_task.running = false;
+            self.settings.environment_task.timed_out = true;
+            self.settings.environment_task.done_at = None;
+            self.environment_task_receiver = None;
+            if !self.settings.environment_task.log.is_empty() {
+                self.settings.environment_task.log.push('\n');
+            }
+            self.settings
+                .environment_task
+                .log
+                .push_str("⏰ 安装超时，请稍后重试。");
+            return;
+        }
+
+        let mut keep_receiver = true;
+        if let Some(receiver) = self.environment_task_receiver.take() {
+            loop {
+                match receiver.try_recv() {
+                    Ok(line) if line == "__FAILED__" => {
+                        self.settings.environment_task.running = false;
+                        self.settings.environment_task.failed = true;
+                        self.settings.environment_task.done_at = None;
+                        keep_receiver = false;
+                        break;
+                    }
+                    Ok(line) if line == "__DONE__" => {
+                        self.settings.environment_task.running = false;
+                        if !self.settings.environment_task.log.is_empty() {
+                            self.settings.environment_task.log.push('\n');
+                        }
+                        self.settings
+                            .environment_task
+                            .log
+                            .push_str("✅ 安装完成，3 秒后自动关闭");
+                        self.settings.environment_task.done_at = Some(now);
+                        keep_receiver = false;
+                        break;
+                    }
+                    Ok(line) => {
+                        if let Some(error) = line.strip_prefix("__ERROR__:") {
+                            if !self.settings.environment_task.log.is_empty() {
+                                self.settings.environment_task.log.push('\n');
+                            }
+                            self.settings
+                                .environment_task
+                                .log
+                                .push_str(&format!("❌ {error}"));
+                            continue;
+                        }
+                        if let Some(version) = line.strip_prefix("__VERSION__:") {
+                            if let Some(dependency) = self.settings.environment_task.dependency {
+                                self.settings
+                                    .environment
+                                    .set(dependency, version.to_owned());
+                            }
+                            continue;
+                        }
+                        if !self.settings.environment_task.log.is_empty() {
+                            self.settings.environment_task.log.push('\n');
+                        }
+                        self.settings.environment_task.log.push_str(&line);
+                    }
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        keep_receiver = false;
+                        if self.settings.environment_task.running {
+                            self.settings.environment_task.running = false;
+                            self.settings.environment_task.failed = true;
+                            self.settings.environment_task.timed_out = false;
+                            self.settings
+                                .environment_task
+                                .log
+                                .push_str("\n安装进程意外结束，请关闭窗口后重试。");
+                        }
+                        break;
+                    }
+                }
+            }
+            if keep_receiver {
+                self.environment_task_receiver = Some(receiver);
+            }
+        }
+
+        if self
+            .settings
+            .environment_task
+            .done_at
+            .is_some_and(|done_at| now.duration_since(done_at) >= AUTO_CLOSE_DELAY)
+        {
+            self.settings.environment_task.show = false;
+            self.settings.environment_task.done_at = None;
+            self.settings.environment_task.started_at = None;
+        }
+    }
+
+    fn current_system_proxy_status() -> SystemProxyStatus {
+        match crate::core::network::read_system_proxy() {
+            Some((_, true)) => SystemProxyStatus::Enabled,
+            Some((_, false)) => SystemProxyStatus::Disabled,
+            None => SystemProxyStatus::Unknown,
+        }
+    }
+
+    fn pick_directory(initial: &str) -> Option<String> {
+        let dialog = rfd::FileDialog::new().set_directory(expand_home_path(initial));
+        dialog
+            .pick_folder()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
     /// 保存已接入的偏好，同时把失败原因交给设置页展示。
     fn persist_preferences(&mut self) {
         let preferences = PersistentPreferences {
@@ -520,6 +1051,27 @@ impl Launcher {
             } else {
                 None
             },
+            proxy_mode: match self.settings.proxy_mode {
+                ProxyMode::None => "none".to_owned(),
+                ProxyMode::System => "system".to_owned(),
+                ProxyMode::Custom => "custom".to_owned(),
+            },
+            custom_proxy: self.settings.custom_proxy.clone(),
+            github_proxy_enabled: self.settings.github_proxy_enabled,
+            github_proxy_url: self.settings.github_proxy_url.clone(),
+            npm_registry: self.settings.npm_registry.url().to_owned(),
+            auto_start: self.settings.auto_start,
+            data_mode: match self.settings.data_mode {
+                TavernDataMode::Global => "global".to_owned(),
+                TavernDataMode::Current => "current".to_owned(),
+            },
+            global_data_path: self.settings.global_data_path.clone(),
+            tavern_export_path: self.settings.tavern_export_path.clone(),
+            start_mode: match self.settings.start_mode {
+                StartMode::Normal => "normal".to_owned(),
+                StartMode::Desktop => "desktop".to_owned(),
+            },
+            server_mode_enabled: self.settings.server_mode_enabled,
         };
         self.settings.save_error = self
             .settings_store
@@ -773,11 +1325,25 @@ impl Launcher {
     }
 }
 
+fn expand_home_path(path: &str) -> PathBuf {
+    let trimmed = path.trim();
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(trimmed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{InitStage, Launcher, Message};
+    use crate::core::network::GithubTestEvent;
     use crate::core::settings::{PersistentPreferences, SettingsStore};
-    use crate::pages::settings::{DisplayLanguage, StartMode, ThemeMode};
+    use crate::pages::settings::{
+        DisplayLanguage, EnvironmentDependency, EnvironmentTaskState, GithubTestState, ProxyMode,
+        QuickStartMode, StartMode, ThemeMode,
+    };
 
     fn test_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -832,12 +1398,205 @@ mod tests {
         let _ = launcher.update(Message::SettingsLanguageSelected(DisplayLanguage::English));
         assert_eq!(launcher.title(), "AstraBrew Launcher");
         let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
-        let _ = launcher.update(Message::SettingsStartModeSelected(StartMode::Desktop));
+        let _ = launcher.update(Message::SettingsLaunchModeSelected(QuickStartMode::Desktop));
         let _ = launcher.update(Message::SettingsRestoreDefaults);
 
         assert_eq!(launcher.settings.language, DisplayLanguage::System);
         assert_eq!(launcher.settings.start_mode, StartMode::Normal);
         assert!(launcher.settings.remember_window_position);
+    }
+
+    #[test]
+    fn environment_task_failure_is_not_reported_as_success() {
+        let mut launcher = launcher();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let now = iced::time::Instant::now();
+        launcher.environment_task_receiver = Some(receiver);
+        launcher.settings.environment_task = EnvironmentTaskState {
+            dependency: Some(EnvironmentDependency::Git),
+            show: true,
+            log: String::new(),
+            running: true,
+            done_at: None,
+            started_at: Some(now),
+            timed_out: false,
+            failed: false,
+        };
+        sender
+            .send("__ERROR__:命令执行失败（退出码：7）".into())
+            .expect("send error");
+        sender.send("__FAILED__".into()).expect("send failure");
+
+        let _ = launcher.update(Message::EnvironmentTaskTick(now));
+        assert!(launcher.settings.environment_task.failed);
+        assert!(!launcher.settings.environment_task.running);
+        assert!(
+            launcher
+                .settings
+                .environment_task
+                .log
+                .contains("命令执行失败")
+        );
+        assert!(launcher.settings.environment_task.done_at.is_none());
+    }
+
+    #[test]
+    fn github_test_timeout_keeps_results_and_does_not_report_success() {
+        let mut launcher = launcher();
+        let now = iced::time::Instant::now();
+        launcher.settings.github_test = GithubTestState {
+            show: true,
+            running: true,
+            mode_label: "直连".into(),
+            started_at: Some(now),
+            ..GithubTestState::default()
+        };
+
+        let _ = launcher.update(Message::GithubTestTick(
+            now + iced::time::Duration::from_secs(61),
+        ));
+        assert!(!launcher.settings.github_test.running);
+        assert!(launcher.settings.github_test.timed_out);
+        assert_eq!(
+            launcher
+                .settings
+                .github_test
+                .results
+                .as_ref()
+                .unwrap()
+                .len(),
+            6
+        );
+    }
+
+    #[test]
+    fn closing_github_test_invalidates_the_current_receiver() {
+        let mut launcher = launcher();
+        launcher.settings.github_test.show = true;
+        launcher.settings.github_test.running = true;
+        let old_id = launcher.github_test_id;
+
+        let _ = launcher.update(Message::GithubTestClose);
+        assert!(!launcher.settings.github_test.show);
+        assert!(launcher.github_test_id != old_id);
+        assert!(launcher.github_test_receiver.is_none());
+    }
+
+    #[test]
+    fn github_progress_events_update_clone_and_download_state() {
+        let mut launcher = launcher();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let now = iced::time::Instant::now();
+        launcher.github_test_receiver = Some(receiver);
+        launcher.settings.github_test = GithubTestState {
+            show: true,
+            running: true,
+            started_at: Some(now),
+            live_items: [("clone", "仓库克隆"), ("speed", "下载速度")]
+                .into_iter()
+                .map(|(key, name)| crate::pages::settings::GithubLiveItem {
+                    key: key.into(),
+                    name: name.into(),
+                    status: crate::pages::settings::GithubLiveItemStatus::Running,
+                    result: None,
+                })
+                .collect(),
+            ..GithubTestState::default()
+        };
+        sender
+            .send(GithubTestEvent::CloneProgress {
+                stage: "Receiving objects".into(),
+                current: Some(42),
+                total: Some(100),
+                percentage: Some(42.0),
+            })
+            .expect("send clone progress");
+        sender
+            .send(GithubTestEvent::DownloadProgress {
+                total_bytes: Some(10_000),
+                downloaded_bytes: 2_500,
+                bytes_per_second: 1_024,
+                percentage: Some(25.0),
+            })
+            .expect("send download progress");
+
+        let _ = launcher.update(Message::GithubTestTick(now));
+        assert_eq!(
+            launcher.settings.github_test.clone_stage.as_deref(),
+            Some("Receiving objects")
+        );
+        assert_eq!(launcher.settings.github_test.clone_percentage, Some(42.0));
+        assert_eq!(
+            launcher.settings.github_test.download_total_bytes,
+            Some(10_000)
+        );
+        assert_eq!(
+            launcher.settings.github_test.download_downloaded_bytes,
+            2_500
+        );
+        assert_eq!(
+            launcher.settings.github_test.download_bytes_per_second,
+            1_024
+        );
+        assert_eq!(
+            launcher.settings.github_test.download_percentage,
+            Some(25.0)
+        );
+    }
+
+    #[test]
+    fn environment_task_applies_version_and_auto_closes() {
+        let mut launcher = launcher();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let now = iced::time::Instant::now();
+        launcher.environment_task_receiver = Some(receiver);
+        launcher.settings.environment_task = EnvironmentTaskState {
+            dependency: Some(EnvironmentDependency::Git),
+            show: true,
+            log: String::new(),
+            running: true,
+            done_at: None,
+            started_at: Some(now),
+            timed_out: false,
+            failed: false,
+        };
+        sender
+            .send("__VERSION__:2.47.0".into())
+            .expect("send version");
+        sender.send("__DONE__".into()).expect("send completion");
+
+        let _ = launcher.update(Message::EnvironmentTaskTick(now));
+        assert_eq!(launcher.settings.environment.git.as_deref(), Some("2.47.0"));
+        assert!(!launcher.settings.environment_task.running);
+        assert!(launcher.settings.environment_task.show);
+
+        let _ = launcher.update(Message::EnvironmentTaskTick(
+            now + iced::time::Duration::from_secs(4),
+        ));
+        assert!(!launcher.settings.environment_task.show);
+    }
+
+    #[test]
+    fn homebrew_install_keeps_the_old_placeholder_behavior() {
+        let mut launcher = launcher();
+        let _ = launcher.update(Message::EnvironmentInstall(EnvironmentDependency::Homebrew));
+        assert!(launcher.environment_task_receiver.is_none());
+        assert!(!launcher.settings.environment_task.show);
+    }
+
+    #[test]
+    fn proxy_mode_is_saved_and_restored() {
+        let path = test_path("proxy-mode");
+        let (store, _) = SettingsStore::load(&path);
+        let mut launcher = Launcher::new(store, PersistentPreferences::default()).0;
+        let _ = launcher.update(Message::SettingsProxyModeSelected(ProxyMode::System));
+
+        let (_, preferences) = SettingsStore::load(&path);
+        assert_eq!(preferences.proxy_mode, "system");
+        let (store, preferences) = SettingsStore::load(&path);
+        let restored = Launcher::new(store, preferences).0;
+        assert_eq!(restored.settings.proxy_mode, ProxyMode::System);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -859,10 +1618,9 @@ mod tests {
         let _ = launcher.update(Message::WindowMoved(iced::Point::new(-320.0, 96.0)));
         let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
 
-        let document: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(&path).expect("read persisted settings"),
-        )
-        .expect("parse persisted settings");
+        let document: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read persisted settings"))
+                .expect("parse persisted settings");
         assert_eq!(document["remember_window_pos"], false);
         assert!(document["window_position"].is_null());
         let _ = std::fs::remove_file(path);
@@ -873,9 +1631,15 @@ mod tests {
         let mut launcher = launcher();
         let _ = launcher.update(Message::SettingsThemeSelected(ThemeMode::Light));
         let _ = launcher.update(Message::SystemThemeChanged(iced::theme::Mode::Dark));
-        assert_eq!(launcher.theme().palette().background, crate::theme::light_theme().palette().background);
+        assert_eq!(
+            launcher.theme().palette().background,
+            crate::theme::light_theme().palette().background
+        );
 
         let _ = launcher.update(Message::SettingsThemeSelected(ThemeMode::System));
-        assert_eq!(launcher.theme().palette().background, crate::theme::dark_theme().palette().background);
+        assert_eq!(
+            launcher.theme().palette().background,
+            crate::theme::dark_theme().palette().background
+        );
     }
 }

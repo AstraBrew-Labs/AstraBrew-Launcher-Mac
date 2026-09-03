@@ -1,12 +1,12 @@
 //! 启动器浅色与深色语义主题。
 
-use iced::theme;
+use astra_ui::AlertKind;
 use astra_ui::ButtonVariant;
-use iced::widget::{button, column, container, pick_list, row, space, stack, text_input};
+use iced::theme;
 use iced::widget::overlay::menu;
+use iced::widget::{button, column, container, pick_list, row, space, stack, text_input};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use lucide_icons::Icon;
-use astra_ui::AlertKind;
 
 use crate::core::settings::ThemeMode;
 
@@ -128,17 +128,13 @@ pub fn subtle_text_style(theme: &Theme) -> iced::widget::text::Style {
 /// 主题感知的弱化图标，避免直接传入固定浅色 token。
 pub fn muted_icon<'a, Message: 'a>(glyph: Icon, size: u32) -> Element<'a, Message> {
     let icon: iced::widget::Text<'a> = glyph.into();
-    icon.size(size)
-        .style(muted_text_style)
-        .into()
+    icon.size(size).style(muted_text_style).into()
 }
 
 /// 主题感知的次要图标，适用于路径、占位和禁用态。
 pub fn subtle_icon<'a, Message: 'a>(glyph: Icon, size: u32) -> Element<'a, Message> {
     let icon: iced::widget::Text<'a> = glyph.into();
-    icon.size(size)
-        .style(subtle_text_style)
-        .into()
+    icon.size(size).style(subtle_text_style).into()
 }
 
 /// 主题感知的强调色图标，适用于当前选中项。
@@ -209,13 +205,11 @@ pub fn alert<'a, Message: 'a>(
         AlertKind::Warning => theme.palette().warning,
         AlertKind::Danger => theme.palette().danger,
     };
-    let indicator = container(
-        iced::widget::Text::from(icon)
-            .size(17)
-            .style(move |theme| iced::widget::text::Style {
-                color: Some(accent(theme)),
-            }),
-    )
+    let indicator = container(iced::widget::Text::from(icon).size(17).style(move |theme| {
+        iced::widget::text::Style {
+            color: Some(accent(theme)),
+        }
+    }))
     .width(32)
     .height(32)
     .align_x(iced::Alignment::Center)
@@ -387,32 +381,49 @@ pub fn button_style(variant: ButtonVariant) -> impl Fn(&Theme, button::Status) -
         let palette = theme.palette();
         let (background, text_color, outlined) = match variant {
             ButtonVariant::Primary => (
-                Some(if hovered { lighten(palette.primary, 0.08) } else { palette.primary }),
+                Some(if hovered {
+                    lighten(palette.primary, 0.08)
+                } else {
+                    palette.primary
+                }),
                 Color::WHITE,
                 false,
             ),
             ButtonVariant::Secondary => (
-                Some(if hovered { lighten(surface_alt(theme), 0.06) } else { surface_alt(theme) }),
+                Some(if hovered {
+                    lighten(surface_alt(theme), 0.06)
+                } else {
+                    surface_alt(theme)
+                }),
                 palette.primary,
                 false,
             ),
             ButtonVariant::Tertiary => (
-                Some(if hovered { lighten(surface_alt(theme), 0.06) } else { surface_alt(theme) }),
+                Some(if hovered {
+                    lighten(surface_alt(theme), 0.06)
+                } else {
+                    surface_alt(theme)
+                }),
                 text(theme),
                 false,
             ),
-            ButtonVariant::Ghost => (
-                hovered.then(|| surface_alt(theme)),
-                text(theme),
-                false,
-            ),
+            ButtonVariant::Ghost => (hovered.then(|| surface_alt(theme)), text(theme), false),
             ButtonVariant::Destructive => (
-                Some(if hovered { lighten(palette.danger, 0.06) } else { palette.danger }),
+                Some(if hovered {
+                    lighten(palette.danger, 0.06)
+                } else {
+                    palette.danger
+                }),
                 Color::WHITE,
                 false,
             ),
             ButtonVariant::DangerSoft => (
-                Some(Color::from_rgba(palette.danger.r, palette.danger.g, palette.danger.b, if hovered { 0.24 } else { 0.16 })),
+                Some(Color::from_rgba(
+                    palette.danger.r,
+                    palette.danger.g,
+                    palette.danger.b,
+                    if hovered { 0.24 } else { 0.16 },
+                )),
                 palette.danger,
                 false,
             ),
@@ -455,20 +466,38 @@ pub fn button_style(variant: ButtonVariant) -> impl Fn(&Theme, button::Status) -
 /// 主题感知输入框样式。
 pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
-    let hovered = matches!(status, text_input::Status::Hovered | text_input::Status::Focused { is_hovered: true });
+    let hovered = matches!(
+        status,
+        text_input::Status::Hovered | text_input::Status::Focused { is_hovered: true }
+    );
     let disabled = matches!(status, text_input::Status::Disabled);
     let palette = theme.palette();
     text_input::Style {
-        background: Background::Color(if disabled { surface_alt(theme) } else { surface(theme) }),
+        background: Background::Color(if disabled {
+            surface_alt(theme)
+        } else {
+            surface(theme)
+        }),
         border: Border {
-            color: if focused { palette.primary } else if hovered { lighten(palette.primary, 0.08) } else { line(theme) },
+            color: if focused {
+                palette.primary
+            } else if hovered {
+                lighten(palette.primary, 0.08)
+            } else {
+                line(theme)
+            },
             width: if focused { 2.0 } else { 1.0 },
             radius: 10.0.into(),
         },
         icon: palette.primary,
         placeholder: text_subtle(theme),
         value: text(theme),
-        selection: Color::from_rgba(palette.primary.r, palette.primary.g, palette.primary.b, 0.25),
+        selection: Color::from_rgba(
+            palette.primary.r,
+            palette.primary.g,
+            palette.primary.b,
+            0.25,
+        ),
     }
 }
 
@@ -480,10 +509,20 @@ pub fn pick_list_style(theme: &Theme, status: pick_list::Status) -> pick_list::S
     pick_list::Style {
         text_color: text(theme),
         placeholder_color: text_subtle(theme),
-        handle_color: if opened { palette.primary } else { text_muted(theme) },
+        handle_color: if opened {
+            palette.primary
+        } else {
+            text_muted(theme)
+        },
         background: Background::Color(surface(theme)),
         border: Border {
-            color: if opened { palette.primary } else if hovered { lighten(palette.primary, 0.08) } else { line(theme) },
+            color: if opened {
+                palette.primary
+            } else if hovered {
+                lighten(palette.primary, 0.08)
+            } else {
+                line(theme)
+            },
             width: if opened { 2.0 } else { 1.0 },
             radius: 10.0.into(),
         },

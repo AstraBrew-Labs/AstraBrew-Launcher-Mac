@@ -148,7 +148,11 @@ fn nav_item_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
 
         button::Style {
             background,
-            text_color: if active { theme.palette().primary } else { crate::theme::text_muted(theme) },
+            text_color: if active {
+                theme.palette().primary
+            } else {
+                crate::theme::text_muted(theme)
+            },
             border: Border {
                 radius: NAV_RADIUS.into(),
                 ..Border::default()
