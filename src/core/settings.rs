@@ -76,6 +76,8 @@ pub struct PersistentPreferences {
     pub github_proxy_url: String,
     /// 旧版 npmRegistry 配置。
     pub npm_registry: String,
+    /// 酒馆下载渠道：auto、mirror1、mirror2、official。
+    pub download_channel: String,
     /// 是否启用软件自启动。
     pub auto_start: bool,
     /// 酒馆数据模式：global 或 current。
@@ -88,6 +90,8 @@ pub struct PersistentPreferences {
     pub start_mode: String,
     /// 是否启用服务器模式。
     pub server_mode_enabled: bool,
+    /// 用户是否已经确认过 staging 开发版风险提示。
+    pub staging_risk_confirmed: bool,
 }
 
 impl Default for PersistentPreferences {
@@ -102,12 +106,14 @@ impl Default for PersistentPreferences {
             github_proxy_enabled: false,
             github_proxy_url: "https://ghfast.top/".to_owned(),
             npm_registry: "https://registry.npmmirror.com/".to_owned(),
+            download_channel: "auto".to_owned(),
             auto_start: false,
             data_mode: "current".to_owned(),
             global_data_path: "~/Library/Application Support/AstraBrew/data".to_owned(),
             tavern_export_path: "~/Downloads".to_owned(),
             start_mode: "normal".to_owned(),
             server_mode_enabled: false,
+            staging_risk_confirmed: false,
         }
     }
 }
@@ -159,16 +165,12 @@ impl SettingsStore {
             serde_json::to_value(preferences.window_position).map_err(io::Error::other)?,
         );
         self.document.insert(
-            "github_proxy_enabled".into(),
-            Value::Bool(preferences.github_proxy_enabled),
-        );
-        self.document.insert(
-            "github_proxy_url".into(),
-            Value::String(preferences.github_proxy_url),
-        );
-        self.document.insert(
             "npm_registry".into(),
             Value::String(preferences.npm_registry),
+        );
+        self.document.insert(
+            "download_channel".into(),
+            Value::String(preferences.download_channel),
         );
         self.document
             .insert("auto_start".into(), Value::Bool(preferences.auto_start));
@@ -193,6 +195,10 @@ impl SettingsStore {
             Value::Bool(preferences.server_mode_enabled),
         );
         self.document.insert(
+            "staging_risk_confirmed".into(),
+            Value::Bool(preferences.staging_risk_confirmed),
+        );
+        self.document.insert(
             "proxy_type".into(),
             Value::String(legacy_proxy_type(&preferences.proxy_mode).to_owned()),
         );
@@ -215,8 +221,12 @@ impl SettingsStore {
             "dataMode",
             "globalDataPath",
             "tavernExportPath",
+            "downloadChannel",
+            "downloadResolvedChannel",
+            "downloadChannelLastTested",
             "startMode",
             "serverModeEnabled",
+            "stagingRiskConfirmed",
         ] {
             self.document.remove(key);
         }
@@ -314,6 +324,12 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         .filter(|url| !url.trim().is_empty())
         .unwrap_or(&defaults.npm_registry)
         .to_owned();
+    let download_channel = document
+        .get("download_channel")
+        .or_else(|| document.get("downloadChannel"))
+        .and_then(Value::as_str)
+        .map(normalize_download_channel)
+        .unwrap_or_else(|| defaults.download_channel.clone());
     let auto_start = document
         .get("auto_start")
         .or_else(|| document.get("autoStart"))
@@ -351,6 +367,11 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         .or_else(|| document.get("serverModeEnabled"))
         .and_then(Value::as_bool)
         .unwrap_or(defaults.server_mode_enabled);
+    let staging_risk_confirmed = document
+        .get("staging_risk_confirmed")
+        .or_else(|| document.get("stagingRiskConfirmed"))
+        .and_then(Value::as_bool)
+        .unwrap_or(defaults.staging_risk_confirmed);
 
     PersistentPreferences {
         language,
@@ -362,12 +383,14 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         github_proxy_enabled,
         github_proxy_url,
         npm_registry,
+        download_channel,
         auto_start,
         data_mode,
         global_data_path,
         tavern_export_path,
         start_mode,
         server_mode_enabled,
+        staging_risk_confirmed,
     }
 }
 
@@ -385,6 +408,16 @@ fn normalize_proxy_type(value: &str) -> String {
         "none" | "direct" | "off" | "关闭" | "直连" => "none".to_owned(),
         "custom" | "自定义" | "自定义代理" => "custom".to_owned(),
         _ => "system".to_owned(),
+    }
+}
+
+fn normalize_download_channel(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "mirror1" | "mirror_1" | "镜像1" | "镜像 1" => "mirror1".to_owned(),
+        "mirror2" | "mirror_2" | "镜像2" | "镜像 2" => "mirror2".to_owned(),
+        "mirror3" | "mirror_3" | "镜像3" | "镜像 3" => "mirror3".to_owned(),
+        "official" | "官方" => "official".to_owned(),
+        _ => "auto".to_owned(),
     }
 }
 
@@ -493,7 +526,7 @@ mod tests {
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).expect("read settings"))
                 .expect("parse settings");
-        assert_eq!(value["proxy_mode"], "system");
+        assert_eq!(value["proxy_type"], "System");
         assert_eq!(value["custom_proxy"], "127.0.0.1:7890");
         let _ = fs::remove_file(path);
     }

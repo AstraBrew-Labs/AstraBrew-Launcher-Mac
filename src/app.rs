@@ -21,7 +21,10 @@ use astra_ui::{
     INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, WHITE, chip, tag_style,
 };
 
-use crate::core::network::GithubTestEvent;
+use crate::core::network::{
+    DownloadChannel, DownloadChannelTestEvent, GithubTestEvent, SillyTavernCatalog,
+    SillyTavernInstallEvent, SillyTavernInstallTarget,
+};
 use crate::core::settings::{PersistentPreferences, SettingsStore};
 use crate::lang::{effective_language, t, text};
 use crate::pages::Page;
@@ -31,13 +34,13 @@ use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
 #[cfg(not(test))]
 use crate::pages::settings::EnvironmentVersions;
 use crate::pages::settings::{
-    CpuCores, DisplayLanguage, EnvironmentDependency, EnvironmentTaskState, GithubLiveItem,
-    GithubLiveItemStatus, GithubTestState, NpmRegistry, ProxyMode, QuickStartMode,
-    ServerServiceMode, SettingsAction, SettingsState, StartMode, SystemProxyStatus, TavernDataMode,
-    TavernVersion, ThemeMode,
+    CpuCores, DisplayLanguage, DownloadChannelTestState, EnvironmentDependency,
+    EnvironmentTaskState, GithubLiveItem, GithubLiveItemStatus, GithubTestState, NpmRegistry,
+    ProxyMode, QuickStartMode, ServerServiceMode, SettingsAction, SettingsState, StartMode,
+    SystemProxyStatus, TavernDataMode, TavernVersion, ThemeMode,
 };
 use crate::pages::tavern::{BrowserType, TavernMessage, TavernState};
-use crate::pages::versions::{VersionMessage, VersionState};
+use crate::pages::versions::{TavernBranch, VersionMessage, VersionState};
 use crate::theme::button_style;
 use crate::{pages, sidebar};
 
@@ -168,8 +171,8 @@ pub(crate) enum Message {
     SettingsShowStartupCommand(bool),
     /// 修改 NPM 软件源
     SettingsNpmRegistrySelected(NpmRegistry),
-    SettingsGithubProxyEnabled(bool),
-    SettingsGithubProxyUrlChanged(String),
+    /// 修改酒馆下载渠道。
+    SettingsDownloadChannelSelected(DownloadChannel),
     /// 修改网络代理模式
     SettingsProxyModeSelected(ProxyMode),
     SettingsCustomProxyChanged(String),
@@ -181,6 +184,12 @@ pub(crate) enum Message {
     GithubTestClose,
     /// 消费 GitHub 测试弹窗内部及遮罩点击。
     GithubTestInteract,
+    /// 驱动酒馆下载渠道自动测速。
+    DownloadChannelTestTick(Instant),
+    /// 关闭酒馆下载渠道测速弹窗。
+    DownloadChannelTestClose,
+    /// 消费下载渠道测速弹窗内部及遮罩点击。
+    DownloadChannelTestInteract,
     /// 安装或更新旧版环境依赖。
     EnvironmentInstall(EnvironmentDependency),
     /// 驱动旧版安装任务的日志轮询、超时与自动关闭。
@@ -217,6 +226,10 @@ pub(crate) enum Message {
     SystemThemeChanged(theme::Mode),
     /// 定时器消息，驱动初始化进度
     Tick(Instant),
+    /// 驱动在线版本列表后台任务。
+    VersionCatalogTick,
+    /// 驱动在线酒馆安装后台任务和完成倒计时。
+    VersionInstallTick,
 }
 
 /// 应用状态
@@ -241,6 +254,16 @@ pub struct Launcher {
     github_test_id: u64,
     /// 当前 GitHub 测试的取消信号。
     github_test_cancel: Option<Arc<AtomicBool>>,
+    /// 酒馆下载渠道测速后台事件通道。
+    download_channel_test_receiver: Option<Receiver<DownloadChannelTestEvent>>,
+    /// 当前下载渠道测速的取消信号。
+    download_channel_test_cancel: Option<Arc<AtomicBool>>,
+    /// 在线版本列表后台结果通道。
+    version_catalog_receiver: Option<Receiver<Result<SillyTavernCatalog, String>>>,
+    /// 在线酒馆安装后台事件通道。
+    version_install_receiver: Option<Receiver<SillyTavernInstallEvent>>,
+    /// 在线酒馆安装取消信号。
+    version_install_cancel: Option<Arc<AtomicBool>>,
     /// 酒馆配置页面的本地界面状态
     tavern: TavernState,
     /// 版本管理页面的本地界面状态
@@ -278,6 +301,19 @@ impl Launcher {
 
         let mut settings = SettingsState::default();
         settings.apply_persistent_preferences(&preferences);
+        if let Some(cache) = crate::core::network::load_download_channel_cache() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs())
+                .unwrap_or_default();
+            if cache.is_valid_at(now) {
+                settings.download_resolved_channel = Some(cache.resolved_channel);
+                settings.download_channel_last_tested = Some(cache.tested_at);
+                // 复用上次测速明细，打开设置时不需要再次请求网络。
+                settings.download_channel_test.results = cache.results;
+            }
+        }
         settings.auto_start = crate::core::auto_launch::is_auto_launch_enabled();
         if settings.proxy_mode == ProxyMode::System {
             settings.system_proxy_status = Self::current_system_proxy_status();
@@ -286,6 +322,12 @@ impl Launcher {
         #[cfg(not(test))]
         {
             settings.environment = EnvironmentVersions::detect_all();
+        }
+
+        let mut versions = VersionState::default();
+        versions.set_staging_risk_confirmed(preferences.staging_risk_confirmed);
+        if let Some(installed) = crate::core::network::installed_sillytavern_state() {
+            versions.restore_installed(&installed);
         }
 
         let mut launcher = Self {
@@ -299,8 +341,13 @@ impl Launcher {
             github_test_receiver: None,
             github_test_id: 0,
             github_test_cancel: None,
+            download_channel_test_receiver: None,
+            download_channel_test_cancel: None,
+            version_catalog_receiver: None,
+            version_install_receiver: None,
+            version_install_cancel: None,
             tavern: TavernState::default(),
-            versions: VersionState::default(),
+            versions,
             extensions: ExtensionsState::default(),
             resources: ResourceManageState::default(),
             console: ConsoleState::default(),
@@ -309,6 +356,8 @@ impl Launcher {
             window_position: preferences.window_position,
             system_theme: theme::Mode::Light,
         };
+        // 应用启动即加载默认稳定版目录，避免用户必须进入页面后点击安装才能恢复状态。
+        launcher.start_version_catalog_load(false);
         if launcher.settings.auto_start != preferences.auto_start {
             launcher.persist_preferences();
         }
@@ -362,12 +411,40 @@ impl Launcher {
             Subscription::none()
         };
 
+        let download_channel_timer = if self.settings.download_channel_test.running
+            || self.settings.download_channel_test.done_at.is_some()
+        {
+            time::every(Duration::from_millis(100)).map(Message::DownloadChannelTestTick)
+        } else {
+            Subscription::none()
+        };
+
+        let version_catalog_timer = if self.version_catalog_receiver.is_some()
+            || self.versions.online_status == crate::pages::versions::OnlineVersionsStatus::Loading
+        {
+            time::every(Duration::from_millis(100)).map(|_| Message::VersionCatalogTick)
+        } else {
+            Subscription::none()
+        };
+        let version_install_timer =
+            if self.version_install_receiver.is_some() || self.versions.install_task.running {
+                time::every(Duration::from_millis(100)).map(|_| Message::VersionInstallTick)
+            } else if self.versions.install_task.auto_close_ticks > 0 {
+                // 成功后的倒计时按秒驱动，确保弹窗在 3 秒后而不是 0.3 秒后关闭。
+                time::every(Duration::from_secs(1)).map(|_| Message::VersionInstallTick)
+            } else {
+                Subscription::none()
+            };
+
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
         Subscription::batch([
             init_timer,
             environment_timer,
             github_test_timer,
+            download_channel_timer,
+            version_catalog_timer,
+            version_install_timer,
             window_events,
             system_theme,
         ])
@@ -395,6 +472,9 @@ impl Launcher {
                 if page == Page::Resources {
                     self.resources.configure(&self.settings, &self.versions);
                     self.resources.refresh_all();
+                }
+                if page == Page::Version {
+                    self.start_version_catalog_load(false);
                 }
                 if page == Page::Console {
                     self.console.network_mode = if self.settings.server_mode_enabled {
@@ -490,16 +570,21 @@ impl Launcher {
                 self.settings.npm_registry = registry;
                 self.persist_preferences();
             }
-            Message::SettingsGithubProxyEnabled(enabled) => {
-                self.settings.github_proxy_enabled = enabled;
-                if enabled {
-                    self.settings.proxy_mode = ProxyMode::None;
+            Message::SettingsDownloadChannelSelected(channel) => {
+                self.settings.download_channel = channel;
+                if channel == DownloadChannel::Auto {
+                    self.persist_preferences();
+                    if !self.settings.download_channel_cache_valid() {
+                        self.start_download_channel_test();
+                    }
+                } else {
+                    // 手动渠道切换只改变当前使用渠道，不覆盖自动模式的缓存结果。
+                    // 这样用户之后切回“自动”时仍可复用原有缓存，而不会重复测速；
+                    // “自动”按钮也会继续展示缓存对应的实际渠道。
+                    self.cancel_download_channel_test();
+                    self.settings.download_channel_test = DownloadChannelTestState::default();
+                    self.persist_preferences();
                 }
-                self.persist_preferences();
-            }
-            Message::SettingsGithubProxyUrlChanged(value) => {
-                self.settings.github_proxy_url = value;
-                self.persist_preferences();
             }
             Message::SettingsProxyModeSelected(mode) => {
                 self.settings.proxy_mode = mode;
@@ -508,9 +593,6 @@ impl Launcher {
                 } else {
                     SystemProxyStatus::Unknown
                 };
-                if mode != ProxyMode::None {
-                    self.settings.github_proxy_enabled = false;
-                }
                 self.persist_preferences();
             }
             Message::SettingsCustomProxyChanged(value) => {
@@ -541,6 +623,11 @@ impl Launcher {
                         self.settings.last_action = Some(action);
                     }
                 }
+                SettingsAction::RefreshDownloadChannel => {
+                    self.settings.download_channel = DownloadChannel::Auto;
+                    self.persist_preferences();
+                    self.start_download_channel_test();
+                }
                 _ => self.settings.last_action = Some(action),
             },
             Message::GithubTestTick(now) => {
@@ -556,6 +643,14 @@ impl Launcher {
                 self.settings.github_test = GithubTestState::default();
             }
             Message::GithubTestInteract => {}
+            Message::DownloadChannelTestTick(now) => {
+                self.poll_download_channel_test(now);
+            }
+            Message::DownloadChannelTestClose => {
+                self.cancel_download_channel_test();
+                self.settings.download_channel_test = DownloadChannelTestState::default();
+            }
+            Message::DownloadChannelTestInteract => {}
             Message::EnvironmentInstall(dependency) => {
                 self.start_environment_install(dependency);
             }
@@ -583,11 +678,19 @@ impl Launcher {
                 self.github_test_cancel = None;
                 self.github_test_receiver = None;
                 self.github_test_id = self.github_test_id.wrapping_add(1);
+                self.cancel_download_channel_test();
+                if let Some(cancel) = &self.version_install_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.version_install_receiver = None;
+                self.version_install_cancel = None;
                 self.window_position = None;
                 self.persist_preferences();
             }
             Message::Tavern(message) => self.tavern.update(message),
-            Message::Version(message) => self.versions.update(message),
+            Message::Version(message) => self.handle_version_message(message),
+            Message::VersionCatalogTick => self.poll_version_catalog(),
+            Message::VersionInstallTick => self.poll_version_install(),
             Message::Extensions(message) => self.extensions.update(message),
             Message::Resources(message) => {
                 self.resources.configure(&self.settings, &self.versions);
@@ -626,6 +729,10 @@ impl Launcher {
                 self.window_position = Some([position.x, position.y]);
             }
             Message::WindowCloseRequested(id) => {
+                // 酒馆安装期间弹窗不可关闭，也不允许通过窗口关闭绕过安装流程。
+                if self.versions.install_task.running {
+                    return Task::none();
+                }
                 if self.settings.remember_window_position {
                     self.persist_preferences();
                 }
@@ -653,6 +760,504 @@ impl Launcher {
         Task::none()
     }
 
+    fn persist_staging_risk_confirmation(&mut self) {
+        let preferences = PersistentPreferences {
+            staging_risk_confirmed: self.versions.staging_risk_confirmed,
+            ..self.current_preferences()
+        };
+        self.settings.save_error = self
+            .settings_store
+            .save(preferences)
+            .err()
+            .map(|error| error.to_string());
+    }
+
+    fn current_preferences(&self) -> PersistentPreferences {
+        PersistentPreferences {
+            language: self.settings.language,
+            theme: self.settings.theme,
+            remember_window_position: self.settings.remember_window_position,
+            window_position: if self.settings.remember_window_position {
+                self.window_position
+            } else {
+                None
+            },
+            proxy_mode: match self.settings.proxy_mode {
+                ProxyMode::None => "none".to_owned(),
+                ProxyMode::System => "system".to_owned(),
+                ProxyMode::Custom => "custom".to_owned(),
+            },
+            custom_proxy: self.settings.custom_proxy.clone(),
+            github_proxy_enabled: self.settings.github_proxy_enabled,
+            github_proxy_url: self.settings.github_proxy_url.clone(),
+            npm_registry: self.settings.npm_registry.url().to_owned(),
+            download_channel: self.settings.download_channel.key().to_owned(),
+            auto_start: self.settings.auto_start,
+            data_mode: match self.settings.data_mode {
+                TavernDataMode::Global => "global".to_owned(),
+                TavernDataMode::Current => "current".to_owned(),
+            },
+            global_data_path: self.settings.global_data_path.clone(),
+            tavern_export_path: self.settings.tavern_export_path.clone(),
+            start_mode: match self.settings.start_mode {
+                StartMode::Normal => "normal".to_owned(),
+                StartMode::Desktop => "desktop".to_owned(),
+            },
+            server_mode_enabled: self.settings.server_mode_enabled,
+            staging_risk_confirmed: self.versions.staging_risk_confirmed,
+        }
+    }
+
+    /// 开始读取酒馆在线版本；版本页内部只负责发送 RefreshOnline，网络逻辑集中在应用层。
+    fn start_version_catalog_load(&mut self, force: bool) {
+        if self.version_catalog_receiver.is_some() || (!force && self.versions.branch_loaded) {
+            return;
+        }
+        self.versions.update(VersionMessage::RefreshOnline);
+        let (sender, receiver) = mpsc::channel();
+        self.version_catalog_receiver = Some(receiver);
+        let branch = self.versions.branch.name().to_owned();
+        let channel = self.settings.download_channel;
+        let proxy_mode = match self.settings.proxy_mode {
+            ProxyMode::None => "none".to_owned(),
+            ProxyMode::System => "system".to_owned(),
+            ProxyMode::Custom => "custom".to_owned(),
+        };
+        let proxy_host = self.settings.custom_proxy.clone();
+        std::thread::spawn(move || {
+            let result = crate::core::network::fetch_sillytavern_catalog(
+                &branch,
+                channel,
+                &proxy_mode,
+                &proxy_host,
+            );
+            let _ = sender.send(result);
+        });
+    }
+
+    /// 将网络层的版本模型转换为版本页面模型。
+    fn apply_version_catalog(&mut self, catalog: SillyTavernCatalog) {
+        let installed = crate::core::network::installed_sillytavern_state();
+        self.versions
+            .set_online_instance_exists(installed.is_some());
+        let installed_tag = installed
+            .as_ref()
+            .and_then(|state| state.tag_name.as_deref());
+        let installed_staging =
+            installed.as_ref().and_then(|state| state.branch.as_deref()) == Some("staging");
+        let releases = catalog
+            .releases
+            .into_iter()
+            .map(|release| {
+                let is_installed = installed_tag == Some(release.tag_name.as_str());
+                crate::pages::versions::OnlineRelease {
+                    version: release.version,
+                    tag_name: release.tag_name,
+                    published_at: release.published_at,
+                    created_at: release.created_at,
+                    body: release.body.clone(),
+                    summary: release.body,
+                    installed: is_installed,
+                    mirror_available: release.mirror_available,
+                }
+            })
+            .collect::<Vec<_>>();
+        self.versions.update(VersionMessage::OnlineVersionsLoaded {
+            branch: if catalog.branch == "staging" {
+                TavernBranch::Staging
+            } else {
+                TavernBranch::Release
+            },
+            releases,
+            staging: catalog.staging,
+            last_sync: format_version_sync_time(catalog.cached_at),
+            from_cache: catalog.used_stale_cache,
+        });
+        self.versions.set_staging_installed(installed_staging);
+        if installed_staging && self.versions.branch == TavernBranch::Staging {
+            if let Some(staging) = self.versions.staging.as_ref() {
+                self.versions.current_version = Some("staging".to_owned());
+                self.versions.online_instance_path = Some(
+                    crate::core::network::sillytavern_install_dir()
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                self.versions.current_path = self.versions.online_instance_path.clone();
+                self.versions.current_source = Some(crate::pages::versions::VersionSource::Online);
+                let _ = staging;
+            }
+        }
+    }
+
+    /// 处理版本页消息并启动后台网络任务。
+    fn handle_version_message(&mut self, message: VersionMessage) {
+        match &message {
+            VersionMessage::RefreshOnline => {
+                self.start_version_catalog_load(true);
+                return;
+            }
+            VersionMessage::SelectBranch(_branch) => {
+                // 分支选择只切换页面上下文并加载对应信息，不自动修改本地 Git 工作目录。
+                // 真正切换 release/staging 必须由用户点击对应的安装或切换按钮确认。
+                let previous = self.versions.branch;
+                self.versions.update(message);
+                if self.versions.branch != previous {
+                    self.start_version_catalog_load(true);
+                }
+                return;
+            }
+            VersionMessage::ConfirmStagingRisk => {
+                // 风险确认只确认开发版选择，不触发安装；安装仍由用户主动点击按钮启动。
+                self.versions.update(message);
+                self.persist_staging_risk_confirmation();
+                self.start_version_catalog_load(true);
+                return;
+            }
+            VersionMessage::SelectTab(crate::pages::versions::VersionTab::Online) => {
+                self.versions.update(message);
+                self.start_version_catalog_load(false);
+                return;
+            }
+            VersionMessage::SwitchOnline(version) => {
+                let installed = crate::core::network::installed_sillytavern_state();
+                let needs_install = if version == "staging" {
+                    installed.as_ref().and_then(|state| state.branch.as_deref()) != Some("staging")
+                } else {
+                    let target_tag = self
+                        .versions
+                        .online_releases
+                        .iter()
+                        .find(|release| release.version == *version)
+                        .map(|release| release.tag_name.as_str());
+                    installed
+                        .as_ref()
+                        .and_then(|state| state.tag_name.as_deref())
+                        != target_tag
+                };
+                if needs_install {
+                    if version == "staging" {
+                        self.versions
+                            .update(VersionMessage::InstallBranch("staging".to_owned()));
+                        self.start_version_install_target(
+                            SillyTavernInstallTarget::Branch("staging".to_owned()),
+                            "staging".to_owned(),
+                        );
+                    } else if let Some(release) = self
+                        .versions
+                        .online_releases
+                        .iter()
+                        .find(|release| release.version == *version)
+                        .cloned()
+                    {
+                        self.versions
+                            .update(VersionMessage::InstallOnline(version.clone()));
+                        self.start_version_install(release);
+                    }
+                } else {
+                    self.versions.update(message);
+                }
+                return;
+            }
+            VersionMessage::InstallBranch(branch) => {
+                let branch_name = branch.clone();
+                self.versions.update(message);
+                self.start_version_install_target(
+                    SillyTavernInstallTarget::Branch(branch_name.clone()),
+                    branch_name,
+                );
+                return;
+            }
+            VersionMessage::InstallOnline(version) => {
+                let release = self
+                    .versions
+                    .online_releases
+                    .iter()
+                    .find(|release| release.version == *version)
+                    .cloned();
+                self.versions.update(message);
+                if let Some(release) = release {
+                    self.start_version_install(release);
+                }
+                return;
+            }
+            _ => {}
+        }
+        self.versions.update(message);
+    }
+
+    /// 启动在线酒馆安装任务。弹窗先由状态更新显示，再在后台执行 git/npm。
+    fn start_version_install(&mut self, release: crate::pages::versions::OnlineRelease) {
+        self.start_version_install_target(
+            SillyTavernInstallTarget::Tag(release.tag_name),
+            release.version,
+        );
+    }
+
+    fn start_version_install_target(
+        &mut self,
+        target_ref: SillyTavernInstallTarget,
+        display_version: String,
+    ) {
+        if self.version_install_receiver.is_some() {
+            return;
+        }
+        let channel = self.settings.download_channel;
+        let target = crate::core::network::sillytavern_install_dir();
+        let npm_registry = self.settings.npm_registry.url().to_owned();
+        let proxy_mode = match self.settings.proxy_mode {
+            ProxyMode::None => "none".to_owned(),
+            ProxyMode::System => "system".to_owned(),
+            ProxyMode::Custom => "custom".to_owned(),
+        };
+        let proxy_host = self.settings.custom_proxy.clone();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        self.version_install_cancel = Some(cancel.clone());
+        self.version_install_receiver = Some(receiver);
+        if self.versions.install_task.version.as_deref() != Some(display_version.as_str()) {
+            self.versions
+                .update(VersionMessage::InstallDownloadStarted(display_version));
+        }
+        std::thread::spawn(move || {
+            crate::core::network::run_sillytavern_install_with_cancel(
+                target_ref,
+                target,
+                channel,
+                npm_registry,
+                proxy_mode,
+                proxy_host,
+                sender,
+                cancel,
+            );
+        });
+    }
+
+    /// 消费在线版本请求结果。
+    fn poll_version_catalog(&mut self) {
+        let Some(receiver) = self.version_catalog_receiver.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(Ok(catalog)) => self.apply_version_catalog(catalog),
+            Ok(Err(error)) => self
+                .versions
+                .update(VersionMessage::OnlineVersionsFailed(error)),
+            Err(TryRecvError::Empty) => {
+                self.versions.update(VersionMessage::TickLoading);
+                self.version_catalog_receiver = Some(receiver);
+            }
+            Err(TryRecvError::Disconnected) => self.versions.update(
+                VersionMessage::OnlineVersionsFailed("版本任务已中断".to_owned()),
+            ),
+        }
+    }
+
+    /// 消费 git/npm 安装日志，并在成功后按规则切换当前在线实例。
+    fn poll_version_install(&mut self) {
+        let Some(receiver) = self.version_install_receiver.take() else {
+            self.versions.update(VersionMessage::InstallTaskTick);
+            return;
+        };
+        let mut keep = true;
+        let mut completed_this_tick = false;
+        while let Ok(event) = receiver.try_recv() {
+            match event {
+                SillyTavernInstallEvent::Log(log) => {
+                    self.versions.update(VersionMessage::InstallLog(log));
+                }
+                SillyTavernInstallEvent::DownloadComplete => {
+                    self.versions
+                        .update(VersionMessage::InstallDownloadCompleted);
+                }
+                SillyTavernInstallEvent::InstallStarted => {
+                    self.versions
+                        .update(VersionMessage::InstallDependenciesStarted);
+                }
+                SillyTavernInstallEvent::Cancelled => {
+                    self.versions
+                        .update(VersionMessage::InstallFailed("安装已取消".to_owned()));
+                    keep = false;
+                }
+                SillyTavernInstallEvent::Completed(result) => {
+                    match result {
+                        Ok(()) => {
+                            self.versions.update(VersionMessage::InstallCompleted);
+                            if let Some(installed) =
+                                crate::core::network::installed_sillytavern_state()
+                            {
+                                self.versions.restore_installed(&installed);
+                            }
+                        }
+                        Err(error) => self.versions.update(VersionMessage::InstallFailed(error)),
+                    }
+                    self.version_install_cancel = None;
+                    completed_this_tick = true;
+                    keep = false;
+                }
+            }
+        }
+        if keep {
+            self.version_install_receiver = Some(receiver);
+        }
+        if !completed_this_tick {
+            self.versions.update(VersionMessage::InstallTaskTick);
+        }
+        if !self.versions.install_task.visible {
+            self.version_install_receiver = None;
+            self.version_install_cancel = None;
+        }
+    }
+
+    fn cancel_download_channel_test(&mut self) {
+        if let Some(cancel) = &self.download_channel_test_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.download_channel_test_cancel = None;
+        self.download_channel_test_receiver = None;
+    }
+
+    fn start_download_channel_test(&mut self) {
+        if self.settings.download_channel_test.running {
+            return;
+        }
+        if let Some(cancel) = &self.download_channel_test_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let proxy_mode = match self.settings.proxy_mode {
+            ProxyMode::None => "none",
+            ProxyMode::System => "system",
+            ProxyMode::Custom => "custom",
+        };
+        let proxy_host = self.settings.custom_proxy.clone();
+        self.download_channel_test_cancel = Some(cancel.clone());
+        self.download_channel_test_receiver = Some(receiver);
+        self.settings.download_channel_test = DownloadChannelTestState {
+            show: true,
+            running: true,
+            timed_out: false,
+            all_failed: false,
+            started_at: Some(Instant::now()),
+            done_at: None,
+            current_channel: None,
+            clone_stage: None,
+            clone_current: None,
+            clone_total: None,
+            clone_percentage: None,
+            results: Vec::new(),
+        };
+        std::thread::spawn(move || {
+            crate::core::network::run_download_channel_test(
+                proxy_mode,
+                &proxy_host,
+                Some(sender),
+                cancel,
+            );
+        });
+    }
+
+    fn poll_download_channel_test(&mut self, now: Instant) {
+        const TEST_TIMEOUT: Duration = Duration::from_secs(60);
+        const AUTO_CLOSE_DELAY: Duration = Duration::from_secs(3);
+        if !self.settings.download_channel_test.running
+            && self
+                .settings
+                .download_channel_test
+                .done_at
+                .is_some_and(|done_at| now.duration_since(done_at) >= AUTO_CLOSE_DELAY)
+        {
+            self.settings.download_channel_test.show = false;
+            self.settings.download_channel_test.done_at = None;
+            return;
+        }
+        if self.settings.download_channel_test.running
+            && self
+                .settings
+                .download_channel_test
+                .started_at
+                .is_some_and(|started| now.duration_since(started) >= TEST_TIMEOUT)
+        {
+            self.settings.download_channel_test.running = false;
+            self.settings.download_channel_test.timed_out = true;
+            self.settings.download_channel_test.done_at = Some(now);
+            if let Some(cancel) = &self.download_channel_test_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.download_channel_test_cancel = None;
+            self.download_channel_test_receiver = None;
+            return;
+        }
+
+        let Some(receiver) = self.download_channel_test_receiver.take() else {
+            return;
+        };
+        let mut keep_receiver = true;
+        loop {
+            match receiver.try_recv() {
+                Ok(DownloadChannelTestEvent::ChannelStarted { channel }) => {
+                    self.settings.download_channel_test.current_channel = Some(channel);
+                    self.settings.download_channel_test.clone_stage = None;
+                    self.settings.download_channel_test.clone_current = None;
+                    self.settings.download_channel_test.clone_total = None;
+                    self.settings.download_channel_test.clone_percentage = None;
+                }
+                Ok(DownloadChannelTestEvent::CloneProgress {
+                    channel,
+                    stage,
+                    current,
+                    total,
+                    percentage,
+                }) => {
+                    self.settings.download_channel_test.current_channel = Some(channel);
+                    self.settings.download_channel_test.clone_stage = Some(stage);
+                    self.settings.download_channel_test.clone_current = current;
+                    self.settings.download_channel_test.clone_total = total;
+                    self.settings.download_channel_test.clone_percentage = percentage;
+                }
+                Ok(DownloadChannelTestEvent::ChannelFinished(result)) => {
+                    self.settings.download_channel_test.results.push(result);
+                }
+                Ok(DownloadChannelTestEvent::Completed {
+                    selected,
+                    results,
+                    all_failed,
+                }) => {
+                    self.settings.download_channel_test.running = false;
+                    self.settings.download_channel_test.done_at = Some(now);
+                    self.settings.download_channel_test.all_failed = all_failed;
+                    self.settings.download_channel_test.results = results.clone();
+                    self.settings.download_resolved_channel = Some(selected);
+                    self.settings.download_channel_last_tested = None;
+                    match crate::core::network::save_download_channel_cache(selected, &results) {
+                        Ok(cache) => {
+                            self.settings.download_channel_last_tested = Some(cache.tested_at);
+                        }
+                        Err(error) => {
+                            self.settings.save_error =
+                                Some(format!("无法保存下载渠道缓存：{error}"));
+                        }
+                    }
+                    self.download_channel_test_cancel = None;
+                    self.persist_preferences();
+                    keep_receiver = false;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    keep_receiver = false;
+                    self.settings.download_channel_test.running = false;
+                    self.settings.download_channel_test.timed_out = true;
+                    self.settings.download_channel_test.done_at = Some(now);
+                    break;
+                }
+            }
+        }
+        if keep_receiver {
+            self.download_channel_test_receiver = Some(receiver);
+        }
+    }
+
     /// 统一更新启动模式，设置页为唯一状态源，主页仅调用同一入口进行快捷切换。
     fn apply_launch_mode(&mut self, mode: QuickStartMode) {
         match mode {
@@ -672,10 +1277,9 @@ impl Launcher {
     }
 
     fn start_github_test(&mut self) {
-        if self.settings.github_test.running {
+        if self.settings.github_test.running || self.settings.download_channel_test.running {
             return;
         }
-
         self.github_test_id = self.github_test_id.wrapping_add(1);
         let proxy_mode = match self.settings.proxy_mode {
             ProxyMode::None => "none",
@@ -683,11 +1287,9 @@ impl Launcher {
             ProxyMode::Custom => "custom",
         };
         let proxy_host = self.settings.custom_proxy.clone();
-        let accelerate_url = self
-            .settings
-            .github_proxy_enabled
-            .then(|| self.settings.github_proxy_url.trim().to_owned())
-            .filter(|url| !url.is_empty());
+        // GitHub 连接测试固定测试官方仓库，不受酒馆下载渠道选择影响。
+        let selected_channel = DownloadChannel::Official;
+        let accelerate_url = None;
         let proxy_address = match self.settings.proxy_mode {
             ProxyMode::None => None,
             ProxyMode::Custom => (!proxy_host.trim().is_empty()).then_some(proxy_host.clone()),
@@ -695,13 +1297,10 @@ impl Launcher {
                 .filter(|(_, enabled)| *enabled)
                 .map(|(address, _)| address),
         };
-        let mode_label = match (self.settings.proxy_mode, accelerate_url.is_some()) {
-            (ProxyMode::None, false) => "直连",
-            (ProxyMode::System, false) => "系统代理",
-            (ProxyMode::Custom, false) => "自定义代理",
-            (ProxyMode::None, true) => "GitHub 加速",
-            (ProxyMode::System, true) => "系统代理 + GitHub 加速",
-            (ProxyMode::Custom, true) => "自定义代理 + GitHub 加速",
+        let mode_label = match self.settings.proxy_mode {
+            ProxyMode::None => "直连".to_owned(),
+            ProxyMode::System => "系统代理".to_owned(),
+            ProxyMode::Custom => "自定义代理".to_owned(),
         };
 
         if let Some(cancel) = &self.github_test_cancel {
@@ -750,9 +1349,10 @@ impl Launcher {
         };
 
         std::thread::spawn(move || {
-            crate::core::network::run_github_test_with_cancel(
+            crate::core::network::run_github_test_with_cancel_for_channel(
                 proxy_mode,
                 &proxy_host,
+                selected_channel,
                 accelerate_url,
                 true,
                 Some(sender),
@@ -1060,6 +1660,7 @@ impl Launcher {
             github_proxy_enabled: self.settings.github_proxy_enabled,
             github_proxy_url: self.settings.github_proxy_url.clone(),
             npm_registry: self.settings.npm_registry.url().to_owned(),
+            download_channel: self.settings.download_channel.key().to_owned(),
             auto_start: self.settings.auto_start,
             data_mode: match self.settings.data_mode {
                 TavernDataMode::Global => "global".to_owned(),
@@ -1072,6 +1673,7 @@ impl Launcher {
                 StartMode::Desktop => "desktop".to_owned(),
             },
             server_mode_enabled: self.settings.server_mode_enabled,
+            staging_risk_confirmed: self.versions.staging_risk_confirmed,
         };
         self.settings.save_error = self
             .settings_store
@@ -1107,7 +1709,7 @@ impl Launcher {
     /// 主界面视图：左侧导航栏 + 右侧内容区。
     fn main_view(&self) -> Element<'_, Message> {
         row![
-            sidebar::sidebar(self.page),
+            sidebar::sidebar(self.page, &self.versions),
             pages::page_view(
                 self.page,
                 &self.settings,
@@ -1325,6 +1927,21 @@ impl Launcher {
     }
 }
 
+fn format_version_sync_time(timestamp: u64) -> String {
+    if timestamp == 0 {
+        return "未知".to_owned();
+    }
+    // macOS 自带 date，使用本地时间显示缓存写入时间，不会触发网络请求。
+    std::process::Command::new("date")
+        .args(["-r", &timestamp.to_string(), "+%Y-%m-%d %H:%M"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
 fn expand_home_path(path: &str) -> PathBuf {
     let trimmed = path.trim();
     if let Some(rest) = trimmed.strip_prefix("~/") {
@@ -1338,11 +1955,13 @@ fn expand_home_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{InitStage, Launcher, Message};
-    use crate::core::network::GithubTestEvent;
+    use crate::core::network::{
+        DownloadChannel, DownloadChannelTestEvent, DownloadChannelTestResult, GithubTestEvent,
+    };
     use crate::core::settings::{PersistentPreferences, SettingsStore};
     use crate::pages::settings::{
-        DisplayLanguage, EnvironmentDependency, EnvironmentTaskState, GithubTestState, ProxyMode,
-        QuickStartMode, StartMode, ThemeMode,
+        DisplayLanguage, DownloadChannelTestState, EnvironmentDependency, EnvironmentTaskState,
+        GithubTestState, ProxyMode, QuickStartMode, StartMode, ThemeMode,
     };
 
     fn test_path(name: &str) -> std::path::PathBuf {
@@ -1585,6 +2204,60 @@ mod tests {
     }
 
     #[test]
+    fn download_channel_result_is_cached_and_modal_auto_closes() {
+        let mut launcher = launcher();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let now = iced::time::Instant::now();
+        launcher.download_channel_test_receiver = Some(receiver);
+        launcher.settings.download_channel_test = DownloadChannelTestState {
+            show: true,
+            running: true,
+            started_at: Some(now),
+            ..DownloadChannelTestState::default()
+        };
+        sender
+            .send(DownloadChannelTestEvent::Completed {
+                selected: DownloadChannel::Mirror1,
+                results: vec![
+                    DownloadChannelTestResult {
+                        channel: DownloadChannel::Mirror1,
+                        success: true,
+                        latency_ms: Some(100),
+                        error: None,
+                    },
+                    DownloadChannelTestResult {
+                        channel: DownloadChannel::Mirror2,
+                        success: true,
+                        latency_ms: Some(200),
+                        error: None,
+                    },
+                    DownloadChannelTestResult {
+                        channel: DownloadChannel::Official,
+                        success: true,
+                        latency_ms: Some(300),
+                        error: None,
+                    },
+                ],
+                all_failed: false,
+            })
+            .expect("send channel result");
+
+        let _ = launcher.update(Message::DownloadChannelTestTick(now));
+        assert_eq!(
+            launcher.settings.download_resolved_channel,
+            Some(DownloadChannel::Mirror1)
+        );
+        // 测试环境可能限制写入用户级 Caches 目录；运行时会在 macOS 用户目录中写入缓存。
+        assert!(launcher.settings.download_channel_test.show);
+        assert!(launcher.settings.download_channel_test.done_at.is_some());
+
+        let _ = launcher.update(Message::DownloadChannelTestTick(
+            now + iced::time::Duration::from_secs(4),
+        ));
+        assert!(!launcher.settings.download_channel_test.show);
+    }
+
+    #[test]
     fn proxy_mode_is_saved_and_restored() {
         let path = test_path("proxy-mode");
         let (store, _) = SettingsStore::load(&path);
@@ -1597,16 +2270,6 @@ mod tests {
         let restored = Launcher::new(store, preferences).0;
         assert_eq!(restored.settings.proxy_mode, ProxyMode::System);
         let _ = std::fs::remove_file(path);
-    }
-
-    #[test]
-    fn proxy_and_github_acceleration_are_mutually_exclusive() {
-        let mut launcher = launcher();
-        let _ = launcher.update(Message::SettingsGithubProxyEnabled(true));
-        let _ = launcher.update(Message::SettingsProxyModeSelected(
-            crate::pages::settings::ProxyMode::System,
-        ));
-        assert!(!launcher.settings.github_proxy_enabled);
     }
 
     #[test]

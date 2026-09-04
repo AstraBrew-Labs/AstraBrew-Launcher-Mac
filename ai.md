@@ -34,10 +34,10 @@ astra_ui文档：https://docs.rs/iced-astraui/0.0.1
 │   │   ├── settings.json 默认酒馆WebUI配置文件
 │   ├── config.yaml 默认酒馆配置文件
 ├── data 用户数据目录
-│   ├── sillytavern 全局统一酒馆数据目录，在线酒馆实例
+│   ├── sillytavern 全局统一酒馆数据目录
 │   │   ├── settings.json 全局统一酒馆WebUI设置
 │   ├── config.yaml 全局统一酒馆配置文件
-├── sillytavern 酒馆核心文件目录
+├── sillytavern 酒馆核心文件目录，在线酒馆实例
 ├── settings.json 配置文件
 
 缓存数据目录结构

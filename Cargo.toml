@@ -7,7 +7,7 @@ license = "MIT"
 publish = false
 
 [dependencies]
-iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"] }
+iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "markdown", "tokio"] }
 lucide-icons = { version = "1.31.0", features = ["iced"] }
 # Astra UI 组件库：从 GitHub beta 分支引入（包名为 iced-astraui，crate 名为 astra_ui）
 astra_ui = { git = "https://github.com/AstraBrew-Labs/iced-astraui", branch = "beta", package = "iced-astraui" }

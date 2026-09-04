@@ -13,7 +13,7 @@ use astra_ui::{
     WHITE, fonts, icons,
 };
 
-use super::versions::VersionState;
+use super::versions::{VersionSource, VersionState};
 use crate::lang::text;
 use crate::theme::button_style;
 
@@ -344,10 +344,9 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
                 .map(|instance| instance.path.as_str())
         })
         .unwrap_or("AstraBrew Launcher 管理的在线实例");
-    let source = if versions.current_path.is_some() || path.starts_with('/') {
-        "本地导入"
-    } else {
-        "在线下载"
+    let source = match versions.current_source {
+        Some(VersionSource::Online) => "在线下载",
+        _ => "本地导入",
     };
 
     container(

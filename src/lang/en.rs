@@ -17,6 +17,21 @@ pub fn translate_owned(content: &str) -> String {
         "版本:" => "Version:",
         "本地实例" => "Local Instance",
         "在线实例" => "Online Instance",
+        "本地" => "Local",
+        "在线" => "Online",
+        "安装" => "Install",
+        "切换到此版本" => "Switch to This Version",
+        "镜像已同步" => "Mirror synced",
+        "镜像未同步，将使用直连" => "Mirror not synced; direct connection will be used",
+        "正在获取在线版本…" => "Fetching online versions…",
+        "在线版本列表已更新。" => "Online version list updated.",
+        "当前显示的是旧缓存版本。" => "Showing stale cached versions.",
+        "在线版本获取失败" => "Unable to fetch online versions",
+        "重新获取" => "Retry",
+        "酒馆安装" => "Install Tavern",
+        "下载完成，3 秒后开始安装…" => {
+            "Download complete; installation starts in 3 seconds…"
+        }
         "未设置" => "Not Set",
         "一键启动" => "Launch",
         "启动" => "Start",
@@ -86,6 +101,17 @@ pub fn translate_owned(content: &str) -> String {
         "控制台设置" => "Console Settings",
         "环境依赖" => "Dependencies",
         "GitHub 设置" | "Github 设置" => "GitHub Settings",
+        "下载设置" => "Download Settings",
+        "酒馆下载渠道" => "Tavern Download Channel",
+        "酒馆下载渠道测速" => "Tavern Download Channel Test",
+        "自动测速缓存" => "Automatic Test Cache",
+        "测速结果缓存 7 天；缓存有效期内不会重复测速。" => {
+            "Test results are cached for 7 days; no repeat test is needed while valid."
+        }
+        "缓存有效" => "Cache valid",
+        "尚未测速" => "Not tested",
+        "测速中…" => "Testing…",
+        "重新测速" => "Test Again",
         "网络设置" => "Network Settings",
         "软件与更新" => "Software & Updates",
         "扫描占用核心数" => "CPU Cores Used for Scanning",
@@ -97,11 +123,15 @@ pub fn translate_owned(content: &str) -> String {
         }
         "正常模式" => "Normal Mode",
         "桌面模式" => "Desktop Mode",
+        "自动" => "Automatic",
+        "镜像 1" => "Mirror 1",
+        "镜像 2" => "Mirror 2",
+        "镜像 3" => "Mirror 3",
+        "官方" => "Official",
         "服务器模式" => "Server Mode",
         "普通模式" => "Normal Mode",
         "局域网" => "LAN",
         "互联网" => "Internet",
-        "自动" => "Automatic",
         "全局数据" | "全局" => "Shared Data",
         "独立数据" | "独立" => "Independent Data",
         "关闭酒馆窗口自动停止服务" => "Stop Service When Tavern Window Closes",
@@ -116,6 +146,37 @@ pub fn translate_owned(content: &str) -> String {
             "Default folder for resources exported from Tavern in Desktop mode."
         }
         "待开发" => "Coming Soon",
+        "选择酒馆核心下载、安装与更新时使用的仓库渠道。" => {
+            "Choose the repository channel used to download, install, and update Tavern."
+        }
+        "镜像 1：" => "Mirror 1: ",
+        "镜像 2：" => "Mirror 2: ",
+        "镜像 3：" => "Mirror 3: ",
+        "官方：" => "Official: ",
+        "镜像 1：官方仓库的镜像，国内速度比较快，但版本同步会晚一些。" => {
+            "Mirror 1: A mirror of the official repository. Relatively fast in China, but updates may lag."
+        }
+        "镜像 2：官方仓库的备用镜像，国内速度较快，但版本同步会晚一些。" => {
+            "Mirror 2: A backup mirror of the official repository. Faster in China, but updates may lag."
+        }
+        "镜像 3：官方仓库的备用镜像，国内速度较快，但版本同步会慢很多。" => {
+            "Mirror 3: A backup mirror of the official repository. Fast in China, but synchronization is much slower."
+        }
+        "官方：官方仓库直连，国内速度较慢，但版本更新最快。" => {
+            "Official: Direct connection to the official repository. Slower in China, but updates arrive fastest."
+        }
+        "自动选择速度最快且可用的下载渠道。" => {
+            "Automatically choose the fastest available channel."
+        }
+        "官方仓库的镜像，国内速度较快，但版本同步会晚一些。" => {
+            "A mirror of the official repository. Faster in China, but updates may lag."
+        }
+        "官方仓库的备用镜像，国内速度较快，但版本同步会晚一些。" => {
+            "A backup mirror of the official repository. Faster in China, but updates may lag."
+        }
+        "官方仓库直连，国内速度较慢，但版本更新最快。" => {
+            "Direct connection to the official repository. Slower in China, but updates arrive fastest."
+        }
         "显示完整的启动命令" => "Show Full Startup Command",
         "NPM 源设置" => "NPM Registry",
         "华为云镜像" => "Huawei Cloud Mirror",
@@ -134,6 +195,16 @@ pub fn translate_owned(content: &str) -> String {
         "加速地址" => "Acceleration URL",
         "测试失败" => "Test failed",
         "测试完成" => "Test complete",
+        "正在测速下载渠道…" => "Testing download channels…",
+        "渠道测速超时，请稍后重试。" => {
+            "Download channel test timed out. Please try again later."
+        }
+        "所有渠道测速失败，已回退到官方渠道。" => {
+            "All channel tests failed; falling back to the official channel."
+        }
+        "等待测试…" => "Waiting…",
+        "测速成功" => "Test succeeded",
+        "测速失败" => "Test failed",
         "测试失败，请查看详情后重试。" => {
             "Test failed. Check the details and try again."
         }
@@ -162,7 +233,6 @@ pub fn translate_owned(content: &str) -> String {
         "日志已清空" => "Log cleared",
         "加载中..." | "正在加载..." => "Loading...",
         "等待输出..." => "Waiting for output...",
-        "安装" => "Install",
         "安装中..." | "正在安装…" => "Installing...",
         "等待安装输出…" => "Waiting for install output...",
         "安装超时，请关闭窗口后重试。" => {
@@ -262,6 +332,43 @@ fn translate_dynamic(content: &str) -> String {
     }
     if let Some(name) = content.strip_suffix("  ⚠ 版本过低") {
         return format!("{name}  ⚠ Version too old");
+    }
+    if content == "正在测速下载渠道…" {
+        return "Testing download channels…".into();
+    }
+    if content == "渠道测速超时，请稍后重试。" {
+        return "Download channel test timed out. Please try again later.".into();
+    }
+    if content == "所有渠道测速失败，已回退到官方渠道。" {
+        return "All channel tests failed; falling back to the official channel.".into();
+    }
+    if content == "等待测试…" {
+        return "Waiting…".into();
+    }
+    if content == "准备克隆" {
+        return "Preparing clone".into();
+    }
+    if content == "进行中" {
+        return "In progress".into();
+    }
+    if let Some(value) = content.strip_prefix("测速成功 · ") {
+        return format!("Test succeeded · {value}");
+    }
+    if content == "测速成功" {
+        return "Test succeeded".into();
+    }
+    if content == "测速失败" {
+        return "Test failed".into();
+    }
+    if let Some(value) = content.strip_prefix("最快渠道：") {
+        let channel = match value {
+            "自动" => "Automatic",
+            "镜像 1" => "Mirror 1",
+            "镜像 2" => "Mirror 2",
+            "官方" => "Official",
+            _ => value,
+        };
+        return format!("Fastest channel: {channel}");
     }
     if let Some(value) = content.strip_prefix("Receiving objects ") {
         return format!("Receiving objects {value}");

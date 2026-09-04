@@ -13,6 +13,7 @@ use astra_ui::{Avatar, AvatarColor, AvatarShape, AvatarSize, WHITE, fonts, icons
 use crate::app::Message;
 use crate::lang::text;
 use crate::pages::Page;
+use crate::pages::versions::VersionState;
 
 /// 侧边栏固定宽度（像素）。内容区宽度 = SIDEBAR_WIDTH - 左右内边距（各 12），
 /// 恰好容纳 72px 的正方形导航按钮。
@@ -37,13 +38,13 @@ const PRIMARY_PAGES: [Page; 5] = [
 const SECONDARY_PAGES: [Page; 2] = [Page::Console, Page::Settings];
 
 /// 渲染主界面左侧导航栏。
-pub fn sidebar(page: Page) -> Element<'static, Message> {
+pub fn sidebar<'a>(page: Page, versions: &'a VersionState) -> Element<'a, Message> {
     let primary = PRIMARY_PAGES.iter().map(|&item| nav_button(item, page));
     let secondary = SECONDARY_PAGES.iter().map(|&item| nav_button(item, page));
 
     container(
         column![
-            logo_section(),
+            logo_section(versions),
             crate::theme::separator(),
             column(primary)
                 .spacing(4)
@@ -67,24 +68,35 @@ pub fn sidebar(page: Page) -> Element<'static, Message> {
     .into()
 }
 
-/// Logo 占位区：应用图标，以及预留的「酒馆版本」「启动模式」信息位。
-/// 窄侧边栏下以图标为主，文字信息居中排列。
-fn logo_section() -> Element<'static, Message> {
+/// Logo 区会同步展示当前酒馆版本及实例来源。
+/// 本地实例使用绿色，在线实例使用蓝色，未选择时仅保留中性占位信息。
+fn logo_section<'a>(versions: &'a VersionState) -> Element<'a, Message> {
+    let version_info: Element<'a, Message> =
+        match (versions.current_version.as_deref(), versions.current_source) {
+            (Some(version), Some(source)) => text(format!(
+                "{version} - {}",
+                crate::lang::display_label(source.label())
+            ))
+            .size(10)
+            .font(fonts::REGULAR)
+            .style(move |_theme| iced::widget::text::Style {
+                color: Some(source.color()),
+            })
+            .into(),
+            _ => text("酒馆版本 —")
+                .size(10)
+                .font(fonts::REGULAR)
+                .style(crate::theme::subtle_text_style)
+                .into(),
+        };
+
     column![
         Avatar::new("AstraBrew")
             .fallback(icons::icon(Icon::Beer, 22, WHITE))
             .size(AvatarSize::Medium)
             .shape(AvatarShape::Rounded)
             .color(AvatarColor::Accent),
-        // 预留信息位：后续接入真实的酒馆版本与启动模式数据
-        text("酒馆版本 —")
-            .size(10)
-            .font(fonts::REGULAR)
-            .style(crate::theme::subtle_text_style),
-        text("启动模式 —")
-            .size(10)
-            .font(fonts::REGULAR)
-            .style(crate::theme::subtle_text_style),
+        version_info,
     ]
     .spacing(6)
     .align_x(Alignment::Center)

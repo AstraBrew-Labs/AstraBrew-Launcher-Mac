@@ -15,6 +15,7 @@ use astra_ui::{
 
 use super::themed_segmented_group;
 use crate::app::Message;
+use crate::core::network::{DownloadChannel, DownloadChannelTestResult};
 pub use crate::core::settings::{DisplayLanguage, ThemeMode};
 use crate::lang::text;
 use crate::theme::{button_style, text_input_style};
@@ -169,7 +170,7 @@ pub enum SettingsAction {
     OpenLoginItemSettings,
     ChooseExportPath,
     ChooseGlobalDataPath,
-    RefreshGithubNodes,
+    RefreshDownloadChannel,
     TestGithub,
     CheckUpdate,
 }
@@ -179,7 +180,7 @@ impl SettingsAction {
             Self::OpenLoginItemSettings => "已打开系统登录项设置。",
             Self::ChooseExportPath => "已更新酒馆资源保存位置。",
             Self::ChooseGlobalDataPath => "已更新全局数据存放位置。",
-            Self::RefreshGithubNodes => "GitHub 加速节点获取与测速服务待接入。",
+            Self::RefreshDownloadChannel => "下载渠道测速已刷新。",
             Self::TestGithub => "GitHub 连通性测试服务待接入。",
             Self::CheckUpdate => "启动器更新检查服务待接入。",
         }
@@ -309,6 +310,22 @@ pub struct GithubLiveItem {
     pub result: Option<crate::core::network::GithubMultiTestItem>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct DownloadChannelTestState {
+    pub show: bool,
+    pub running: bool,
+    pub timed_out: bool,
+    pub all_failed: bool,
+    pub started_at: Option<std::time::Instant>,
+    pub done_at: Option<std::time::Instant>,
+    pub current_channel: Option<DownloadChannel>,
+    pub clone_stage: Option<String>,
+    pub clone_current: Option<u64>,
+    pub clone_total: Option<u64>,
+    pub clone_percentage: Option<f32>,
+    pub results: Vec<DownloadChannelTestResult>,
+}
+
 #[derive(Debug, Clone)]
 pub struct SettingsState {
     pub language: DisplayLanguage,
@@ -327,8 +344,13 @@ pub struct SettingsState {
     pub global_data_path: String,
     pub show_startup_command: bool,
     pub npm_registry: NpmRegistry,
+    /// 兼容旧版配置的隐藏字段，新版下载设置不再展示它们。
     pub github_proxy_enabled: bool,
     pub github_proxy_url: String,
+    pub download_channel: DownloadChannel,
+    pub download_resolved_channel: Option<DownloadChannel>,
+    pub download_channel_last_tested: Option<u64>,
+    pub download_channel_test: DownloadChannelTestState,
     pub proxy_mode: ProxyMode,
     pub custom_proxy: String,
     pub system_proxy_status: SystemProxyStatus,
@@ -361,6 +383,10 @@ impl Default for SettingsState {
             npm_registry: NpmRegistry::Npmmirror,
             github_proxy_enabled: false,
             github_proxy_url: "https://gh-proxy.org/".into(),
+            download_channel: DownloadChannel::Auto,
+            download_resolved_channel: None,
+            download_channel_last_tested: None,
+            download_channel_test: DownloadChannelTestState::default(),
             proxy_mode: ProxyMode::System,
             custom_proxy: String::new(),
             system_proxy_status: SystemProxyStatus::Unknown,
@@ -374,7 +400,28 @@ impl Default for SettingsState {
 }
 
 impl SettingsState {
-    /// 将磁盘偏好应用到设置页状态。
+    /// 判断自动下载渠道缓存是否仍在七天有效期内。
+    pub fn download_channel_cache_valid(&self) -> bool {
+        let Some(resolved) = self.download_resolved_channel else {
+            return false;
+        };
+        if resolved == DownloadChannel::Auto {
+            return false;
+        }
+        let Some(tested_at) = self.download_channel_last_tested else {
+            return false;
+        };
+        let Some(now) = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_secs())
+        else {
+            return false;
+        };
+        now.saturating_sub(tested_at) < 7 * 24 * 60 * 60
+    }
+
+    /// 将磁盘偏好应用到设置页状态.
     pub fn apply_persistent_preferences(
         &mut self,
         preferences: &crate::core::settings::PersistentPreferences,
@@ -382,15 +429,30 @@ impl SettingsState {
         self.language = preferences.language;
         self.theme = preferences.theme;
         self.remember_window_position = preferences.remember_window_position;
+        self.data_mode = match preferences.data_mode.as_str() {
+            "global" => TavernDataMode::Global,
+            _ => TavernDataMode::Current,
+        };
+        self.global_data_path = preferences.global_data_path.clone();
+        self.tavern_export_path = preferences.tavern_export_path.clone();
+        self.start_mode = match preferences.start_mode.as_str() {
+            "desktop" => StartMode::Desktop,
+            _ => StartMode::Normal,
+        };
+        self.server_mode_enabled = preferences.server_mode_enabled;
+        if self.server_mode_enabled {
+            self.start_mode = StartMode::Normal;
+        }
         self.proxy_mode = match preferences.proxy_mode.as_str() {
             "none" => ProxyMode::None,
             "custom" => ProxyMode::Custom,
             _ => ProxyMode::System,
         };
         self.custom_proxy = preferences.custom_proxy.clone();
+        self.download_channel = DownloadChannel::from_key(&preferences.download_channel);
+        self.npm_registry = NpmRegistry::from_url(&preferences.npm_registry);
         self.github_proxy_enabled = preferences.github_proxy_enabled;
         self.github_proxy_url = preferences.github_proxy_url.clone();
-        self.npm_registry = NpmRegistry::from_url(&preferences.npm_registry);
     }
 }
 
@@ -426,7 +488,7 @@ pub fn settings_view(state: &SettingsState) -> Element<'_, Message> {
         basic_settings(state),
         console_settings(state),
         environment_settings(state),
-        github_settings(state),
+        download_settings(state),
         network_settings(state),
         software_settings(),
     ]
@@ -474,7 +536,223 @@ pub fn settings_view(state: &SettingsState) -> Element<'_, Message> {
             .height(Fill)
             .into();
     }
+    if state.download_channel_test.show {
+        page = stack![page, download_channel_test_modal(state)]
+            .width(Fill)
+            .height(Fill)
+            .into();
+    }
     page
+}
+
+fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
+    let test = &state.download_channel_test;
+    let phase = test
+        .started_at
+        .map(|started| (started.elapsed().as_secs_f32() * 0.9).fract())
+        .unwrap_or(0.0);
+    let channels = DownloadChannel::fixed_channels();
+    let rows = channels
+        .into_iter()
+        .map(|channel| {
+            let result = test.results.iter().find(|result| result.channel == channel);
+            let is_current = test.current_channel == Some(channel) && result.is_none();
+            let (icon, detail, indicator): (
+                Element<'static, Message>,
+                Element<'static, Message>,
+                Element<'static, Message>,
+            ) = if let Some(result) = result {
+                let detail = if result.success {
+                    result
+                        .latency_ms
+                        .map(|latency| format!("测速成功 · {latency} ms"))
+                        .unwrap_or_else(|| "测速成功".to_owned())
+                } else {
+                    result
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "测速失败".to_owned())
+                };
+                let icon = if result.success {
+                    icons::icon(Icon::CircleCheck, 16, iced::Color::from_rgb8(23, 201, 100))
+                } else {
+                    icons::icon(Icon::CircleX, 16, iced::Color::from_rgb8(255, 56, 60))
+                };
+                (
+                    icon,
+                    text(detail)
+                        .size(10)
+                        .font(fonts::REGULAR)
+                        .style(crate::theme::muted_text_style)
+                        .into(),
+                    text("").into(),
+                )
+            } else if is_current {
+                let stage = test
+                    .clone_stage
+                    .as_deref()
+                    .map(crate::lang::github_clone_stage_label)
+                    .unwrap_or_else(|| "准备克隆".to_owned());
+                let percent = test
+                    .clone_percentage
+                    .map(|value| format!("{value:.0}%"))
+                    .unwrap_or_else(|| "进行中".to_owned());
+                let detail = format!("{stage} {percent}");
+                let counts = match (test.clone_current, test.clone_total) {
+                    (Some(current), Some(total)) => Some(format!("{current} / {total} 个对象")),
+                    _ => None,
+                };
+                let detail = if let Some(counts) = counts {
+                    format!("{detail} · {counts}")
+                } else {
+                    detail
+                };
+                let indicator: Element<'static, Message> = match test.clone_percentage {
+                    Some(value) => ProgressCircle::new(value)
+                        .color(ProgressCircleColor::Accent)
+                        .into(),
+                    None => ProgressCircle::new(0.0)
+                        .is_indeterminate(true)
+                        .animation_phase(phase)
+                        .color(ProgressCircleColor::Accent)
+                        .into(),
+                };
+                (
+                    crate::theme::subtle_icon(Icon::Circle, 13),
+                    text(detail)
+                        .size(10)
+                        .font(fonts::REGULAR)
+                        .style(crate::theme::muted_text_style)
+                        .into(),
+                    indicator,
+                )
+            } else {
+                (
+                    crate::theme::subtle_icon(Icon::Circle, 13),
+                    text("等待测试…").into(),
+                    text("").into(),
+                )
+            };
+            row![
+                icon,
+                column![text(channel.label()).size(12).font(fonts::MEDIUM), detail]
+                    .spacing(3)
+                    .width(Fill),
+                indicator,
+            ]
+            .spacing(10)
+            .padding([9, 10])
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect::<Vec<_>>();
+
+    let status: Element<'_, Message> = if test.running {
+        row![
+            ProgressCircle::new(0.0)
+                .is_indeterminate(true)
+                .animation_phase(phase)
+                .color(ProgressCircleColor::Accent),
+            text("正在测速下载渠道…").size(12).font(fonts::MEDIUM),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else if test.timed_out {
+        row![
+            icons::icon(Icon::ClockAlert, 16, iced::Color::from_rgb8(245, 165, 36)),
+            text("渠道测速超时，请稍后重试。")
+                .size(12)
+                .font(fonts::MEDIUM),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else if test.all_failed {
+        row![
+            icons::icon(Icon::CircleX, 16, iced::Color::from_rgb8(255, 56, 60)),
+            text("所有渠道测速失败，已回退到官方渠道。")
+                .size(12)
+                .font(fonts::MEDIUM),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        row![
+            icons::icon(Icon::CircleCheck, 16, iced::Color::from_rgb8(23, 201, 100)),
+            text(format!(
+                "最快渠道：{}",
+                state
+                    .download_resolved_channel
+                    .or(test.current_channel)
+                    .unwrap_or(DownloadChannel::Official)
+                    .label()
+            ))
+            .size(12)
+            .font(fonts::MEDIUM),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .into()
+    };
+
+    let footer = row![
+        status,
+        space::horizontal(),
+        button(
+            text(if test.running { "取消" } else { "关闭" })
+                .size(12)
+                .font(fonts::MEDIUM)
+        )
+        .on_press(Message::DownloadChannelTestClose)
+        .height(34)
+        .padding([7, 14])
+        .style(button_style(ButtonVariant::Secondary)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center)
+    .width(Fill);
+
+    let panel = mouse_area(
+        container(
+            column![
+                text("酒馆下载渠道测速").size(18).font(fonts::MEDIUM),
+                rule::horizontal(1.0).style(crate::theme::separator_style),
+                scrollable(
+                    container(column(rows).spacing(8))
+                        .padding(12)
+                        .style(environment_log_style)
+                )
+                .height(300),
+                rule::horizontal(1.0).style(crate::theme::separator_style),
+                footer,
+            ]
+            .spacing(16),
+        )
+        .width(620)
+        .padding(20)
+        .style(environment_modal_style),
+    )
+    .on_press(Message::DownloadChannelTestInteract);
+
+    stack![
+        button(space::Space::new())
+            .on_press(Message::DownloadChannelTestInteract)
+            .width(Fill)
+            .height(Fill)
+            .padding(0)
+            .style(environment_backdrop_style),
+        container(panel)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .padding(24),
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
@@ -713,14 +991,16 @@ fn basic_settings(state: &SettingsState) -> Element<'_, Message> {
         ]);
     }
 
-    rows.extend([
-        setting_row(
-            Icon::Server,
-            "启用服务器模式",
-            "把此设备作为仅运行酒馆服务的服务器。",
-            toggle_control(state.server_mode_enabled, Message::SettingsServerMode),
-        ),
-        setting_row(
+    rows.push(setting_row(
+        Icon::Server,
+        "启用服务器模式",
+        "把此设备作为仅运行酒馆服务的服务器。",
+        toggle_control(state.server_mode_enabled, Message::SettingsServerMode),
+    ));
+
+    // 酒馆服务模式仅在服务器模式启用时显示。
+    if state.server_mode_enabled {
+        rows.push(setting_row(
             Icon::Globe,
             "酒馆服务模式",
             "选择只向局域网开放，或向互联网开放。",
@@ -732,7 +1012,10 @@ fn basic_settings(state: &SettingsState) -> Element<'_, Message> {
                 state.server_service_mode,
                 Message::SettingsServerServiceModeSelected,
             ),
-        ),
+        ));
+    }
+
+    rows.extend([
         setting_row(
             Icon::CloudCog,
             "允许酒馆后台运行",
@@ -991,40 +1274,117 @@ fn environment_action_button(
     control.into()
 }
 
-fn github_settings(state: &SettingsState) -> Element<'_, Message> {
+fn download_settings(state: &SettingsState) -> Element<'_, Message> {
+    let selected_label = state
+        .download_channel
+        .display_label(state.download_resolved_channel);
+    let descriptions = column(
+        DownloadChannel::fixed_channels()
+            .into_iter()
+            .map(|channel| {
+                row![
+                    text(format!("{}：", channel.label()))
+                        .size(10)
+                        .font(fonts::MEDIUM)
+                        .style(crate::theme::muted_text_style),
+                    text(channel.description())
+                        .size(10)
+                        .font(fonts::REGULAR)
+                        .style(crate::theme::muted_text_style),
+                ]
+                .spacing(3)
+                .into()
+            })
+            .collect::<Vec<_>>(),
+    )
+    .spacing(3);
+
+    let channel_values = [
+        DownloadChannel::Auto,
+        DownloadChannel::Mirror1,
+        DownloadChannel::Mirror2,
+        DownloadChannel::Mirror3,
+        DownloadChannel::Official,
+    ];
+    let channel_icons = [
+        Icon::Gauge,
+        Icon::Cloud,
+        Icon::CloudCog,
+        Icon::CloudDownload,
+        Icon::GitBranch,
+    ];
+    let channel_items = channel_values
+        .into_iter()
+        .zip(channel_icons)
+        .map(|(channel, icon)| {
+            ToggleButtonGroupItem::new(
+                Some(download_channel_toggle_label(
+                    channel,
+                    state.download_resolved_channel,
+                    state.language,
+                )),
+                Some(icon),
+                channel == state.download_channel,
+            )
+        })
+        .collect();
+    let channel_control = themed_segmented_group(channel_items, move |index| {
+        Message::SettingsDownloadChannelSelected(channel_values[index])
+    });
+
     section(
-        Icon::GitFork,
-        "GitHub 设置",
-        "使用资源替换节点加速 GitHub 文件与仓库访问。",
+        Icon::CloudDownload,
+        "下载设置",
+        "选择酒馆核心下载、安装与更新时使用的仓库渠道。",
         section_rows(vec![
-            setting_row(
-                Icon::Rocket,
-                "GitHub 资源加速",
-                "开启后在 GitHub 源地址前添加加速节点地址。",
-                toggle_control(
-                    state.github_proxy_enabled,
-                    Message::SettingsGithubProxyEnabled,
-                ),
-            ),
-            setting_row(
-                Icon::Network,
-                "加速节点地址",
-                "输入当前使用的 GitHub 资源替换节点。",
-                input_control(
-                    "https://example.com/",
-                    &state.github_proxy_url,
-                    Message::SettingsGithubProxyUrlChanged,
-                ),
-            ),
+            row![
+                setting_icon(Icon::Download),
+                column![
+                    text("酒馆下载渠道")
+                        .size(13)
+                        .font(fonts::MEDIUM)
+                        .style(crate::theme::text_style),
+                    text(selected_label)
+                        .size(11)
+                        .font(fonts::MEDIUM)
+                        .style(crate::theme::muted_text_style),
+                    descriptions,
+                ]
+                .spacing(4)
+                .width(Fill),
+                channel_control,
+            ]
+            .spacing(12)
+            .padding([13, 16])
+            .align_y(Alignment::Center)
+            .width(Fill)
+            .into(),
             setting_row(
                 Icon::RefreshCw,
-                "替换节点列表",
-                "获取可用节点并测试延迟与下载速度。",
-                action_button(
-                    "刷新节点",
-                    Icon::RefreshCw,
-                    SettingsAction::RefreshGithubNodes,
-                ),
+                "自动测速缓存",
+                "测速结果缓存 7 天；缓存有效期内不会重复测速。",
+                row![
+                    text(if state.download_channel_test.running {
+                        "测速中…"
+                    } else if state.download_channel == DownloadChannel::Auto
+                        && state.download_channel_cache_valid()
+                    {
+                        "缓存有效"
+                    } else {
+                        "尚未测速"
+                    })
+                    .size(11)
+                    .font(fonts::MEDIUM)
+                    .style(crate::theme::muted_text_style),
+                    action_button(
+                        "重新测速",
+                        Icon::RefreshCw,
+                        SettingsAction::RefreshDownloadChannel,
+                    ),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .into(),
             ),
         ]),
     )
@@ -1661,6 +2021,34 @@ fn start_mode_control(selected: StartMode) -> Element<'static, Message> {
     })
 }
 
+fn download_channel_toggle_label(
+    channel: DownloadChannel,
+    resolved: Option<DownloadChannel>,
+    language: DisplayLanguage,
+) -> &'static str {
+    let english = crate::lang::effective_language(language) == crate::lang::Language::English;
+    match (channel, resolved, english) {
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror1), false) => "自动（镜像 1）",
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror2), false) => "自动（镜像 2）",
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror3), false) => "自动（镜像 3）",
+        (DownloadChannel::Auto, Some(DownloadChannel::Official), false) => "自动（官方）",
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror1), true) => "Automatic (Mirror 1)",
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror2), true) => "Automatic (Mirror 2)",
+        (DownloadChannel::Auto, Some(DownloadChannel::Mirror3), true) => "Automatic (Mirror 3)",
+        (DownloadChannel::Auto, Some(DownloadChannel::Official), true) => "Automatic (Official)",
+        (DownloadChannel::Auto, _, false) => "自动",
+        (DownloadChannel::Auto, _, true) => "Automatic",
+        (DownloadChannel::Mirror1, _, false) => "镜像 1",
+        (DownloadChannel::Mirror1, _, true) => "Mirror 1",
+        (DownloadChannel::Mirror2, _, false) => "镜像 2",
+        (DownloadChannel::Mirror2, _, true) => "Mirror 2",
+        (DownloadChannel::Mirror3, _, false) => "镜像 3",
+        (DownloadChannel::Mirror3, _, true) => "Mirror 3",
+        (DownloadChannel::Official, _, false) => "官方",
+        (DownloadChannel::Official, _, true) => "Official",
+    }
+}
+
 fn segmented_control<T>(
     options: &[(T, &'static str, Icon)],
     selected: T,
@@ -1802,7 +2190,12 @@ fn environment_backdrop_style(_theme: &Theme, _status: button::Status) -> button
 
 #[cfg(test)]
 mod tests {
-    use super::{NpmRegistry, SettingsState, StartMode, TavernDataMode};
+    use super::{
+        DownloadChannelTestState, NpmRegistry, SettingsState, StartMode, TavernDataMode,
+        download_channel_toggle_label,
+    };
+    use crate::core::network::DownloadChannel;
+    use crate::core::settings::DisplayLanguage;
     #[test]
     fn npm_registry_urls_match_the_old_launcher() {
         assert_eq!(NpmRegistry::Official.url(), "https://registry.npmjs.org/");
@@ -1818,6 +2211,43 @@ mod tests {
             NpmRegistry::HuaweiCloud.url(),
             "https://repo.huaweicloud.com/repository/npm/"
         );
+    }
+
+    #[test]
+    fn automatic_channel_label_includes_resolved_channel() {
+        assert_eq!(
+            download_channel_toggle_label(
+                DownloadChannel::Auto,
+                Some(DownloadChannel::Mirror1),
+                DisplayLanguage::SimplifiedChinese,
+            ),
+            "自动（镜像 1）"
+        );
+        assert_eq!(
+            download_channel_toggle_label(
+                DownloadChannel::Auto,
+                Some(DownloadChannel::Official),
+                DisplayLanguage::English,
+            ),
+            "Automatic (Official)"
+        );
+    }
+
+    #[test]
+    fn automatic_channel_cache_requires_recent_result() {
+        let mut settings = SettingsState::default();
+        settings.download_resolved_channel = Some(DownloadChannel::Mirror2);
+        settings.download_channel_last_tested = Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_secs(),
+        );
+        assert!(settings.download_channel_cache_valid());
+        settings.download_channel_last_tested =
+            Some(settings.download_channel_last_tested.unwrap() - 7 * 24 * 60 * 60);
+        assert!(!settings.download_channel_cache_valid());
+        let _ = DownloadChannelTestState::default();
     }
 
     #[test]
