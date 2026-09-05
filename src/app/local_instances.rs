@@ -685,6 +685,7 @@ mod tests {
             std::thread::current().id()
         ));
         Launcher {
+            config_runtime: super::super::tavern_config::ConfigRuntime::default(),
             local_runtime: LocalRuntime::default(),
             screen: super::super::Screen::Main,
             page: Page::Home,

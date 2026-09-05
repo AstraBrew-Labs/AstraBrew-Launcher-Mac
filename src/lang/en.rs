@@ -2,6 +2,9 @@
 
 /// 翻译静态或运行时拼接的界面文案。
 pub fn translate_owned(content: &str) -> String {
+    if let Some(value) = translate_config(content) {
+        return value.to_owned();
+    }
     if let Some(value) = translate_local(content) {
         return value.to_owned();
     }
@@ -313,6 +316,9 @@ pub fn translate_owned(content: &str) -> String {
 
 /// 兼容按键查询接口；未收录键保持原文，便于逐步迁移页面文案。
 pub fn translate(key: &'static str) -> &'static str {
+    if let Some(value) = translate_config(key) {
+        return value;
+    }
     if let Some(value) = translate_local(key) {
         return value;
     }
@@ -595,6 +601,136 @@ fn translate_local(key: &str) -> Option<&'static str> {
         "安装中…" => "Installing…",
         "开始扫描" => "Start Scan",
         "正在加载本地实例…" => "Loading local instances…",
+        _ => return None,
+    })
+}
+
+/// 酒馆配置同步、导入和字段校验共用的中英文文案。
+fn translate_config(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "未支持的值（保留原值）" => "Unsupported value (preserved)",
+        "配置后台任务失败，请重试。" => {
+            "The configuration background task failed. Please retry."
+        }
+        "无法同步配置到界面。" => {
+            "Unable to synchronize configuration with the interface."
+        }
+        "下载配置模板失败。" => "Unable to download the configuration template.",
+        "导入源文件已变化，请重新确认。" => {
+            "The import file has changed. Please confirm again."
+        }
+        "所有配置模板下载地址均失败。" => {
+            "All configuration template download sources failed."
+        }
+        "无法创建配置模板下载请求。" => {
+            "Unable to create the template download request."
+        }
+        "无法在 Finder 中定位配置文件。" => {
+            "Unable to reveal the configuration file in Finder."
+        }
+        "无法构造 YAML 配置值。" => "Unable to construct the YAML configuration value.",
+        "无法读写酒馆配置文件。" => {
+            "Unable to read or write the SillyTavern configuration file."
+        }
+        "未知配置字段。" => "Unknown configuration field.",
+        "此配置字段的 YAML 类型不受支持。" => {
+            "This configuration field uses an unsupported YAML type."
+        }
+        "配置 YAML 无效，请修复文件后重试。" => {
+            "Invalid configuration YAML. Repair the file and try again."
+        }
+        "配置字段的父级类型不正确。" => {
+            "A configuration field has an invalid parent type."
+        }
+        "配置必须包含一个 YAML 映射文档。" => {
+            "Configuration must contain exactly one YAML mapping document."
+        }
+        "配置文件已存在，已停止覆盖。" => {
+            "The configuration file already exists and was not overwritten."
+        }
+        "配置文件已被外部修改。" => "The configuration file was modified externally.",
+        "配置模板下载内容异常。" => "The downloaded configuration template is invalid.",
+        "配置目标已变化，请重新加载。" => {
+            "The configuration target changed. Please reload."
+        }
+        "配置目标路径无效。" => "The configuration target path is invalid.",
+        "配置键必须是文本且不能重复。" => {
+            "Configuration keys must be unique text values."
+        }
+        "列表项必须是文本。" => "List entries must be text.",
+        "数值超出允许范围。" => "The value is outside the allowed range.",
+        "白名单需填写 IP 地址或 CIDR 网段。" => {
+            "Enter an IP address or CIDR range in the whitelist."
+        }
+        "请补全或删除空白列表项。" => "Complete or remove the empty list entry.",
+        "请输入有效 IPv4 地址。" => "Enter a valid IPv4 address.",
+        "请输入有效 IPv6 地址。" => "Enter a valid IPv6 address.",
+        "请输入有效整数。" => "Enter a valid integer.",
+        "请选择支持的配置值。" => "Select a supported configuration value.",
+        "配置值类型不正确。" => "The configuration value has an invalid type.",
+        "当前酒馆配置尚未就绪。" => {
+            "The current SillyTavern configuration is not ready."
+        }
+        "请先选择酒馆实例。" => "Select a SillyTavern instance first.",
+        "配置已导入，原文件已备份。" => {
+            "Configuration imported. The original file was backed up."
+        }
+        "配置已生成，已保留模板默认值。" => {
+            "Configuration generated with the template defaults preserved."
+        }
+        "仍有未保存的配置" => "Unsaved Configuration",
+        "以下字段同时在界面和文件中修改，尚未覆盖任何一方。" => {
+            "These fields were changed both here and in the file. Neither change has been overwritten."
+        }
+        "保存失败" => "Save Failed",
+        "保留我的修改" => "Keep My Changes",
+        "原文件不会被覆盖，请修复后重新加载。" => {
+            "The original file will not be overwritten. Repair it and reload."
+        }
+        "存在无效输入、文件冲突或保存失败。继续编辑，或放弃尚未保存的修改并退出？" => {
+            "Some inputs are invalid, conflicting, or could not be saved. Continue editing or discard unsaved changes and quit?"
+        }
+        "导入源文件" => "Import Source",
+        "导入配置文件" => "Import Configuration",
+        "尚未选择实例" => "No Instance Selected",
+        "就绪" => "Ready",
+        "已保存" => "Saved",
+        "待保存" => "Pending Save",
+        "打开配置文件" => "Reveal Configuration",
+        "放弃并退出" => "Discard and Quit",
+        "是否覆盖已有配置项？导入字段优先，缺失字段保留并由模板补全。" => {
+            "Overwrite existing settings? Imported values take priority; missing settings are retained or filled from the template."
+        }
+        "正在保存…" => "Saving…",
+        "正在准备导入…" => "Preparing Import…",
+        "正在加载配置…" => "Loading Configuration…",
+        "正在处理当前目标，请稍候。不会自动修改网络访问设置。" => {
+            "Processing this target. Network access settings will not be changed automatically."
+        }
+        "正在生成配置…" => "Generating Configuration…",
+        "源文件或目标文件已变化，请再次确认。" => {
+            "The source or target file changed. Please confirm again."
+        }
+        "目标配置文件" => "Target Configuration",
+        "目标配置文件不存在，请点击立即生成。生成前不会写入页面默认值。" => {
+            "The configuration file is missing. Click Generate Now. No interface defaults will be written beforehand."
+        }
+        "确认后会先备份原配置，列表字段整体替换。" => {
+            "The original configuration will be backed up first. Imported lists replace existing lists."
+        }
+        "确认覆盖并导入" => "Confirm and Import",
+        "立即生成" => "Generate Now",
+        "继续编辑" => "Continue Editing",
+        "请先在版本管理中选择一个酒馆实例。" => {
+            "Select a SillyTavern instance in Versions first."
+        }
+        "请检查输入" => "Check Inputs",
+        "配置存在冲突" => "Configuration Conflict",
+        "配置文件不存在" => "Configuration File Missing",
+        "配置文件无效" => "Invalid Configuration File",
+        "配置读取失败" => "Configuration Read Failed",
+        "采用文件内容" => "Use File Contents",
+        "重新加载" => "Reload",
         _ => return None,
     })
 }

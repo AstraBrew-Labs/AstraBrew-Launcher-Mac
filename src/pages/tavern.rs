@@ -2,6 +2,9 @@
 
 use std::fmt;
 
+pub(crate) mod sync;
+use crate::core::tavern_config::{ConfigError, ErrorKind, Values};
+
 use crate::lang::text;
 use iced::widget::{button, column, container, pick_list, row, scrollable, space, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
@@ -15,7 +18,8 @@ use astra_ui::{
 
 const CONTROL_WIDTH: f32 = 270.0;
 const LIST_WIDTH: f32 = 330.0;
-const PAGE_WIDTH: f32 = 840.0;
+// 仅限制配置表单的阅读宽度，页头不受此限制。
+const FORM_WIDTH: f32 = 840.0;
 
 macro_rules! enum_text {
     ($ty:ident, $([$variant:ident, $label:literal]),+ $(,)?) => {
@@ -27,8 +31,9 @@ macro_rules! enum_text {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum BrowserType {
+    Unknown,
     #[default]
     System,
     Chrome,
@@ -47,6 +52,7 @@ impl BrowserType {
 
     pub(crate) const fn label(self) -> &'static str {
         match self {
+            Self::Unknown => "未支持的值（保留原值）",
             Self::System => "系统默认",
             Self::Chrome => "Chrome",
             Self::Firefox => "Firefox",
@@ -57,6 +63,7 @@ impl BrowserType {
 }
 enum_text!(
     BrowserType,
+    [Unknown, "未支持的值（保留原值）"],
     [System, "系统默认"],
     [Chrome, "Chrome"],
     [Firefox, "Firefox"],
@@ -64,8 +71,9 @@ enum_text!(
     [Safari, "Safari"]
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum ThumbnailFormat {
+    Unknown,
     #[default]
     Jpeg,
     Png,
@@ -76,13 +84,15 @@ impl ThumbnailFormat {
 }
 enum_text!(
     ThumbnailFormat,
+    [Unknown, "未支持的值（保留原值）"],
     [Jpeg, "JPEG（默认）"],
     [Png, "PNG"],
     [Webp, "WebP（推荐）"]
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum LogLevel {
+    Unknown,
     #[default]
     Debug,
     Info,
@@ -94,6 +104,7 @@ impl LogLevel {
 }
 enum_text!(
     LogLevel,
+    [Unknown, "未支持的值（保留原值）"],
     [Debug, "0 - Debug（最详细）"],
     [Info, "1 - Info"],
     [Warn, "2 - Warn"],
@@ -186,7 +197,7 @@ pub(crate) enum ListField {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TavernAction {
     OpenConfigFile,
-    MigrateConfig,
+    ImportConfig,
 }
 
 /// 酒馆配置页的交互消息。
@@ -202,13 +213,23 @@ pub(crate) enum TavernMessage {
     SelectThumbnailFormat(ThumbnailFormat),
     SelectLogLevel(LogLevel),
     Action(TavernAction),
+    GenerateConfig,
+    RetryConfig,
+    ConfirmImport,
+    CancelImport,
+    UseDiskValues,
+    KeepDraftValues,
+    GoToVersions,
+    ConfigOverlayInteract,
+    ContinueEditing,
+    DiscardAndClose,
     /// 恢复默认入口将在配置持久化服务接入后启用。
     #[allow(dead_code)]
     RestoreDefaults,
 }
 
-/// 与旧版 Tavern.vue 字段一一对应的本地配置草稿。
-#[derive(Debug, Clone)]
+/// 与旧版字段对应的界面草稿；数字输入仍为字符串，以保留编辑中间态。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct TavernConfig {
     port: String,
     listen: bool,
@@ -361,12 +382,12 @@ impl Default for TavernConfig {
     }
 }
 
-/// 酒馆配置页状态。服务层接入后可直接用 `config` 做序列化映射。
+/// 酒馆配置页草稿与同步展示状态；持久化及目标隔离由应用服务协调。
 #[derive(Debug, Clone)]
 pub(crate) struct TavernState {
     config: TavernConfig,
     advanced_expanded: [bool; 9],
-    last_action: Option<TavernAction>,
+    pub(crate) sync: sync::SyncView,
 }
 
 impl Default for TavernState {
@@ -375,12 +396,365 @@ impl Default for TavernState {
             config: TavernConfig::default(),
             // 与旧版一致：首次进入页面只展开网络基础配置。
             advanced_expanded: [true, false, false, false, false, false, false, false, false],
-            last_action: None,
+            sync: sync::SyncView::default(),
         }
     }
 }
 
 impl TavernState {
+    pub(crate) fn values(&self) -> Values {
+        [
+            (
+                "port".to_owned(),
+                serde_json::Value::String(self.config.port.clone()),
+            ),
+            (
+                "listen".to_owned(),
+                serde_json::Value::Bool(self.config.listen),
+            ),
+            (
+                "listen_ipv4".to_owned(),
+                serde_json::Value::String(self.config.listen_ipv4.clone()),
+            ),
+            (
+                "listen_ipv6".to_owned(),
+                serde_json::Value::String(self.config.listen_ipv6.clone()),
+            ),
+            (
+                "protocol_ipv4".to_owned(),
+                serde_json::Value::Bool(self.config.protocol_ipv4),
+            ),
+            (
+                "protocol_ipv6".to_owned(),
+                serde_json::Value::Bool(self.config.protocol_ipv6),
+            ),
+            (
+                "basic_auth_mode".to_owned(),
+                serde_json::Value::Bool(self.config.basic_auth_mode),
+            ),
+            (
+                "enable_user_accounts".to_owned(),
+                serde_json::Value::Bool(self.config.enable_user_accounts),
+            ),
+            (
+                "enable_discreet_login".to_owned(),
+                serde_json::Value::Bool(self.config.enable_discreet_login),
+            ),
+            (
+                "per_user_basic_auth".to_owned(),
+                serde_json::Value::Bool(self.config.per_user_basic_auth),
+            ),
+            (
+                "basic_auth_username".to_owned(),
+                serde_json::Value::String(self.config.basic_auth_username.clone()),
+            ),
+            (
+                "basic_auth_password".to_owned(),
+                serde_json::Value::String(self.config.basic_auth_password.clone()),
+            ),
+            (
+                "whitelist_mode".to_owned(),
+                serde_json::Value::Bool(self.config.whitelist_mode),
+            ),
+            (
+                "whitelist".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .whitelist
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "cors_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.cors_enabled),
+            ),
+            (
+                "cors_origins".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .cors_origins
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "cors_methods".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .cors_methods
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "cors_allowed_headers".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .cors_allowed_headers
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "cors_exposed_headers".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .cors_exposed_headers
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "cors_credentials".to_owned(),
+                serde_json::Value::Bool(self.config.cors_credentials),
+            ),
+            (
+                "cors_max_age".to_owned(),
+                serde_json::Value::String(self.config.cors_max_age.clone()),
+            ),
+            (
+                "request_proxy_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.request_proxy_enabled),
+            ),
+            (
+                "request_proxy_url".to_owned(),
+                serde_json::Value::String(self.config.request_proxy_url.clone()),
+            ),
+            (
+                "proxy_bypass".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .proxy_bypass
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "common_backups".to_owned(),
+                serde_json::Value::String(self.config.common_backups.clone()),
+            ),
+            (
+                "chat_backups_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.chat_backups_enabled),
+            ),
+            (
+                "chat_backups_check_integrity".to_owned(),
+                serde_json::Value::Bool(self.config.chat_backups_check_integrity),
+            ),
+            (
+                "chat_max_backups".to_owned(),
+                serde_json::Value::String(self.config.chat_max_backups.clone()),
+            ),
+            (
+                "chat_throttle_interval".to_owned(),
+                serde_json::Value::String(self.config.chat_throttle_interval.clone()),
+            ),
+            (
+                "thumbnails_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.thumbnails_enabled),
+            ),
+            (
+                "thumbnail_format".to_owned(),
+                serde_json::Value::String(format!("{:?}", self.config.thumbnail_format)),
+            ),
+            (
+                "thumbnail_quality".to_owned(),
+                serde_json::Value::String(self.config.thumbnail_quality.clone()),
+            ),
+            (
+                "background_width".to_owned(),
+                serde_json::Value::String(self.config.background_width.clone()),
+            ),
+            (
+                "background_height".to_owned(),
+                serde_json::Value::String(self.config.background_height.clone()),
+            ),
+            (
+                "avatar_width".to_owned(),
+                serde_json::Value::String(self.config.avatar_width.clone()),
+            ),
+            (
+                "avatar_height".to_owned(),
+                serde_json::Value::String(self.config.avatar_height.clone()),
+            ),
+            (
+                "persona_width".to_owned(),
+                serde_json::Value::String(self.config.persona_width.clone()),
+            ),
+            (
+                "persona_height".to_owned(),
+                serde_json::Value::String(self.config.persona_height.clone()),
+            ),
+            (
+                "browser_launch_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.browser_launch_enabled),
+            ),
+            (
+                "browser_type".to_owned(),
+                serde_json::Value::String(format!("{:?}", self.config.browser_type)),
+            ),
+            (
+                "ssl_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.ssl_enabled),
+            ),
+            (
+                "ssl_cert_path".to_owned(),
+                serde_json::Value::String(self.config.ssl_cert_path.clone()),
+            ),
+            (
+                "ssl_key_path".to_owned(),
+                serde_json::Value::String(self.config.ssl_key_path.clone()),
+            ),
+            (
+                "ssl_key_passphrase".to_owned(),
+                serde_json::Value::String(self.config.ssl_key_passphrase.clone()),
+            ),
+            (
+                "dns_prefer_ipv6".to_owned(),
+                serde_json::Value::Bool(self.config.dns_prefer_ipv6),
+            ),
+            (
+                "heartbeat_interval".to_owned(),
+                serde_json::Value::String(self.config.heartbeat_interval.clone()),
+            ),
+            (
+                "host_whitelist_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.host_whitelist_enabled),
+            ),
+            (
+                "host_whitelist_scan".to_owned(),
+                serde_json::Value::Bool(self.config.host_whitelist_scan),
+            ),
+            (
+                "host_whitelist".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .host_whitelist
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "import_domains".to_owned(),
+                serde_json::Value::Array(
+                    self.config
+                        .import_domains
+                        .iter()
+                        .cloned()
+                        .map(serde_json::Value::String)
+                        .collect(),
+                ),
+            ),
+            (
+                "session_timeout".to_owned(),
+                serde_json::Value::String(self.config.session_timeout.clone()),
+            ),
+            (
+                "disable_csrf_protection".to_owned(),
+                serde_json::Value::Bool(self.config.disable_csrf_protection),
+            ),
+            (
+                "security_override".to_owned(),
+                serde_json::Value::Bool(self.config.security_override),
+            ),
+            (
+                "allow_keys_exposure".to_owned(),
+                serde_json::Value::Bool(self.config.allow_keys_exposure),
+            ),
+            (
+                "skip_content_check".to_owned(),
+                serde_json::Value::Bool(self.config.skip_content_check),
+            ),
+            (
+                "enable_access_log".to_owned(),
+                serde_json::Value::Bool(self.config.enable_access_log),
+            ),
+            (
+                "min_log_level".to_owned(),
+                serde_json::Value::String(format!("{:?}", self.config.min_log_level)),
+            ),
+            (
+                "lazy_load_characters".to_owned(),
+                serde_json::Value::Bool(self.config.lazy_load_characters),
+            ),
+            (
+                "memory_cache_capacity".to_owned(),
+                serde_json::Value::String(self.config.memory_cache_capacity.clone()),
+            ),
+            (
+                "use_disk_cache".to_owned(),
+                serde_json::Value::Bool(self.config.use_disk_cache),
+            ),
+            (
+                "cache_buster_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.cache_buster_enabled),
+            ),
+            (
+                "cache_buster_pattern".to_owned(),
+                serde_json::Value::String(self.config.cache_buster_pattern.clone()),
+            ),
+            (
+                "authelia_auth".to_owned(),
+                serde_json::Value::Bool(self.config.authelia_auth),
+            ),
+            (
+                "authentik_auth".to_owned(),
+                serde_json::Value::Bool(self.config.authentik_auth),
+            ),
+            (
+                "extensions_enabled".to_owned(),
+                serde_json::Value::Bool(self.config.extensions_enabled),
+            ),
+            (
+                "extensions_auto_update".to_owned(),
+                serde_json::Value::Bool(self.config.extensions_auto_update),
+            ),
+            (
+                "enable_server_plugins".to_owned(),
+                serde_json::Value::Bool(self.config.enable_server_plugins),
+            ),
+            (
+                "enable_server_plugins_auto_update".to_owned(),
+                serde_json::Value::Bool(self.config.enable_server_plugins_auto_update),
+            ),
+            (
+                "enable_cors_proxy".to_owned(),
+                serde_json::Value::Bool(self.config.enable_cors_proxy),
+            ),
+            (
+                "prompt_placeholder".to_owned(),
+                serde_json::Value::String(self.config.prompt_placeholder.clone()),
+            ),
+            (
+                "enable_downloadable_tokenizers".to_owned(),
+                serde_json::Value::Bool(self.config.enable_downloadable_tokenizers),
+            ),
+        ]
+        .into_iter()
+        .collect()
+    }
+    pub(crate) fn apply_values(&mut self, values: Values) -> Result<(), ConfigError> {
+        self.config =
+            serde_json::from_value(serde_json::Value::Object(values.into_iter().collect()))
+                .map_err(|_| ConfigError::new(ErrorKind::Invalid, "无法同步配置到界面。", ""))?;
+        Ok(())
+    }
+
     pub(crate) fn browser_type(&self) -> BrowserType {
         self.config.browser_type
     }
@@ -409,7 +783,17 @@ impl TavernState {
             TavernMessage::SelectBrowser(value) => self.config.browser_type = value,
             TavernMessage::SelectThumbnailFormat(value) => self.config.thumbnail_format = value,
             TavernMessage::SelectLogLevel(value) => self.config.min_log_level = value,
-            TavernMessage::Action(action) => self.last_action = Some(action),
+            TavernMessage::Action(_)
+            | TavernMessage::GenerateConfig
+            | TavernMessage::RetryConfig
+            | TavernMessage::ConfirmImport
+            | TavernMessage::CancelImport
+            | TavernMessage::UseDiskValues
+            | TavernMessage::KeepDraftValues
+            | TavernMessage::GoToVersions
+            | TavernMessage::ConfigOverlayInteract
+            | TavernMessage::ContinueEditing
+            | TavernMessage::DiscardAndClose => {}
             TavernMessage::RestoreDefaults => *self = Self::default(),
         }
     }
@@ -527,13 +911,17 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
         ]
         .spacing(4),
         space::horizontal(),
-        status_badge(state.last_action),
+        status_badge(&state.sync),
         header_button(
             "打开配置文件",
             Icon::FolderOpen,
             TavernAction::OpenConfigFile
         ),
-        header_button("配置迁移", Icon::ArrowDownUp, TavernAction::MigrateConfig),
+        header_button(
+            "导入配置文件",
+            Icon::ArrowDownUp,
+            TavernAction::ImportConfig
+        ),
     ]
     .spacing(11)
     .align_y(Alignment::Center)
@@ -546,22 +934,18 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
     let groups = config_groups(state);
     let groups = container(groups)
         .width(Fill)
-        .max_width(PAGE_WIDTH)
+        .max_width(FORM_WIDTH)
         .padding([4, 0]);
     let scroller = scrollable(container(groups).width(Fill).align_x(Alignment::Center))
         .width(Fill)
         .height(Fill);
 
-    let content = column![
-        container(header)
-            .width(Fill)
-            .max_width(PAGE_WIDTH)
-            .align_x(Alignment::Center),
-        scroller,
-    ]
-    .spacing(18)
-    .width(Fill)
-    .height(Fill);
+    // 页头及分隔线铺满主内容区；下方表单仍保持限宽居中。
+    let scroller = sync::with_overlay(scroller.into(), &state.sync);
+    let content = column![header, scroller]
+        .spacing(18)
+        .width(Fill)
+        .height(Fill);
 
     container(content)
         .width(Fill)
@@ -1247,23 +1631,50 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
     )
 }
 
-fn status_badge(last_action: Option<TavernAction>) -> Element<'static, TavernMessage> {
-    let (label, color) = if last_action.is_some() {
-        ("操作待接入", BLUE_600)
-    } else {
-        ("就绪", SUCCESS)
-    };
-    container(
+fn status_badge(sync: &sync::SyncView) -> Element<'static, TavernMessage> {
+    let (label, color) = (sync.status.label(), sync.status.color());
+    let badge = container(
         row![
-            icons::icon(Icon::CircleCheck, 13, color),
+            icons::icon(
+                if matches!(sync.status, sync::Status::Ready | sync::Status::Saved) {
+                    Icon::CircleCheck
+                } else {
+                    Icon::Info
+                },
+                13,
+                color
+            ),
             text(label).size(10).font(fonts::MEDIUM).color(color)
         ]
         .spacing(6)
         .align_y(Alignment::Center),
     )
     .padding([7, 9])
-    .style(status_badge_style(color))
-    .into()
+    .style(status_badge_style(color));
+    let badge: Element<'static, TavernMessage> = if sync.status == sync::Status::SaveFailed {
+        button(badge)
+            .on_press(TavernMessage::RetryConfig)
+            .padding(0)
+            .style(button_style(ButtonVariant::Ghost))
+            .into()
+    } else {
+        badge.into()
+    };
+    if let Some(error) = &sync.error {
+        iced::widget::tooltip(
+            badge,
+            container(
+                column![text(error.message).size(11), text(&error.detail).size(10)].spacing(5),
+            )
+            .max_width(420)
+            .padding(10)
+            .style(config_card_style),
+            iced::widget::tooltip::Position::Bottom,
+        )
+        .into()
+    } else {
+        badge
+    }
 }
 
 fn header_button(
@@ -1483,14 +1894,19 @@ fn text_control<'a>(
     field: TextField,
     secure: bool,
 ) -> Element<'a, TavernMessage> {
-    text_input(placeholder, value)
+    let input = text_input(placeholder, value)
         .on_input(move |value| TavernMessage::Edit(field, value))
         .secure(secure)
         .width(CONTROL_WIDTH)
         .padding([8, 11])
         .size(12)
         .style(text_input_style)
-        .into()
+        .into();
+    sync::validated_input(
+        input,
+        field.key(),
+        &serde_json::Value::String(value.to_owned()),
+    )
 }
 
 fn wide_text_control<'a>(
@@ -1499,14 +1915,19 @@ fn wide_text_control<'a>(
     field: TextField,
     secure: bool,
 ) -> Element<'a, TavernMessage> {
-    text_input(placeholder, value)
+    let input = text_input(placeholder, value)
         .on_input(move |value| TavernMessage::Edit(field, value))
         .secure(secure)
         .width(Fill)
         .padding([10, 14])
         .size(13)
         .style(text_input_style)
-        .into()
+        .into();
+    sync::validated_input(
+        input,
+        field.key(),
+        &serde_json::Value::String(value.to_owned()),
+    )
 }
 
 fn select_control<'a, T: Copy + Eq + fmt::Display + 'a>(
@@ -1581,7 +2002,17 @@ fn list_control<'a>(
         .padding([7, 11])
         .style(button_style(ButtonVariant::Tertiary)),
     );
-    items.into()
+    sync::validated_input(
+        items.into(),
+        field.key(),
+        &serde_json::Value::Array(
+            values
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    )
 }
 
 fn page_icon_style(_theme: &Theme) -> container::Style {
@@ -1734,5 +2165,94 @@ mod tests {
         state.update(TavernMessage::ToggleAdvancedSection(1));
         assert!(state.advanced_expanded[0]);
         assert!(state.advanced_expanded[1]);
+    }
+}
+
+impl BoolField {
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Listen => "listen",
+            Self::ProtocolIpv4 => "protocol_ipv4",
+            Self::ProtocolIpv6 => "protocol_ipv6",
+            Self::DnsPreferIpv6 => "dns_prefer_ipv6",
+            Self::BrowserLaunchEnabled => "browser_launch_enabled",
+            Self::BasicAuthMode => "basic_auth_mode",
+            Self::EnableUserAccounts => "enable_user_accounts",
+            Self::EnableDiscreetLogin => "enable_discreet_login",
+            Self::PerUserBasicAuth => "per_user_basic_auth",
+            Self::WhitelistMode => "whitelist_mode",
+            Self::HostWhitelistEnabled => "host_whitelist_enabled",
+            Self::HostWhitelistScan => "host_whitelist_scan",
+            Self::SslEnabled => "ssl_enabled",
+            Self::CorsEnabled => "cors_enabled",
+            Self::CorsCredentials => "cors_credentials",
+            Self::RequestProxyEnabled => "request_proxy_enabled",
+            Self::ChatBackupsEnabled => "chat_backups_enabled",
+            Self::ChatBackupsCheckIntegrity => "chat_backups_check_integrity",
+            Self::ThumbnailsEnabled => "thumbnails_enabled",
+            Self::LazyLoadCharacters => "lazy_load_characters",
+            Self::UseDiskCache => "use_disk_cache",
+            Self::EnableAccessLog => "enable_access_log",
+            Self::DisableCsrfProtection => "disable_csrf_protection",
+            Self::SecurityOverride => "security_override",
+            Self::AllowKeysExposure => "allow_keys_exposure",
+            Self::SkipContentCheck => "skip_content_check",
+            Self::ExtensionsEnabled => "extensions_enabled",
+            Self::ExtensionsAutoUpdate => "extensions_auto_update",
+            Self::EnableServerPlugins => "enable_server_plugins",
+            Self::EnableServerPluginsAutoUpdate => "enable_server_plugins_auto_update",
+            Self::AutheliaAuth => "authelia_auth",
+            Self::AuthentikAuth => "authentik_auth",
+            Self::CacheBusterEnabled => "cache_buster_enabled",
+            Self::EnableCorsProxy => "enable_cors_proxy",
+            Self::EnableDownloadableTokenizers => "enable_downloadable_tokenizers",
+        }
+    }
+}
+
+impl TextField {
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Port => "port",
+            Self::ListenIpv4 => "listen_ipv4",
+            Self::ListenIpv6 => "listen_ipv6",
+            Self::HeartbeatInterval => "heartbeat_interval",
+            Self::BasicAuthUsername => "basic_auth_username",
+            Self::BasicAuthPassword => "basic_auth_password",
+            Self::SslCertPath => "ssl_cert_path",
+            Self::SslKeyPath => "ssl_key_path",
+            Self::SslKeyPassphrase => "ssl_key_passphrase",
+            Self::CorsMaxAge => "cors_max_age",
+            Self::RequestProxyUrl => "request_proxy_url",
+            Self::CommonBackups => "common_backups",
+            Self::ChatMaxBackups => "chat_max_backups",
+            Self::ChatThrottleInterval => "chat_throttle_interval",
+            Self::ThumbnailQuality => "thumbnail_quality",
+            Self::BackgroundWidth => "background_width",
+            Self::BackgroundHeight => "background_height",
+            Self::AvatarWidth => "avatar_width",
+            Self::AvatarHeight => "avatar_height",
+            Self::PersonaWidth => "persona_width",
+            Self::PersonaHeight => "persona_height",
+            Self::MemoryCacheCapacity => "memory_cache_capacity",
+            Self::PromptPlaceholder => "prompt_placeholder",
+            Self::SessionTimeout => "session_timeout",
+            Self::CacheBusterPattern => "cache_buster_pattern",
+        }
+    }
+}
+
+impl ListField {
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Whitelist => "whitelist",
+            Self::HostWhitelist => "host_whitelist",
+            Self::ImportDomains => "import_domains",
+            Self::CorsOrigins => "cors_origins",
+            Self::CorsMethods => "cors_methods",
+            Self::CorsAllowedHeaders => "cors_allowed_headers",
+            Self::CorsExposedHeaders => "cors_exposed_headers",
+            Self::ProxyBypass => "proxy_bypass",
+        }
     }
 }

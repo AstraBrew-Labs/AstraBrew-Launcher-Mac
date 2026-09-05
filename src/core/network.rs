@@ -382,7 +382,10 @@ fn selected_proxy_url(proxy_mode: &str, proxy_host: &str) -> Result<Option<Strin
     }
 }
 
-fn build_client(proxy_mode: &str, proxy_host: &str) -> Result<reqwest::blocking::Client, String> {
+pub(crate) fn build_client(
+    proxy_mode: &str,
+    proxy_host: &str,
+) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
         .no_proxy()
         .timeout(Duration::from_secs(10))

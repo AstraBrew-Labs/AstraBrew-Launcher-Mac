@@ -45,6 +45,7 @@ use crate::theme::button_style;
 use crate::{pages, sidebar};
 
 mod local_instances;
+mod tavern_config;
 
 /// 应用屏幕：初始化流程 / 主界面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,12 +235,18 @@ pub(crate) enum Message {
     VersionInstallTick,
     /// 独立于弹窗可见性的本地任务轮询。
     LocalInstancesTick,
+    /// 配置文本去抖、外部文件轮询及保存回执。
+    TavernConfigTick,
+    /// 文件选择器结果绑定发起时的配置目标，不能套用到后来的实例。
+    ConfigImportChosen(String, Option<PathBuf>),
     /// 原生文件选择器返回的清单路径；None 表示用户取消。
     LocalImportChosen(Option<PathBuf>),
 }
 
 /// 应用状态
 pub struct Launcher {
+    /// 按配置目标隔离的实时保存协调器。
+    config_runtime: tavern_config::ConfigRuntime,
     /// 本地实例后台服务及其事件通道。
     local_runtime: local_instances::LocalRuntime,
     /// 当前屏幕（初始化流程或主界面）
@@ -339,6 +346,7 @@ impl Launcher {
         }
 
         let mut launcher = Self {
+            config_runtime: tavern_config::ConfigRuntime::default(),
             local_runtime: local_instances::LocalRuntime::default(),
             screen: Screen::Main,
             page: Page::Home,
@@ -369,6 +377,8 @@ impl Launcher {
         launcher.start_version_catalog_load(false);
         #[cfg(not(test))]
         launcher.load_local_instances();
+        #[cfg(not(test))]
+        launcher.reconcile_tavern_config();
         if launcher.settings.auto_start != preferences.auto_start {
             launcher.persist_preferences();
         }
@@ -455,7 +465,13 @@ impl Launcher {
             Subscription::none()
         };
 
+        let config_timer = if self.config_needs_tick() {
+            time::every(Duration::from_millis(50)).map(|_| Message::TavernConfigTick)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            config_timer,
             local_timer,
             init_timer,
             environment_timer,
@@ -469,6 +485,14 @@ impl Launcher {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // 所有早返回路径也要同步配置上下文，不能遗漏异步实例切换或首页快捷操作。
+        self.reconcile_tavern_config();
+        let task = self.update_inner(message);
+        self.reconcile_tavern_config();
+        task
+    }
+
+    fn update_inner(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::StartInitialization => {
                 self.stage = InitStage::Initializing;
@@ -487,6 +511,9 @@ impl Launcher {
             Message::Navigate(page) => {
                 // 切换主界面当前页面
                 self.page = page;
+                if page == Page::TavernConfig {
+                    self.request_config_refresh();
+                }
                 if page == Page::Resources {
                     self.resources.configure(&self.settings, &self.versions);
                     self.resources.refresh_all();
@@ -705,7 +732,9 @@ impl Launcher {
                 self.window_position = None;
                 self.persist_preferences();
             }
-            Message::Tavern(message) => self.tavern.update(message),
+            Message::Tavern(message) => return self.handle_tavern_config_message(message),
+            Message::TavernConfigTick => return self.poll_tavern_config(),
+            Message::ConfigImportChosen(key, path) => self.config_import_chosen(key, path),
             Message::Version(VersionMessage::ImportLocal) => return self.pick_local_instance(),
             Message::LocalImportChosen(path) => self.import_local_file(path),
             Message::LocalInstancesTick => self.poll_local_instances(),
@@ -750,6 +779,9 @@ impl Launcher {
                 self.window_position = Some([position.x, position.y]);
             }
             Message::WindowCloseRequested(id) => {
+                if self.defer_config_close(id) {
+                    return Task::none();
+                }
                 // 酒馆安装期间弹窗不可关闭，也不允许通过窗口关闭绕过安装流程。
                 if self.versions.install_task.running || self.versions.local.install.running {
                     return Task::none();
@@ -1755,6 +1787,13 @@ impl Launcher {
                 container(toast.map(Message::Version))
                     .width(Fill)
                     .align_x(Alignment::Center)
+            ]
+            .into();
+        }
+        if self.tavern.sync.close_prompt {
+            page = iced::widget::stack![
+                page,
+                crate::pages::tavern::sync::close_overlay(&self.tavern.sync).map(Message::Tavern)
             ]
             .into();
         }

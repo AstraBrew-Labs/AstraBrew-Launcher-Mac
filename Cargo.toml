@@ -13,6 +13,8 @@ lucide-icons = { version = "1.31.0", features = ["iced"] }
 astra_ui = { git = "https://github.com/AstraBrew-Labs/iced-astraui", branch = "beta", package = "iced-astraui" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# 无损编辑配置，保留未知字段及未修改部分的注释。
+yaml-edit = "=0.3.1"
 reqwest = { version = "0.12", default-features = true, features = ["blocking", "socks"] }
 rfd = "0.15"
 
