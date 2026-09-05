@@ -2,6 +2,9 @@
 
 /// 翻译静态或运行时拼接的界面文案。
 pub fn translate_owned(content: &str) -> String {
+    if let Some(value) = translate_local(content) {
+        return value.to_owned();
+    }
     let translated = match content {
         "星酿启动器" => "AstraBrew Launcher",
         "AstraBrew Launcher" => "AstraBrew Launcher",
@@ -310,6 +313,9 @@ pub fn translate_owned(content: &str) -> String {
 
 /// 兼容按键查询接口；未收录键保持原文，便于逐步迁移页面文案。
 pub fn translate(key: &'static str) -> &'static str {
+    if let Some(value) = translate_local(key) {
+        return value;
+    }
     match key {
         "星酿启动器" => "AstraBrew Launcher",
         "设置未能保存" => "Settings could not be saved",
@@ -318,6 +324,28 @@ pub fn translate(key: &'static str) -> &'static str {
 }
 
 fn translate_dynamic(content: &str) -> String {
+    if let Some(value) = content
+        .strip_prefix("已添加 ")
+        .and_then(|value| value.strip_suffix(" 个本地实例"))
+    {
+        return format!("{value} local instances added");
+    }
+    if let Some(value) = content
+        .strip_prefix("正在执行 ")
+        .and_then(|value| value.strip_suffix('…'))
+    {
+        return format!("Running {value}…");
+    }
+    for (prefix, translated) in [
+        ("无法启动命令：", "Unable to start command: "),
+        ("命令退出码：", "Command exit code: "),
+        ("等待命令结束失败：", "Unable to wait for command: "),
+        ("读取命令日志失败：", "Unable to read command logs: "),
+    ] {
+        if let Some(value) = content.strip_prefix(prefix) {
+            return format!("{translated}{value}");
+        }
+    }
     if let Some(value) = content.strip_prefix("当前版本：") {
         return format!("Current Version: {value}");
     }
@@ -392,4 +420,181 @@ fn translate_dynamic(content: &str) -> String {
         return "Manage appearance, Tavern behavior, dependencies, and network settings".into();
     }
     content.to_owned()
+}
+
+/// 本地实例的静态标题同时供 Toast 与普通文本使用。
+fn translate_local(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "正在检查扫描目录访问权限…" => "Checking access to scan locations…",
+        "扫描已完成，但结果不完整。" => "Scan finished with incomplete results.",
+        "正在快速扫描用户主目录…" => "Quick-scanning your home directory…",
+        "快速扫描完成，仅扫描用户主目录。" => {
+            "Quick scan complete. Only your home directory was scanned."
+        }
+        "快速扫描完成，仅扫描用户主目录；部分位置不可访问。" => {
+            "Home-directory quick scan complete. Some locations were inaccessible."
+        }
+        "扫描范围：已挂载的本地物理磁盘" => "Scope: mounted local physical disks",
+        "已检查清单" => "Manifests checked",
+        "当前用户主目录" => "Current user's home directory",
+        "取消扫描" => "Cancel Scan",
+        "扫描正在停止，请稍后重试。" => {
+            "The scan is stopping. Please try again shortly."
+        }
+        "快速扫描输出异常，已停止。" => {
+            "Quick scan stopped because its output was invalid."
+        }
+        "快速扫描命令执行失败。" => "The quick-scan command failed.",
+        "无法等待快速扫描进程。" => "Unable to monitor the quick-scan process.",
+        "快速扫描跳过或遇到错误。" => {
+            "Quick scan skipped a location or encountered an error."
+        }
+        "无法读取快速扫描输出。" => "Unable to read quick-scan output.",
+        "无法启动快速扫描命令。" => "Unable to start the quick-scan command.",
+        "无法确定用户主目录，快速扫描未启动。" => {
+            "Cannot determine the home directory. Quick scan was not started."
+        }
+        "用户主目录不可访问，快速扫描无法继续。" => {
+            "The home directory is inaccessible. Quick scan cannot continue."
+        }
+        "实例路径无法保存为文本，已跳过。" => {
+            "An instance path cannot be saved as text and was skipped."
+        }
+        "扫描进度" => "Scan Progress",
+        "扫描完成" => "Scan Complete",
+        "警告" => "Warning",
+        "确定" => "Confirm",
+        "确定要取消当前的扫描吗？已经扫描到的实例会保留。" => {
+            "Cancel the current scan? Instances already found will be kept."
+        }
+        "在用户主目录中查找酒馆实例。" => {
+            "Looking for SillyTavern instances in your home directory."
+        }
+        "收起详细日志" => "Hide Details",
+        "查看详细日志" => "Show Details",
+        "选择酒馆的 package.json" => "Select SillyTavern's package.json",
+        "选择的不是酒馆实例，请重新选择。" => {
+            "This is not a SillyTavern instance. Please select another file."
+        }
+        "请不要添加在线实例。" => "Please do not add the online instance.",
+        "无法读取实例文件。" => "Unable to read the instance file.",
+        "未知版本" => "Unknown version",
+        "无法加载本地实例列表。" => "Unable to load local instances.",
+        "本地实例列表损坏，已停止覆盖原文件。" => {
+            "The instance list is invalid. The original file will not be overwritten."
+        }
+        "本地实例列表不可写，请修复后重新启动。" => {
+            "The instance list cannot be saved. Repair it and restart the app."
+        }
+        "无法启动本地实例任务。" => "Unable to start the local instance task.",
+        "无法读取任务输出。" => "Unable to read task output.",
+        "本地实例任务已取消。" => "The local instance task was cancelled.",
+        "本地实例任务超时。" => "The local instance task timed out.",
+        "任务输出过大，无法确认结果。" => {
+            "Task output is too large to verify the result."
+        }
+        "无法解析运行依赖检测结果。" => {
+            "Unable to parse the runtime dependency check."
+        }
+        "运行依赖检测失败。" => "The runtime dependency check failed.",
+        "安装依赖失败，请查看日志后重试。" => {
+            "Dependency installation failed. Review the logs and retry."
+        }
+        "安装已结束，但运行依赖仍不完整。" => {
+            "Installation ended, but runtime dependencies are still incomplete."
+        }
+        "请先安装可用的 Node.js 和 npm。" => {
+            "Install a working Node.js and npm runtime first."
+        }
+        "无法枚举本地物理磁盘。" => "Unable to enumerate local physical disks.",
+        "无法解析磁盘信息。" => "Unable to parse disk information.",
+        "没有可扫描的已挂载物理磁盘。" => {
+            "No mounted physical disks are available to scan."
+        }
+        "扫描权限不足，请授权后重试。" => {
+            "Disk access was denied. Grant access and try again."
+        }
+        "无法确认完全磁盘访问权限，请授权后重试。" => {
+            "Full Disk Access could not be verified. Grant access and try again."
+        }
+        "无法打开系统权限设置。" => "Unable to open system privacy settings.",
+        "无法访问扫描磁盘。" => "Unable to access the disk being scanned.",
+        "扫描已取消。" => "Scan cancelled.",
+        "扫描遇到权限拒绝，已终止。" => "The scan stopped because access was denied.",
+        "扫描路径不可用。" => "A scan location is unavailable.",
+        "扫描磁盘已断开，结果不完整。" => {
+            "A disk was disconnected. Scan results are incomplete."
+        }
+        "无法读取扫描目录。" => "Unable to read a scan directory.",
+        "扫描结束，但部分路径不可访问，结果不完整。" => {
+            "The scan ended with inaccessible locations. Results are incomplete."
+        }
+        "尚未开始扫描。" => "No scan has been started.",
+        "正在检查扫描权限…" => "Checking disk access…",
+        "请授予完全磁盘访问权限。" => "Please grant Full Disk Access.",
+        "正在扫描本地实例…" => "Scanning for local instances…",
+        "扫描完成。" => "Scan complete.",
+        "扫描已终止，结果可能不完整。" => "Scan stopped. Results may be incomplete.",
+        "扫描授权已取消，未开始扫描。" => {
+            "Permission request cancelled. No scan was started."
+        }
+        "安装本地实例依赖" => "Install Local Dependencies",
+        "正在安装并检查运行依赖…" => "Installing and verifying runtime dependencies…",
+        "运行依赖已安装完成，请手动切换版本。" => {
+            "Runtime dependencies are ready. Switch to this instance when needed."
+        }
+        "扫描本地实例" => "Scan Local Instances",
+        "请在系统设置中允许本应用完全磁盘访问，然后返回重新检测。若仍无效，请重新启动应用后重试。" => {
+            "Allow Full Disk Access for this app in System Settings, then return to check again. If access is still denied, restart the app and retry."
+        }
+        "前往系统设置" => "Open System Settings",
+        "已授权，重新检测" => "Access Granted, Check Again",
+        "扫描目录" => "Directories",
+        "发现实例" => "Found",
+        "新增实例" => "Added",
+        "重复实例" => "Duplicates",
+        "耗时（秒）" => "Elapsed (s)",
+        "关闭窗口不影响已开始的后台扫描；日志保留最近 600 行。" => {
+            "Closing this dialog keeps the scan running. The latest 600 log lines are retained."
+        }
+        "已有安装任务正在执行，请稍后再试。" => {
+            "An installation is already running. Please wait."
+        }
+        "保存本地实例列表失败。" => "Unable to save local instances.",
+        "已导入本地实例。" => "Local instance imported.",
+        "该本地实例已在列表中，已忽略。" => {
+            "This instance is already in the list and was skipped."
+        }
+        "扫描完成，已自动添加发现的本地实例。" => {
+            "Scan complete. Discovered local instances were added automatically."
+        }
+        "已切换到本地实例。" => "Switched to the local instance.",
+        "已切换到在线实例。" => "Switched to the online instance.",
+        "在线实例尚未就绪，请重新选择版本。" => {
+            "The online instance is not ready. Please select a version again."
+        }
+        "未找到要切换的在线版本，请刷新列表。" => {
+            "The requested online version was not found. Please refresh the list."
+        }
+        "运行依赖不完整，请先安装依赖。" => {
+            "Runtime dependencies are incomplete. Install them before switching."
+        }
+        "当前正在使用的实例不能从列表中移除。" => {
+            "The active instance cannot be removed from the list."
+        }
+        "已从本地实例列表移除。" => "Removed from the local instance list.",
+        "正在保存本地实例，请稍后关闭。" => {
+            "Saving local instances. Please wait before closing."
+        }
+        "重试安装" => "Retry Installation",
+        "重试检测" => "Retry Check",
+        "依赖检测失败，请点击重试查看原因。" => {
+            "Dependency check failed. Retry to view the reason."
+        }
+        "检测中…" => "Checking…",
+        "安装中…" => "Installing…",
+        "开始扫描" => "Start Scan",
+        "正在加载本地实例…" => "Loading local instances…",
+        _ => return None,
+    })
 }

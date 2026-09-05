@@ -25,7 +25,7 @@ pub fn resolve_command(name: &str) -> String {
 /// 不包含 Homebrew 路径。即使 resolve_command 找到了命令的绝对路径，
 /// 如果命令内部通过 shebang（如 `#!/usr/bin/env node`）依赖其他工具，
 /// 仍会因子进程找不到依赖而失败。因此必须在启动子进程前补全 PATH。
-fn cmd(name: &str) -> Command {
+pub(crate) fn cmd(name: &str) -> Command {
     let mut cmd = Command::new(resolve_command(name));
     let current_path = std::env::var("PATH").unwrap_or_default();
     let extra_paths = HOMEBREW_BIN_PATHS.join(":");

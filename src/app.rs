@@ -44,6 +44,8 @@ use crate::pages::versions::{TavernBranch, VersionMessage, VersionState};
 use crate::theme::button_style;
 use crate::{pages, sidebar};
 
+mod local_instances;
+
 /// 应用屏幕：初始化流程 / 主界面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Screen {
@@ -230,10 +232,16 @@ pub(crate) enum Message {
     VersionCatalogTick,
     /// 驱动在线酒馆安装后台任务和完成倒计时。
     VersionInstallTick,
+    /// 独立于弹窗可见性的本地任务轮询。
+    LocalInstancesTick,
+    /// 原生文件选择器返回的清单路径；None 表示用户取消。
+    LocalImportChosen(Option<PathBuf>),
 }
 
 /// 应用状态
 pub struct Launcher {
+    /// 本地实例后台服务及其事件通道。
+    local_runtime: local_instances::LocalRuntime,
     /// 当前屏幕（初始化流程或主界面）
     screen: Screen,
     /// 主界面当前选中的页面
@@ -331,6 +339,7 @@ impl Launcher {
         }
 
         let mut launcher = Self {
+            local_runtime: local_instances::LocalRuntime::default(),
             screen: Screen::Main,
             page: Page::Home,
             stage: InitStage::Welcome,
@@ -358,6 +367,8 @@ impl Launcher {
         };
         // 应用启动即加载默认稳定版目录，避免用户必须进入页面后点击安装才能恢复状态。
         launcher.start_version_catalog_load(false);
+        #[cfg(not(test))]
+        launcher.load_local_instances();
         if launcher.settings.auto_start != preferences.auto_start {
             launcher.persist_preferences();
         }
@@ -438,7 +449,14 @@ impl Launcher {
 
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
+        let local_timer = if self.local_needs_tick() {
+            time::every(Duration::from_millis(100)).map(|_| Message::LocalInstancesTick)
+        } else {
+            Subscription::none()
+        };
+
         Subscription::batch([
+            local_timer,
             init_timer,
             environment_timer,
             github_test_timer,
@@ -688,6 +706,9 @@ impl Launcher {
                 self.persist_preferences();
             }
             Message::Tavern(message) => self.tavern.update(message),
+            Message::Version(VersionMessage::ImportLocal) => return self.pick_local_instance(),
+            Message::LocalImportChosen(path) => self.import_local_file(path),
+            Message::LocalInstancesTick => self.poll_local_instances(),
             Message::Version(message) => self.handle_version_message(message),
             Message::VersionCatalogTick => self.poll_version_catalog(),
             Message::VersionInstallTick => self.poll_version_install(),
@@ -730,12 +751,19 @@ impl Launcher {
             }
             Message::WindowCloseRequested(id) => {
                 // 酒馆安装期间弹窗不可关闭，也不允许通过窗口关闭绕过安装流程。
-                if self.versions.install_task.running {
+                if self.versions.install_task.running || self.versions.local.install.running {
+                    return Task::none();
+                }
+                if self.local_has_pending_save() {
+                    self.versions
+                        .local
+                        .notify("正在保存本地实例，请稍后关闭。", "", false);
                     return Task::none();
                 }
                 if self.settings.remember_window_position {
                     self.persist_preferences();
                 }
+                self.stop_scan_for_exit();
                 return window::close(id);
             }
             Message::SystemThemeChanged(mode) => {
@@ -873,8 +901,12 @@ impl Launcher {
             last_sync: format_version_sync_time(catalog.cached_at),
             from_cache: catalog.used_stale_cache,
         });
-        self.versions.set_staging_installed(installed_staging);
-        if installed_staging && self.versions.branch == TavernBranch::Staging {
+        self.versions.sync_online_installation(installed.as_ref());
+        // 在线目录刷新不能覆盖用户刚刚切换的本地实例。
+        if installed_staging
+            && self.versions.branch == TavernBranch::Staging
+            && self.versions.current_source != Some(crate::pages::versions::VersionSource::Local)
+        {
             if let Some(staging) = self.versions.staging.as_ref() {
                 self.versions.current_version = Some("staging".to_owned());
                 self.versions.online_instance_path = Some(
@@ -891,6 +923,27 @@ impl Launcher {
 
     /// 处理版本页消息并启动后台网络任务。
     fn handle_version_message(&mut self, message: VersionMessage) {
+        if self.handle_local_message(&message) {
+            return;
+        }
+        if matches!(
+            message,
+            VersionMessage::InstallOnline(_)
+                | VersionMessage::InstallBranch(_)
+                | VersionMessage::SwitchOnline(_)
+        ) {
+            if self.versions.local.loading {
+                self.versions.local.notify("正在加载本地实例…", "", false);
+                return;
+            }
+            if self.versions.local.install.running || self.versions.install_task.running {
+                self.versions
+                    .local
+                    .notify("已有安装任务正在执行，请稍后再试。", "", true);
+                return;
+            }
+            self.invalidate_local_switch();
+        }
         match &message {
             VersionMessage::RefreshOnline => {
                 self.start_version_catalog_load(true);
@@ -920,42 +973,7 @@ impl Launcher {
             }
             VersionMessage::SwitchOnline(version) => {
                 let installed = crate::core::network::installed_sillytavern_state();
-                let needs_install = if version == "staging" {
-                    installed.as_ref().and_then(|state| state.branch.as_deref()) != Some("staging")
-                } else {
-                    let target_tag = self
-                        .versions
-                        .online_releases
-                        .iter()
-                        .find(|release| release.version == *version)
-                        .map(|release| release.tag_name.as_str());
-                    installed
-                        .as_ref()
-                        .and_then(|state| state.tag_name.as_deref())
-                        != target_tag
-                };
-                if needs_install {
-                    if version == "staging" {
-                        self.versions
-                            .update(VersionMessage::InstallBranch("staging".to_owned()));
-                        self.start_version_install_target(
-                            SillyTavernInstallTarget::Branch("staging".to_owned()),
-                            "staging".to_owned(),
-                        );
-                    } else if let Some(release) = self
-                        .versions
-                        .online_releases
-                        .iter()
-                        .find(|release| release.version == *version)
-                        .cloned()
-                    {
-                        self.versions
-                            .update(VersionMessage::InstallOnline(version.clone()));
-                        self.start_version_install(release);
-                    }
-                } else {
-                    self.versions.update(message);
-                }
+                self.switch_online_version(version.clone(), installed.as_ref());
                 return;
             }
             VersionMessage::InstallBranch(branch) => {
@@ -983,6 +1001,46 @@ impl Launcher {
             _ => {}
         }
         self.versions.update(message);
+    }
+
+    /// 以本次磁盘检测为准切换实例；传入快照也便于测试时避免访问真实 Git 目录。
+    fn switch_online_version(
+        &mut self,
+        version: String,
+        installed: Option<&crate::core::network::InstalledSillyTavern>,
+    ) {
+        let release = self
+            .versions
+            .online_releases
+            .iter()
+            .find(|item| item.version == version)
+            .cloned();
+        if version != "staging" && release.is_none() {
+            self.versions
+                .local
+                .notify("未找到要切换的在线版本，请刷新列表。", version, true);
+            return;
+        }
+        self.versions.sync_online_installation(installed);
+        if self.versions.is_online_installed(&version) {
+            // 已经安装目标版本时只切换当前实例，不重新下载或安装。
+            self.versions.update(VersionMessage::SwitchOnline(version));
+            return;
+        }
+        if version == "staging" {
+            self.versions
+                .update(VersionMessage::InstallBranch(version.clone()));
+            self.versions.install_task.switch_requested = true;
+            self.start_version_install_target(
+                SillyTavernInstallTarget::Branch(version.clone()),
+                version,
+            );
+        } else if let Some(release) = release {
+            self.versions.update(VersionMessage::InstallOnline(version));
+            // 即使规范目录已被删除，用户明确点击的“切换”也应在重新安装成功后生效。
+            self.versions.install_task.switch_requested = true;
+            self.start_version_install(release);
+        }
     }
 
     /// 启动在线酒馆安装任务。弹窗先由状态更新显示，再在后台执行 git/npm。
@@ -1684,10 +1742,23 @@ impl Launcher {
 
     pub fn view(&self) -> Element<'_, Message> {
         crate::lang::set_language(effective_language(self.settings.language));
-        match self.screen {
+        let mut page = match self.screen {
             Screen::Init => self.init_view(),
             Screen::Main => self.main_view(),
+        };
+        if let Some(modal) = crate::pages::versions::local::modal_view(&self.versions.local) {
+            page = iced::widget::stack![page, modal.map(Message::Version)].into();
         }
+        if let Some(toast) = crate::pages::versions::local::toast_view(&self.versions.local) {
+            page = iced::widget::stack![
+                page,
+                container(toast.map(Message::Version))
+                    .width(Fill)
+                    .align_x(Alignment::Center)
+            ]
+            .into();
+        }
+        page
     }
 
     /// 初始化流程视图（首次运行引导）。

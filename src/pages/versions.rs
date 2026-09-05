@@ -149,13 +149,8 @@ impl Default for InstallTaskState {
     }
 }
 
-/// 本地发现或手动导入的酒馆实例。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalInstance {
-    pub version: String,
-    pub path: String,
-    pub dependencies_installed: bool,
-}
+pub(crate) mod local;
+pub use crate::core::local_instances::{DependencyStatus, LocalInstance};
 
 /// 可从远端下载的酒馆发行版本。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +188,7 @@ pub struct VersionState {
     /// 为已有扩展页面保留的最新版本字段。
     pub latest_version: String,
     pub local_instances: Vec<LocalInstance>,
+    pub local: local::LocalUiState,
     pub online_releases: Vec<OnlineRelease>,
     pub online_status: OnlineVersionsStatus,
     pub branch_loaded: bool,
@@ -255,34 +251,8 @@ impl Default for VersionState {
                 .first()
                 .map(|item| item.version.clone())
                 .unwrap_or_default(),
-            local_instances: vec![
-                LocalInstance {
-                    version: "1.18.0".into(),
-                    path: "/System/Volumes/Data/Users/al01/Tools/SillyTavern".into(),
-                    dependencies_installed: false,
-                },
-                LocalInstance {
-                    version: "1.18.0".into(),
-                    path: "/System/Volumes/Data/Users/al01/SillyTavern/SillyTavern".into(),
-                    dependencies_installed: false,
-                },
-                LocalInstance {
-                    version: "1.18.0".into(),
-                    path: "/Users/al01/Library/Application Support/AstraBrew Launcher/sillytavern"
-                        .into(),
-                    dependencies_installed: true,
-                },
-                LocalInstance {
-                    version: "1.18.0".into(),
-                    path: "/Users/al01/Tools/SillyTavern".into(),
-                    dependencies_installed: false,
-                },
-                LocalInstance {
-                    version: "1.18.0".into(),
-                    path: "/Users/al01/SillyTavern/SillyTavern".into(),
-                    dependencies_installed: false,
-                },
-            ],
+            local_instances: Vec::new(),
+            local: local::LocalUiState::default(),
             online_releases,
             online_status: OnlineVersionsStatus::Ready,
             branch_loaded: false,
@@ -324,6 +294,15 @@ pub enum VersionMessage {
     ImportLocal,
     ScanLocal,
     OpenScanLog,
+    CloseScanLog,
+    CancelScan,
+    RequestCancelScan,
+    KeepScanning,
+    ToggleScanDetails,
+    RecheckLocalDependencies(String),
+    CloseLocalInstall,
+    DismissLocalToast,
+    LocalModalInteract,
     InstallLocalDependencies(String),
     SwitchLocal(String),
     RemoveLocal(String),
@@ -406,49 +385,59 @@ impl VersionState {
                 self.online_status = OnlineVersionsStatus::Loading;
             }
             VersionMessage::CancelStagingRisk => self.staging_confirm_visible = false,
-            VersionMessage::ImportLocal => {
-                self.notice = Some("已保留导入入口：请选择 SillyTavern 的 package.json。".into());
-            }
-            VersionMessage::ScanLocal => {
-                self.notice = Some(format!(
-                    "扫描完成，共发现 {} 个本地实例。",
-                    self.local_instances.len()
-                ));
-            }
+            // 文件选择、扫描和依赖任务只由应用层执行；状态层不能伪造成功。
+            VersionMessage::ImportLocal
+            | VersionMessage::ScanLocal
+            | VersionMessage::CancelScan
+            | VersionMessage::RecheckLocalDependencies(_)
+            | VersionMessage::InstallLocalDependencies(_)
+            | VersionMessage::LocalModalInteract => {}
             VersionMessage::OpenScanLog => {
-                self.notice = Some("扫描日志入口已保留，等待扫描服务接入。".into());
+                self.local.scan.visible = true;
+                self.local.scan.show_details = true;
+                self.local.scan.auto_hide_at = None;
             }
-            VersionMessage::InstallLocalDependencies(path) => {
-                if let Some(instance) = self
-                    .local_instances
-                    .iter_mut()
-                    .find(|instance| instance.path == path)
-                {
-                    instance.dependencies_installed = true;
-                    self.notice = Some(format!("已为 v{} 标记依赖安装完成。", instance.version));
+            VersionMessage::RequestCancelScan => {
+                if self.local.scan.phase.active() {
+                    self.local.scan.visible = true;
+                    self.local.scan.cancel_confirm_visible = true;
                 }
             }
+            VersionMessage::KeepScanning => self.local.scan.cancel_confirm_visible = false,
+            VersionMessage::ToggleScanDetails => {
+                self.local.scan.show_details = !self.local.scan.show_details;
+                self.local.scan.auto_hide_at = None;
+            }
+            VersionMessage::CloseScanLog => self.local.close_scan(),
+            VersionMessage::CloseLocalInstall => {
+                if !self.local.install.running {
+                    self.local.install.visible = false;
+                }
+            }
+            VersionMessage::DismissLocalToast => self.local.toast = None,
             VersionMessage::SwitchLocal(path) => {
-                if let Some(instance) = self
-                    .local_instances
-                    .iter()
-                    .find(|instance| instance.path == path)
-                {
+                if let Some(instance) = self.local_instances.iter().find(|instance| {
+                    instance.path == path && instance.dependencies == DependencyStatus::Ready
+                }) {
                     self.current_version = Some(instance.version.clone());
                     self.current_path = Some(instance.path.clone());
                     self.current_source = Some(VersionSource::Local);
-                    self.notice = Some(format!("已切换到本地实例 v{}。", instance.version));
+                    self.local
+                        .notify("已切换到本地实例。", &instance.path, false);
                 }
             }
             VersionMessage::RemoveLocal(path) => {
                 let is_current = self.current_source == Some(VersionSource::Local)
                     && self.current_path.as_deref() == Some(path.as_str());
                 if is_current {
-                    self.notice = Some("当前正在使用的实例不能从列表中移除。".into());
-                } else {
+                    self.local
+                        .notify("当前正在使用的实例不能从列表中移除。", "", true);
+                } else if !self.local_instances.iter().any(|item| {
+                    item.path == path && item.dependencies == DependencyStatus::Installing
+                }) {
                     self.local_instances
                         .retain(|instance| instance.path != path);
-                    self.notice = Some("已从本地实例列表移除。".into());
+                    self.local.notify("已从本地实例列表移除。", "", false);
                 }
             }
             VersionMessage::RefreshOnline => {
@@ -486,13 +475,7 @@ impl VersionState {
                     self.selected_online_version =
                         releases.first().map(|item| item.version.clone());
                 }
-                for release in &mut releases {
-                    release.installed = self
-                        .online_releases
-                        .iter()
-                        .find(|previous| previous.version == release.version)
-                        .is_some_and(|previous| previous.installed);
-                }
+                // 上层已经按磁盘 Git 状态标记 installed，不能再用旧列表覆盖新检测结果。
                 self.online_releases = releases;
                 self.last_sync = last_sync;
                 self.online_status = if from_cache {
@@ -550,12 +533,19 @@ impl VersionState {
                     self.current_version = Some(version.clone());
                     if version == "staging" {
                         self.branch = TavernBranch::Staging;
+                    } else {
+                        self.branch = TavernBranch::Release;
+                        self.selected_online_version = Some(version.clone());
                     }
                     let path = online_instance_path();
                     self.current_path = Some(path.clone());
                     self.current_source = Some(VersionSource::Online);
                     self.online_instance_path = Some(path);
                     self.notice = Some(format!("已切换到在线安装版本 v{version}。"));
+                    self.local.notify("已切换到在线实例。", version, false);
+                } else {
+                    self.local
+                        .notify("在线实例尚未就绪，请重新选择版本。", version, true);
                 }
             }
             VersionMessage::DeleteOnline(version) => {
@@ -761,7 +751,24 @@ impl VersionState {
         self.staging_installed = installed;
     }
 
-    fn is_online_installed(&self, version: &str) -> bool {
+    /// 同步在线目录的实际状态，不修改当前选中的本地实例。
+    /// 点击切换和目录刷新共用同一判断，防止磁盘结果与 UI 缓存各自作出相反结论。
+    pub fn sync_online_installation(
+        &mut self,
+        installed: Option<&crate::core::network::InstalledSillyTavern>,
+    ) {
+        self.set_online_instance_exists(installed.is_some());
+        self.set_staging_installed(
+            installed.and_then(|item| item.branch.as_deref()) == Some("staging"),
+        );
+        let tag = installed.and_then(|item| item.tag_name.as_deref());
+        for release in &mut self.online_releases {
+            release.installed = !self.staging_installed && tag == Some(release.tag_name.as_str());
+        }
+        self.online_instance_path = installed.map(|_| online_instance_path());
+    }
+
+    pub fn is_online_installed(&self, version: &str) -> bool {
         if version == "staging" {
             return self.staging_installed;
         }
@@ -905,22 +912,54 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let header = panel_header(
         Icon::FolderSearch,
         "本地实例列表",
-        Some(format!(
-            "扫描完成，共发现 {} 个实例",
-            state.local_instances.len()
-        )),
+        Some(
+            if state.local.scan.phase.active() || state.local.scan.auto_hide_at.is_some() {
+                format!(
+                    "{}  {}",
+                    crate::lang::display_label(state.local.scan.status_label()),
+                    local::truncate_path(&state.local.scan.progress.path, 60)
+                )
+            } else {
+                format!("已添加 {} 个本地实例", state.local_instances.len())
+            },
+        ),
         vec![
-            icon_button(
+            icon_button_enabled(
                 Icon::FolderPlus,
                 "导入本地实例",
                 VersionMessage::ImportLocal,
+                !state.local.loading && !state.local.import_pending,
             ),
-            icon_button(Icon::Search, "扫描本机", VersionMessage::ScanLocal),
+            icon_button_enabled(
+                if state.local.scan.phase.active() {
+                    Icon::X
+                } else {
+                    Icon::Search
+                },
+                if state.local.scan.phase.active() {
+                    "取消扫描"
+                } else {
+                    "扫描本机"
+                },
+                if state.local.scan.phase.active() {
+                    VersionMessage::RequestCancelScan
+                } else {
+                    VersionMessage::ScanLocal
+                },
+                !state.local.loading,
+            ),
             icon_button(Icon::FileText, "查看扫描日志", VersionMessage::OpenScanLog),
         ],
     );
 
-    let list = if state.local_instances.is_empty() {
+    let list = if state.local.loading {
+        container(text("正在加载本地实例…").size(13))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into()
+    } else if state.local_instances.is_empty() {
         container(
             column![
                 crate::theme::subtle_icon(Icon::FolderSearch, 36),
@@ -928,7 +967,7 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                     .size(13)
                     .font(fonts::MEDIUM)
                     .style(crate::theme::muted_text_style),
-                button("开始扫描")
+                button(text("开始扫描"))
                     .on_press(VersionMessage::ScanLocal)
                     .padding([8, 16])
                     .style(button_style(ButtonVariant::Primary)),
@@ -962,7 +1001,7 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
 }
 
 fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a, VersionMessage> {
-    let primary_action = if item.dependencies_installed {
+    let primary_action = if item.dependencies == DependencyStatus::Ready {
         let label = if current {
             "当前使用"
         } else {
@@ -986,6 +1025,22 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
             action = action.on_press(VersionMessage::SwitchLocal(item.path.clone()));
         }
         action
+    } else if matches!(
+        item.dependencies,
+        DependencyStatus::Checking | DependencyStatus::Installing | DependencyStatus::Failed(_)
+    ) {
+        let label = match item.dependencies {
+            DependencyStatus::Checking => "检测中…",
+            DependencyStatus::Installing => "安装中…",
+            _ => "重试检测",
+        };
+        let mut action = button(text(label).size(12))
+            .padding([9, 14])
+            .style(button_style(ButtonVariant::Outline));
+        if matches!(item.dependencies, DependencyStatus::Failed(_)) {
+            action = action.on_press(VersionMessage::RecheckLocalDependencies(item.path.clone()));
+        }
+        action
     } else {
         button(
             row![
@@ -1000,6 +1055,18 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
         .style(warning_button_style)
     };
 
+    let primary_action: Element<'_, VersionMessage> =
+        if matches!(item.dependencies, DependencyStatus::Failed(_)) {
+            tooltip(
+                primary_action,
+                text("依赖检测失败，请点击重试查看原因。").size(11),
+                tooltip::Position::Bottom,
+            )
+            .into()
+        } else {
+            primary_action.into()
+        };
+
     let mut remove = button(
         row![
             icons::icon(Icon::Trash2, 15, DANGER),
@@ -1013,7 +1080,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
     )
     .padding([9, 14])
     .style(button_style(ButtonVariant::DangerSoft));
-    if !current {
+    if !current && item.dependencies != DependencyStatus::Installing {
         remove = remove.on_press(VersionMessage::RemoveLocal(item.path.clone()));
     }
 
@@ -1027,9 +1094,13 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                 .style(indigo_icon_surface),
             column![
                 row![
-                    text(format!("v{}", item.version))
-                        .size(15)
-                        .font(fonts::MEDIUM),
+                    text(if item.version == "未知版本" {
+                        crate::lang::display_label("未知版本")
+                    } else {
+                        format!("v{}", item.version)
+                    })
+                    .size(15)
+                    .font(fonts::MEDIUM),
                     current_badge(current),
                 ]
                 .spacing(8)
@@ -1831,6 +1902,15 @@ fn icon_button(
     label: &'static str,
     message: VersionMessage,
 ) -> Element<'static, VersionMessage> {
+    icon_button_enabled(icon, label, message, true)
+}
+
+fn icon_button_enabled(
+    icon: Icon,
+    label: &'static str,
+    message: VersionMessage,
+    enabled: bool,
+) -> Element<'static, VersionMessage> {
     let action = button(
         container(crate::theme::muted_icon(icon, 16))
             .width(28)
@@ -1838,7 +1918,7 @@ fn icon_button(
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
     )
-    .on_press(message)
+    .on_press_maybe(enabled.then_some(message))
     .padding(0)
     .style(button_style(ButtonVariant::Ghost));
 
@@ -2103,8 +2183,13 @@ mod tests {
     #[test]
     fn current_local_instance_cannot_be_removed() {
         let mut state = VersionState::default();
-        let path = state.local_instances[0].path.clone();
-        state.update(VersionMessage::InstallLocalDependencies(path.clone()));
+        let path = "/tmp/example-tavern".to_owned();
+        state.local_instances.push(super::LocalInstance {
+            path: path.clone(),
+            version: "1".into(),
+            dependencies: super::DependencyStatus::Ready,
+            identity: None,
+        });
         state.update(VersionMessage::SwitchLocal(path.clone()));
         state.update(VersionMessage::RemoveLocal(path.clone()));
         assert!(
@@ -2113,5 +2198,104 @@ mod tests {
                 .iter()
                 .any(|instance| instance.path == path)
         );
+    }
+    #[test]
+    fn catalog_refresh_keeps_fresh_disk_flags_and_clears_stale_flags() {
+        let mut state = VersionState::default();
+        state.current_source = Some(VersionSource::Local);
+        state.current_path = Some("/fixture/local".into());
+        let version = state.online_releases[0].version.clone();
+        for installed in [true, false] {
+            let mut releases = state.online_releases.clone();
+            for release in &mut releases {
+                release.installed = release.version == version && installed;
+            }
+            state.update(VersionMessage::OnlineVersionsLoaded {
+                branch: super::TavernBranch::Release,
+                releases,
+                staging: None,
+                last_sync: String::new(),
+                from_cache: false,
+            });
+            assert_eq!(state.is_online_installed(&version), installed);
+            assert_eq!(state.current_source, Some(VersionSource::Local));
+            assert_eq!(state.current_path.as_deref(), Some("/fixture/local"));
+        }
+    }
+
+    #[test]
+    fn disk_snapshot_updates_installation_without_switching_current_instance() {
+        let mut state = VersionState::default();
+        state.current_source = Some(VersionSource::Local);
+        state.current_path = Some("/fixture/local".into());
+        let version = state.online_releases[0].version.clone();
+        let mut snapshot = crate::core::network::InstalledSillyTavern {
+            tag_name: Some(state.online_releases[0].tag_name.clone()),
+            branch: None,
+            head: "fixture".into(),
+        };
+        state.sync_online_installation(Some(&snapshot));
+        assert!(state.is_online_installed(&version));
+        assert_eq!(state.current_source, Some(VersionSource::Local));
+        assert_eq!(state.current_path.as_deref(), Some("/fixture/local"));
+        snapshot.tag_name = Some("v0.0.0-fixture".into());
+        state.sync_online_installation(Some(&snapshot));
+        assert!(!state.is_online_installed(&version));
+        state.sync_online_installation(None);
+        assert!(!state.online_instance_exists);
+        assert!(
+            state
+                .online_releases
+                .iter()
+                .all(|release| !release.installed)
+        );
+        assert!(!state.staging_installed);
+        assert_eq!(state.current_source, Some(VersionSource::Local));
+    }
+
+    #[test]
+    fn same_tag_on_staging_is_not_treated_as_checked_out_stable_release() {
+        let mut state = VersionState::default();
+        let version = state.online_releases[0].version.clone();
+        let snapshot = crate::core::network::InstalledSillyTavern {
+            tag_name: Some(state.online_releases[0].tag_name.clone()),
+            branch: Some("staging".into()),
+            head: "fixture".into(),
+        };
+        state.sync_online_installation(Some(&snapshot));
+        assert!(state.is_online_installed("staging"));
+        assert!(!state.is_online_installed(&version));
+    }
+
+    #[test]
+    fn switching_to_same_numbered_online_release_changes_source_path_and_branch() {
+        let mut state = VersionState::default();
+        let version = state.online_releases[0].version.clone();
+        state.current_source = Some(VersionSource::Local);
+        state.current_path = Some("/fixture/local".into());
+        state.current_version = Some(version.clone());
+        state.branch = super::TavernBranch::Staging;
+        state.online_releases[0].installed = true;
+        state.update(VersionMessage::SwitchOnline(version.clone()));
+        assert_eq!(state.current_source, Some(VersionSource::Online));
+        assert_eq!(state.current_path, state.online_instance_path);
+        assert_eq!(state.current_version, Some(version.clone()));
+        assert_eq!(state.selected_online_version, Some(version));
+        assert_eq!(state.branch, super::TavernBranch::Release);
+        assert!(!state.install_task.running);
+        assert!(state.local.toast.is_some());
+    }
+
+    #[test]
+    fn unavailable_online_instance_reports_failure_without_changing_selection() {
+        let mut state = VersionState::default();
+        state.current_source = Some(VersionSource::Local);
+        state.current_path = Some("/fixture/local".into());
+        state.update(VersionMessage::SwitchOnline(
+            state.online_releases[0].version.clone(),
+        ));
+        assert_eq!(state.current_source, Some(VersionSource::Local));
+        assert_eq!(state.current_path.as_deref(), Some("/fixture/local"));
+        assert!(state.local.toast.as_ref().unwrap().danger);
     }
 }

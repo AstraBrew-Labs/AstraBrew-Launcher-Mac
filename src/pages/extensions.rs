@@ -340,7 +340,9 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
             versions
                 .local_instances
                 .iter()
-                .find(|instance| instance.dependencies_installed)
+                .find(|instance| {
+                    instance.dependencies == crate::pages::versions::DependencyStatus::Ready
+                })
                 .map(|instance| instance.path.as_str())
         })
         .unwrap_or("AstraBrew Launcher 管理的在线实例");

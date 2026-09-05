@@ -2480,7 +2480,7 @@ fn install_git_ref(
     }
 }
 
-fn configure_npm_proxy(command: &mut Command, proxy_mode: &str, proxy_host: &str) {
+pub(crate) fn configure_npm_proxy(command: &mut Command, proxy_mode: &str, proxy_host: &str) {
     if let Ok(Some(proxy)) = selected_proxy_url(proxy_mode, proxy_host) {
         command.env("HTTPS_PROXY", &proxy).env("HTTP_PROXY", proxy);
     }
@@ -2507,13 +2507,22 @@ fn send_install_log(sender: &Sender<SillyTavernInstallEvent>, line: String) {
 }
 
 fn run_install_command(
-    mut command: Command,
+    command: Command,
     sender: &Sender<SillyTavernInstallEvent>,
     cancel: &AtomicBool,
 ) -> Result<(), String> {
+    run_logged_command(command, cancel, |line| send_install_log(sender, line))
+}
+
+/// 本地与在线安装共用的进程执行器；仅上层决定如何显示日志及安装结果。
+pub(crate) fn run_logged_command(
+    mut command: Command,
+    cancel: &AtomicBool,
+    mut log: impl FnMut(String),
+) -> Result<(), String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let program = command.get_program().to_string_lossy();
-    send_install_log(sender, format!("正在执行 {program}…"));
+    log(format!("正在执行 {program}…"));
     let mut child = command
         .spawn()
         .map_err(|error| format!("无法启动命令：{error}"))?;
@@ -2527,7 +2536,7 @@ fn run_install_command(
     drop(line_sender);
     loop {
         while let Ok(line) = line_receiver.try_recv() {
-            send_install_log(sender, line);
+            log(line);
         }
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
@@ -2537,7 +2546,7 @@ fn run_install_command(
         match child.try_wait() {
             Ok(Some(status)) => {
                 while let Ok(line) = line_receiver.recv_timeout(Duration::from_millis(100)) {
-                    send_install_log(sender, line);
+                    log(line);
                 }
                 if status.success() {
                     return Ok(());
