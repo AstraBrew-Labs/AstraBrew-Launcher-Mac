@@ -267,6 +267,99 @@ pub fn read_system_proxy() -> Option<(String, bool)> {
     environment_proxy().map(|server| (server, true))
 }
 
+/// 获取局域网 IPv4 地址，排除回环和链路本地地址。
+pub fn get_lan_ipv4() -> Option<String> {
+    let output = Command::new("ifconfig").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_lan_ipv4(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
+
+/// 获取局域网全局 IPv6 地址，排除回环和链路本地地址。
+pub fn get_lan_ipv6() -> Option<String> {
+    let output = Command::new("ifconfig").output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| parse_lan_ipv6(&String::from_utf8_lossy(&output.stdout)))
+        .flatten()
+}
+
+fn parse_lan_ipv4(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let address = line
+            .trim()
+            .strip_prefix("inet ")?
+            .split_whitespace()
+            .next()?;
+        (!address.starts_with("127.") && !address.starts_with("169.254."))
+            .then(|| address.to_owned())
+    })
+}
+
+fn parse_lan_ipv6(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let raw = line
+            .trim()
+            .strip_prefix("inet6 ")?
+            .split_whitespace()
+            .next()?;
+        let address = raw.split('%').next().unwrap_or(raw);
+        let lower = address.to_ascii_lowercase();
+        (address != "::1" && !lower.starts_with("fe80:"))
+            .then(|| address.to_owned())
+    })
+}
+
+/// 获取真实公网 IPv4 地址；禁用代理并强制使用 IPv4 socket。
+pub fn get_public_ipv4() -> Option<String> {
+    public_ip(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        &[
+            "https://api-ipv4.ip.sb/ip",
+            "https://api4.ipify.org",
+            "https://v4.ident.me",
+        ],
+        |value| value.contains('.') && !value.contains(':'),
+    )
+}
+
+/// 获取真实公网 IPv6 地址；禁用代理并强制使用 IPv6 socket。
+pub fn get_public_ipv6() -> Option<String> {
+    public_ip(
+        std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+        &[
+            "https://api-ipv6.ip.sb/ip",
+            "https://api6.ipify.org",
+            "https://v6.ident.me",
+        ],
+        |value| value.contains(':'),
+    )
+}
+
+fn public_ip(
+    local_address: std::net::IpAddr,
+    endpoints: &[&str],
+    valid: impl Fn(&str) -> bool,
+) -> Option<String> {
+    let client = reqwest::blocking::Client::builder()
+        .local_address(local_address)
+        .timeout(Duration::from_secs(8))
+        .no_proxy()
+        .build()
+        .ok()?;
+    endpoints.iter().find_map(|endpoint| {
+        let response = client.get(*endpoint).send().ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let value = response.text().ok()?.trim().to_owned();
+        (!value.is_empty() && valid(&value)).then_some(value)
+    })
+}
+
 fn environment_proxy() -> Option<String> {
     ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
         .into_iter()
@@ -2577,4 +2670,21 @@ where
             }
         }
     });
+}
+
+#[cfg(test)]
+mod access_address_tests {
+    use super::{parse_lan_ipv4, parse_lan_ipv6};
+
+    #[test]
+    fn lan_ipv4_skips_loopback_and_link_local() {
+        let fixture = "\ninet 127.0.0.1 netmask 0xff000000\ninet 169.254.2.3 netmask 0xffff0000\ninet 192.168.8.20 netmask 0xffffff00\n";
+        assert_eq!(parse_lan_ipv4(fixture).as_deref(), Some("192.168.8.20"));
+    }
+
+    #[test]
+    fn lan_ipv6_skips_loopback_and_link_local_and_removes_zone() {
+        let fixture = "\ninet6 ::1 prefixlen 128\ninet6 fe80::1234%en0 prefixlen 64\ninet6 240a:42cc::1234%en0 prefixlen 64\n";
+        assert_eq!(parse_lan_ipv6(fixture).as_deref(), Some("240a:42cc::1234"));
+    }
 }

@@ -112,11 +112,16 @@ pub enum ProcessEvent {
     Failed(String),
     Pid(Option<u32>),
     Log(String),
+    HistoricalLog(String),
     ServerUrl(String),
     PortConflict(PortConflict),
     Exited(Option<i32>),
     Pm2Unavailable,
-    Pm2Restored { pid: Option<u32>, cwd: Option<String> },
+    Pm2Restored {
+        pid: Option<u32>,
+        cwd: Option<String>,
+        replaying_logs: bool,
+    },
 }
 
 /// 主线程持有的运行时句柄。
@@ -190,6 +195,7 @@ struct WorkerState {
     pm2_out_offset: u64,
     pm2_error_offset: u64,
     last_pm2_poll: Instant,
+    restoring_pm2_logs: bool,
 }
 
 fn worker_loop(commands: Receiver<ProcessCommand>, events: Sender<ProcessEvent>) {
@@ -204,6 +210,7 @@ fn worker_loop(commands: Receiver<ProcessCommand>, events: Sender<ProcessEvent>)
         pm2_out_offset: 0,
         pm2_error_offset: 0,
         last_pm2_poll: Instant::now() - Duration::from_secs(2),
+        restoring_pm2_logs: false,
     };
     restore_pm2(&mut state, &events);
 
@@ -234,13 +241,16 @@ fn restore_pm2(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         && info.status == "online"
     {
         state.active_mode = Some(RuntimeMode::Pm2);
-        // 恢复时只读取新日志，避免历史输出瞬间占满界面与字形缓存。
-        state.pm2_out_offset = state.pm2.log_length(false);
-        state.pm2_error_offset = state.pm2.log_length(true);
+        // 仅回放尾部 2 MiB，足以覆盖控制台最近 2000 行，同时避免超大日志阻塞界面。
+        const RESTORE_BYTES: u64 = 2 * 1024 * 1024;
+        state.pm2_out_offset = state.pm2.tail_offset(false, RESTORE_BYTES);
+        state.pm2_error_offset = state.pm2.tail_offset(true, RESTORE_BYTES);
+        state.restoring_pm2_logs = true;
         state.last_pm2_poll = Instant::now() - Duration::from_secs(2);
         let _ = events.send(ProcessEvent::Pm2Restored {
             pid: info.pid,
             cwd: info.cwd,
+            replaying_logs: true,
         });
     }
 }
@@ -251,6 +261,7 @@ fn start(state: &mut WorkerState, spec: TavernLaunchSpec, events: &Sender<Proces
             let _ = events.send(ProcessEvent::Pm2Restored {
                 pid: info.pid,
                 cwd: info.cwd,
+                replaying_logs: false,
             });
         }
         return;
@@ -470,6 +481,7 @@ fn start_pm2(
     state.pm2.clear_logs();
     state.pm2_out_offset = 0;
     state.pm2_error_offset = 0;
+    state.restoring_pm2_logs = false;
     let node_args = launch
         .node_import
         .as_deref()
@@ -531,6 +543,7 @@ fn restart(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         state.pm2.clear_logs();
         state.pm2_out_offset = 0;
         state.pm2_error_offset = 0;
+        state.restoring_pm2_logs = false;
         match state.pm2.restart() {
             Ok(()) => {
                 let _ = events.send(ProcessEvent::Running(RuntimeMode::Pm2));
@@ -649,7 +662,7 @@ fn poll_direct(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         }
     }
     for line in pending_logs {
-        emit_log(state, events, line);
+        emit_log(state, events, line, false);
     }
     if let Some(code) = exited {
         state.direct = None;
@@ -676,6 +689,7 @@ fn poll_direct(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
 }
 
 fn poll_pm2(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
+    let historical = state.restoring_pm2_logs;
     for error_log in [false, true] {
         let offset = if error_log {
             &mut state.pm2_error_offset
@@ -684,10 +698,11 @@ fn poll_pm2(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         };
         if let Ok(lines) = state.pm2.read_log(error_log, offset) {
             for line in lines {
-                emit_log(state, events, line);
+                emit_log(state, events, line, historical);
             }
         }
     }
+    state.restoring_pm2_logs = false;
     match state.pm2.info() {
         Ok(Some(info)) if info.status == "online" => {
             let _ = events.send(ProcessEvent::Pid(info.pid));
@@ -727,7 +742,12 @@ fn recover_pm2_after_command_error(
     }
 }
 
-fn emit_log(state: &mut WorkerState, events: &Sender<ProcessEvent>, line: String) {
+fn emit_log(
+    state: &mut WorkerState,
+    events: &Sender<ProcessEvent>,
+    line: String,
+    historical: bool,
+) {
     let cleaned = strip_terminal_sequences(&line);
     if let Some(url) = extract_tavern_url(&cleaned) {
         let _ = events.send(ProcessEvent::ServerUrl(url));
@@ -735,7 +755,12 @@ fn emit_log(state: &mut WorkerState, events: &Sender<ProcessEvent>, line: String
     if let Some(port) = extract_conflict_port(&cleaned) {
         state.conflict_port = Some(port);
     }
-    let _ = events.send(ProcessEvent::Log(cleaned));
+    let event = if historical {
+        ProcessEvent::HistoricalLog(cleaned)
+    } else {
+        ProcessEvent::Log(cleaned)
+    };
+    let _ = events.send(event);
 }
 
 fn finish_stopped(state: &mut WorkerState, events: &Sender<ProcessEvent>) {

@@ -6,14 +6,20 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::Arc;
 
 use iced::advanced::text::{Highlighter, Wrapping, highlighter};
-use iced::widget::{button, column, container, row, space, stack, text_editor};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Theme};
+use iced::widget::{button, column, container, image, row, space, stack, text_editor, text_input};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Theme};
 use lucide_icons::Icon;
+use qrcode::types::Color as QrColor;
+use qrcode::QrCode;
 
-use astra_ui::{BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, icons};
+use astra_ui::{
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, ProgressCircle, ProgressCircleColor,
+    ProgressCircleSize, SUCCESS, icons,
+};
 
 use crate::app::Message;
 use crate::core::tavern_process::{
@@ -183,6 +189,89 @@ impl NetworkMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IpVersion {
+    V4,
+    V6,
+}
+
+#[derive(Debug, Clone)]
+struct QrPixels {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct AccessResult {
+    address: String,
+    url: String,
+    qr: Option<QrPixels>,
+}
+
+#[derive(Debug)]
+struct AccessEvent {
+    request_id: u64,
+    version: IpVersion,
+    result: Option<AccessResult>,
+}
+
+#[derive(Debug, Default)]
+struct AccessSlot {
+    resolved: bool,
+    address: Option<String>,
+    url: Option<String>,
+    qr: Option<iced::widget::image::Handle>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AccessLayout {
+    Loading,
+    Dual,
+    Ipv4Only,
+    Ipv6Only,
+    Failed,
+}
+
+#[derive(Debug)]
+struct AccessTavernState {
+    visible: bool,
+    request_id: u64,
+    mode: NetworkMode,
+    port: u16,
+    ipv4: AccessSlot,
+    ipv6: AccessSlot,
+    receiver: Option<Receiver<AccessEvent>>,
+}
+
+impl Default for AccessTavernState {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            request_id: 0,
+            mode: NetworkMode::Lan,
+            port: 80,
+            ipv4: AccessSlot::default(),
+            ipv6: AccessSlot::default(),
+            receiver: None,
+        }
+    }
+}
+
+impl AccessTavernState {
+    fn layout(&self) -> AccessLayout {
+        if !self.ipv4.resolved || !self.ipv6.resolved {
+            return AccessLayout::Loading;
+        }
+        match (self.ipv4.address.is_some(), self.ipv6.address.is_some()) {
+            (true, true) => AccessLayout::Dual,
+            (true, false) => AccessLayout::Ipv4Only,
+            (false, true) => AccessLayout::Ipv6Only,
+            (false, false) => AccessLayout::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsoleAction {
     None,
     OpenServer,
@@ -199,7 +288,11 @@ pub enum ConsoleMessage {
     ExportLogs,
     FollowLogs,
     LogEditorAction(text_editor::Action),
-    ToggleNetworkDialog,
+    OpenAccessDialog,
+    CloseAccessDialog,
+    RetryAccessDialog,
+    AccessUrlInteract(String),
+    OpenAccessUrl(String),
     OpenServer,
     ConfirmReleasePort,
     CancelReleasePort,
@@ -210,7 +303,7 @@ pub struct ConsoleState {
     pub status: ConsoleStatus,
     pub logs: VecDeque<ConsoleLog>,
     pub auto_scroll: bool,
-    pub show_network_dialog: bool,
+    access: AccessTavernState,
     pub network_mode: Option<NetworkMode>,
     pub network_port: Option<u16>,
     pub server_url: Option<String>,
@@ -240,7 +333,7 @@ impl Default for ConsoleState {
             status: ConsoleStatus::NotStarted,
             logs: VecDeque::new(),
             auto_scroll: true,
-            show_network_dialog: false,
+            access: AccessTavernState::default(),
             network_mode: None,
             network_port: None,
             server_url: None,
@@ -371,8 +464,14 @@ impl ConsoleState {
                     self.log_content.perform(action);
                 }
             }
-            ConsoleMessage::ToggleNetworkDialog => {
-                self.show_network_dialog = !self.show_network_dialog;
+            ConsoleMessage::OpenAccessDialog => self.start_access_detection(),
+            ConsoleMessage::CloseAccessDialog => self.close_access_dialog(),
+            ConsoleMessage::RetryAccessDialog => self.start_access_detection(),
+            ConsoleMessage::AccessUrlInteract(_value) => {}
+            ConsoleMessage::OpenAccessUrl(url) => {
+                if let Err(error) = Command::new("open").arg(&url).spawn() {
+                    self.add_error_log(format!("无法打开访问地址 {url}：{error}"));
+                }
             }
             ConsoleMessage::OpenServer => return ConsoleAction::OpenServer,
             ConsoleMessage::ConfirmReleasePort => {
@@ -427,6 +526,7 @@ impl ConsoleState {
                     self.push(LogKind::Success, tr("console.log.started"));
                 }
                 ProcessEvent::Stopping => {
+                    self.close_access_dialog();
                     self.status = ConsoleStatus::Stopping;
                     self.push(LogKind::System, tr("console.log.stopping"));
                 }
@@ -438,11 +538,13 @@ impl ConsoleState {
                     self.network_port = None;
                     self.runtime_mode = None;
                     self.pending_port_conflict = None;
+                    self.close_access_dialog();
                     self.push(LogKind::Success, tr("console.log.stopped"));
                 }
                 ProcessEvent::Failed(error) => self.fail(error),
                 ProcessEvent::Pid(pid) => self.process_pid = pid,
                 ProcessEvent::Log(line) => self.push_process_log(line),
+                ProcessEvent::HistoricalLog(line) => self.push_historical_process_log(line),
                 ProcessEvent::ServerUrl(url) => {
                     self.network_port = url_port(&url);
                     self.server_url = Some(url);
@@ -461,7 +563,14 @@ impl ConsoleState {
                     format!("{} {}", tr("console.log.exited"), code.map_or_else(|| "-".to_owned(), |code| code.to_string())),
                 ),
                 ProcessEvent::Pm2Unavailable => self.push(LogKind::Warning, tr("console.pm2.unavailable")),
-                ProcessEvent::Pm2Restored { pid, cwd } => {
+                ProcessEvent::Pm2Restored {
+                    pid,
+                    cwd,
+                    replaying_logs,
+                } => {
+                    if replaying_logs {
+                        self.clear_log_buffers();
+                    }
                     if !self.disk_log_active {
                         self.disk_log_active = crate::core::tavern_process::ensure_sillytavern_log_file().is_ok();
                     }
@@ -474,10 +583,84 @@ impl ConsoleState {
                 }
             }
         }
+        self.poll_access_events();
+    }
+
+    fn start_access_detection(&mut self) {
+        let (Some(mode), Some(port)) = (self.network_mode, self.network_port) else {
+            self.add_error_log(tr("access.address_not_ready"));
+            return;
+        };
+        self.access.request_id = self.access.request_id.wrapping_add(1);
+        let request_id = self.access.request_id;
+        self.access.visible = true;
+        self.access.mode = mode;
+        self.access.port = port;
+        self.access.ipv4 = AccessSlot::default();
+        self.access.ipv6 = AccessSlot::default();
+        let (sender, receiver) = mpsc::channel();
+        self.access.receiver = Some(receiver);
+
+        for version in [IpVersion::V4, IpVersion::V6] {
+            let sender = sender.clone();
+            std::thread::spawn(move || {
+                let result = detect_access_result(mode, version, port);
+                let _ = sender.send(AccessEvent {
+                    request_id,
+                    version,
+                    result,
+                });
+            });
+        }
+    }
+
+    fn close_access_dialog(&mut self) {
+        self.access.visible = false;
+        self.access.request_id = self.access.request_id.wrapping_add(1);
+        self.access.receiver = None;
+    }
+
+    fn poll_access_events(&mut self) {
+        let events = self
+            .access
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.try_iter().collect::<Vec<_>>())
+            .unwrap_or_default();
+        for event in events {
+            self.apply_access_event(event);
+        }
+    }
+
+    fn apply_access_event(&mut self, event: AccessEvent) {
+        if event.request_id != self.access.request_id {
+            return;
+        }
+        let slot = match event.version {
+            IpVersion::V4 => &mut self.access.ipv4,
+            IpVersion::V6 => &mut self.access.ipv6,
+        };
+        slot.resolved = true;
+        if let Some(result) = event.result {
+            slot.address = Some(result.address);
+            slot.url = Some(result.url);
+            slot.qr = result
+                .qr
+                .map(|qr| iced::widget::image::Handle::from_rgba(qr.width, qr.height, qr.rgba));
+        }
     }
 
     /// 判断酒馆原始输出类型，并让错误堆栈、警告说明等续行继承颜色。
     fn push_process_log(&mut self, line: String) {
+        self.push_process_log_inner(line, true);
+    }
+
+    /// 恢复 PM2 历史日志时只回填界面，不重复写入规范日志文件。
+    fn push_historical_process_log(&mut self, line: String) {
+        self.push_process_log_inner(line, false);
+    }
+
+    fn push_process_log_inner(&mut self, line: String, persist: bool) {
         let explicit = classify_log(&line);
         let kind = if explicit == LogKind::Output
             && self
@@ -493,10 +676,11 @@ impl ConsoleState {
             LogKind::Warning | LogKind::Error => Some(kind),
             _ => None,
         };
-        self.push(kind, line);
+        self.push_inner(kind, line, persist);
     }
 
     fn fail(&mut self, error: String) {
+        self.close_access_dialog();
         self.status = ConsoleStatus::Failed;
         self.runtime_mode = None;
         self.process_pid = None;
@@ -504,6 +688,10 @@ impl ConsoleState {
     }
 
     fn push(&mut self, kind: LogKind, content: impl Into<String>) {
+        self.push_inner(kind, content, true);
+    }
+
+    fn push_inner(&mut self, kind: LogKind, content: impl Into<String>, persist: bool) {
         let text = sanitize_log_text(content.into());
         // SillyTavern 会输出较多空行；普通空行没有诊断价值，直接忽略。
         if kind == LogKind::Output && text.trim().is_empty() {
@@ -531,7 +719,8 @@ impl ConsoleState {
                 .extend(std::iter::repeat_n(LogHighlight::from(kind), line_count));
             self.append_log_content(&rendered, was_empty);
         }
-        if self.disk_log_active
+        if persist
+            && self.disk_log_active
             && let Err(error) = crate::core::tavern_process::append_sillytavern_log_line(&rendered)
         {
             self.disk_log_active = false;
@@ -622,8 +811,8 @@ pub fn console_view(state: &ConsoleState) -> Element<'_, Message> {
         .height(Fill)
         .width(Fill);
     let mut layers: Vec<Element<'_, Message>> = vec![body.into()];
-    if state.show_network_dialog {
-        layers.push(network_dialog(state));
+    if state.access.visible {
+        layers.push(access_dialog(&state.access));
     }
     if let Some(conflict) = state.pending_port_conflict.as_ref() {
         layers.push(port_conflict_dialog(conflict));
@@ -657,12 +846,12 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
         );
     }
     if state.status == ConsoleStatus::Running {
-        if let Some(mode) = state.network_mode {
+        if let Some(mode) = state.network_mode.filter(|_| state.network_port.is_some()) {
             left = left.push(separator()).push(
                 button(text(tr(mode.key())).size(11).color(mode.color()))
                     .padding([6, 10])
                     .style(soft_button(mode.color()))
-                    .on_press(Message::Console(ConsoleMessage::ToggleNetworkDialog)),
+                    .on_press(Message::Console(ConsoleMessage::OpenAccessDialog)),
             );
         } else if state.server_url.is_some() {
             left = left.push(separator()).push(open_button());
@@ -744,46 +933,265 @@ fn logs_view(state: &ConsoleState) -> Element<'_, Message> {
         .into()
 }
 
-fn network_dialog(state: &ConsoleState) -> Element<'_, Message> {
-    let mode = state.network_mode.unwrap_or(NetworkMode::Lan);
-    let port = state.network_port.unwrap_or(8000);
-    let local_url = state.server_url.clone().unwrap_or_else(|| format!("http://127.0.0.1:{port}"));
-    let lan_url = local_ip().map_or_else(|| format!("http://<LAN-IP>:{port}"), |ip| format!("http://{ip}:{port}"));
-    let warning = if mode == NetworkMode::Internet {
-        tr("console.network.internet_warning")
-    } else {
-        tr("console.network.lan_hint")
+fn access_dialog(state: &AccessTavernState) -> Element<'static, Message> {
+    let mode = state.mode;
+    let mode_label = match mode {
+        NetworkMode::Lan => tr("access.mode.lan"),
+        NetworkMode::Internet => tr("access.mode.internet"),
     };
-    modal(
-        column![
-            row![
-                icons::icon(if mode == NetworkMode::Lan { Icon::Wifi } else { Icon::Globe }, 22, mode.color()),
+    let content: Element<'static, Message> = match state.layout() {
+        AccessLayout::Loading => {
+            let phase = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| (duration.as_millis() % 1_000) as f32 / 1_000.0)
+                .unwrap_or_default();
+            container(
                 column![
-                    text(tr(mode.key())).size(18).font(crate::core::typography::medium()),
-                    text(warning).size(11).style(crate::theme::muted_text_style),
-                ].spacing(4).width(Fill),
-                button(crate::theme::muted_icon(Icon::X, 16))
-                    .padding(7)
-                    .style(icon_button_style())
-                    .on_press(Message::Console(ConsoleMessage::ToggleNetworkDialog)),
-            ].spacing(12).align_y(Alignment::Center),
-            url_row(tr("console.network.local_url"), local_url),
-            url_row(tr("console.network.lan_url"), lan_url),
-            crate::theme::alert(tr("console.network.security"), warning, if mode == NetworkMode::Internet { astra_ui::AlertKind::Danger } else { astra_ui::AlertKind::Info }),
-            row![space::horizontal(), open_button()].width(Fill),
-        ].spacing(16),
-        560,
-    )
+                    ProgressCircle::new(0.0)
+                        .is_indeterminate(true)
+                        .animation_phase(phase)
+                        .size(ProgressCircleSize::Large)
+                        .color(ProgressCircleColor::Accent),
+                    text(tr("access.loading"))
+                        .size(14)
+                        .font(crate::core::typography::medium()),
+                    text(mode_label)
+                        .size(11)
+                        .style(crate::theme::muted_text_style),
+                ]
+                .spacing(12)
+                .align_x(Alignment::Center),
+            )
+            .width(Fill)
+            .height(270)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .into()
+        }
+        AccessLayout::Dual => container(
+            row![
+                access_address_card(&state.ipv4, IpVersion::V4),
+                access_address_card(&state.ipv6, IpVersion::V6),
+            ]
+            .spacing(16)
+            .align_y(Alignment::Start),
+        )
+        // 两张固定宽度卡片由外层全宽容器统一居中，避免剩余空间只落在右侧。
+        .width(Fill)
+        .align_x(Alignment::Center)
+        .into(),
+        AccessLayout::Ipv4Only => container(access_address_card(&state.ipv4, IpVersion::V4))
+            .width(Fill)
+            .align_x(Alignment::Center)
+            .into(),
+        AccessLayout::Ipv6Only => container(access_address_card(&state.ipv6, IpVersion::V6))
+            .width(Fill)
+            .align_x(Alignment::Center)
+            .into(),
+        AccessLayout::Failed => container(
+            column![
+                icons::icon(Icon::CircleAlert, 36, WARNING),
+                text(tr("access.no_address"))
+                    .size(14)
+                    .font(crate::core::typography::medium()),
+            ]
+            .spacing(12)
+            .align_x(Alignment::Center),
+        )
+        .height(250)
+        .width(Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into(),
+    };
+
+    let mut body = column![
+        row![
+            icons::icon(if mode == NetworkMode::Lan { Icon::Wifi } else { Icon::Globe }, 22, mode.color()),
+            column![
+                text(tr("access.title")).size(18).font(crate::core::typography::medium()),
+                text(mode_label).size(11).style(crate::theme::muted_text_style),
+            ]
+            .spacing(3)
+            .width(Fill),
+            button(crate::theme::muted_icon(Icon::X, 16))
+                .padding(7)
+                .style(icon_button_style())
+                .on_press(Message::Console(ConsoleMessage::CloseAccessDialog)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+        content,
+    ]
+    .spacing(16);
+
+    if state.layout() != AccessLayout::Loading {
+        body = body.push(
+            row![
+                space::horizontal(),
+                button(
+                    row![
+                        icons::icon(Icon::RefreshCw, 14, BLUE_600),
+                        text(tr("access.retry")).size(11).color(BLUE_600),
+                    ]
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                )
+                .padding([8, 12])
+                .style(soft_button(BLUE_600))
+                .on_press(Message::Console(ConsoleMessage::RetryAccessDialog)),
+            ]
+            .width(Fill),
+        );
+    }
+
+    modal(body, 720)
 }
 
-fn url_row(label: &'static str, url: String) -> Element<'static, Message> {
-    column![
-        text(label).size(10).style(crate::theme::muted_text_style),
-        container(text(url).size(12).font(crate::core::typography::regular()))
-            .padding([10, 12])
-            .width(Fill)
-            .style(dialog_code_surface),
-    ].spacing(5).into()
+fn access_address_card(slot: &AccessSlot, version: IpVersion) -> Element<'static, Message> {
+    let label = match version {
+        IpVersion::V4 => tr("access.ipv4"),
+        IpVersion::V6 => tr("access.ipv6"),
+    };
+    let Some(url) = slot.url.clone() else {
+        return container(
+            column![
+                text(label).size(14).font(crate::core::typography::medium()),
+                text(tr("access.fetch_failed"))
+                    .size(12)
+                    .color(WARNING),
+            ]
+            .spacing(10)
+            .align_x(Alignment::Center),
+        )
+        .width(320)
+        .height(275)
+        .padding(16)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(dialog_code_surface)
+        .into();
+    };
+
+    let qr: Element<'static, Message> = slot.qr.clone().map_or_else(
+        || {
+            container(text(tr("access.qr_failed")).size(11).style(crate::theme::muted_text_style))
+                .width(160)
+                .height(160)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(qr_placeholder_surface)
+                .into()
+        },
+        |handle| {
+            container(
+                image(handle)
+                    .width(160)
+                    .height(160)
+                    .content_fit(ContentFit::Contain),
+            )
+            .width(160)
+            .height(160)
+            .style(qr_surface)
+            .into()
+        },
+    );
+
+    container(
+        column![
+            text(label).size(14).font(crate::core::typography::medium()),
+            text_input("", &url)
+                .on_input(|value| Message::Console(ConsoleMessage::AccessUrlInteract(value)))
+                .size(12)
+                .padding([8, 10])
+                .width(Fill)
+                .font(crate::core::typography::regular())
+                .style(crate::theme::text_input_style),
+            button(
+                row![
+                    icons::icon(Icon::ExternalLink, 14, BLUE_600),
+                    text(tr("access.open_browser")).size(11).color(BLUE_600),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
+            )
+            .padding([7, 10])
+            .style(soft_button(BLUE_600))
+            .on_press(Message::Console(ConsoleMessage::OpenAccessUrl(url))),
+            qr,
+            text(tr("access.scan_hint"))
+                .size(10)
+                .style(crate::theme::muted_text_style),
+        ]
+        .spacing(10)
+        .align_x(Alignment::Center),
+    )
+    .width(320)
+    .padding(16)
+    .style(dialog_code_surface)
+    .into()
+}
+
+fn detect_access_result(
+    mode: NetworkMode,
+    version: IpVersion,
+    port: u16,
+) -> Option<AccessResult> {
+    let address = match (mode, version) {
+        (NetworkMode::Lan, IpVersion::V4) => crate::core::network::get_lan_ipv4(),
+        (NetworkMode::Lan, IpVersion::V6) => crate::core::network::get_lan_ipv6(),
+        (NetworkMode::Internet, IpVersion::V4) => crate::core::network::get_public_ipv4(),
+        (NetworkMode::Internet, IpVersion::V6) => crate::core::network::get_public_ipv6(),
+    }?;
+    if is_loopback_address(&address) {
+        return None;
+    }
+    let url = build_access_url(&address, port, version);
+    let qr = generate_qr_pixels(&url);
+    Some(AccessResult { address, url, qr })
+}
+
+fn is_loopback_address(address: &str) -> bool {
+    address == "::1" || address.starts_with("127.") || address.eq_ignore_ascii_case("localhost")
+}
+
+fn build_access_url(address: &str, port: u16, version: IpVersion) -> String {
+    match version {
+        IpVersion::V4 => format!("http://{address}:{port}/"),
+        IpVersion::V6 => format!("http://[{address}]:{port}/"),
+    }
+}
+
+fn generate_qr_pixels(url: &str) -> Option<QrPixels> {
+    let code = QrCode::new(url.as_bytes()).ok()?;
+    let module_count = code.width();
+    let quiet_zone = 4_usize;
+    let scale = 6_usize;
+    let side = (module_count + quiet_zone * 2) * scale;
+    let mut rgba = vec![255_u8; side * side * 4];
+    let colors = code.to_colors();
+    for y in 0..module_count {
+        for x in 0..module_count {
+            if colors[y * module_count + x] != QrColor::Dark {
+                continue;
+            }
+            let start_x = (x + quiet_zone) * scale;
+            let start_y = (y + quiet_zone) * scale;
+            for pixel_y in start_y..start_y + scale {
+                for pixel_x in start_x..start_x + scale {
+                    let offset = (pixel_y * side + pixel_x) * 4;
+                    rgba[offset] = 0;
+                    rgba[offset + 1] = 0;
+                    rgba[offset + 2] = 0;
+                }
+            }
+        }
+    }
+    Some(QrPixels {
+        width: side as u32,
+        height: side as u32,
+        rgba,
+    })
 }
 
 fn port_conflict_dialog(conflict: &PortConflict) -> Element<'_, Message> {
@@ -1012,18 +1420,7 @@ fn url_port(url: &str) -> Option<u16> {
     authority.rsplit(':').next()?.parse().ok().or(Some(if url.starts_with("https://") { 443 } else { 80 }))
 }
 
-fn local_ip() -> Option<String> {
-    for interface in ["en0", "en1"] {
-        let output = Command::new("ipconfig").args(["getifaddr", interface]).output().ok()?;
-        if output.status.success() {
-            let address = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !address.is_empty() {
-                return Some(address);
-            }
-        }
-    }
-    None
-}
+
 
 fn tr(key: &'static str) -> &'static str {
     t(key, current_language())
@@ -1083,6 +1480,26 @@ fn dialog_surface(theme: &Theme) -> iced::widget::container::Style {
         ..Default::default()
     }
 }
+fn qr_surface(_theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(Color::WHITE)),
+        border: Border { radius: 6.0.into(), ..Border::default() },
+        ..Default::default()
+    }
+}
+
+fn qr_placeholder_surface(theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(crate::theme::surface(theme))),
+        border: Border {
+            color: crate::theme::line(theme),
+            width: 1.0,
+            radius: 6.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 fn dialog_code_surface(theme: &Theme) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(Background::Color(crate::theme::surface_alt(theme))),
@@ -1097,8 +1514,10 @@ fn backdrop_surface(_theme: &Theme) -> iced::widget::container::Style {
 #[cfg(test)]
 mod tests {
     use super::{
-        ConsoleLog, ConsoleMessage, ConsoleState, LogHighlight, LogHighlighter, LogKind,
-        MAX_LOG_LINES, classify_log, render_log_line, url_port,
+        AccessEvent, AccessLayout, AccessResult, ConsoleLog, ConsoleMessage, ConsoleState,
+        IpVersion, LogHighlight, LogHighlighter, LogKind, MAX_LOG_LINES, NetworkMode,
+        build_access_url, classify_log, generate_qr_pixels, is_loopback_address, render_log_line,
+        url_port,
     };
     use iced::advanced::text::Highlighter;
     use std::sync::Arc;
@@ -1171,6 +1590,61 @@ mod tests {
         assert!(state.log_highlights.is_empty());
         assert!(state.stream_context.is_none());
         assert!(state.auto_scroll);
+    }
+
+    #[test]
+    fn access_urls_distinguish_ipv4_and_ipv6() {
+        assert_eq!(
+            build_access_url("192.168.1.20", 11451, IpVersion::V4),
+            "http://192.168.1.20:11451/"
+        );
+        assert_eq!(
+            build_access_url("240a:42cc::20", 11451, IpVersion::V6),
+            "http://[240a:42cc::20]:11451/"
+        );
+        assert!(is_loopback_address("127.0.0.1"));
+        assert!(is_loopback_address("::1"));
+        assert!(!is_loopback_address("192.168.1.20"));
+    }
+
+    #[test]
+    fn qr_pixels_include_white_quiet_zone_and_dark_modules() {
+        let qr = generate_qr_pixels("http://192.168.1.20:11451/").unwrap();
+        assert_eq!(&qr.rgba[0..4], &[255, 255, 255, 255]);
+        assert!(qr.rgba.chunks_exact(4).any(|pixel| pixel == [0, 0, 0, 255]));
+    }
+
+    #[test]
+    fn access_layout_and_request_ids_ignore_stale_results() {
+        let mut state = ConsoleState::default();
+        state.access.request_id = 2;
+        state.access.mode = NetworkMode::Lan;
+        state.apply_access_event(AccessEvent {
+            request_id: 1,
+            version: IpVersion::V4,
+            result: Some(AccessResult {
+                address: "192.168.1.20".to_owned(),
+                url: "http://192.168.1.20:11451/".to_owned(),
+                qr: None,
+            }),
+        });
+        assert!(!state.access.ipv4.resolved);
+
+        state.apply_access_event(AccessEvent {
+            request_id: 2,
+            version: IpVersion::V4,
+            result: Some(AccessResult {
+                address: "192.168.1.20".to_owned(),
+                url: "http://192.168.1.20:11451/".to_owned(),
+                qr: None,
+            }),
+        });
+        state.apply_access_event(AccessEvent {
+            request_id: 2,
+            version: IpVersion::V6,
+            result: None,
+        });
+        assert_eq!(state.access.layout(), AccessLayout::Ipv4Only);
     }
 
     #[test]
