@@ -7,7 +7,7 @@ use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Leng
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, SUCCESS, ToggleButtonGroupItem, WHITE, fonts, icons, pick_list_handle,
+    BLUE_600, ButtonVariant, DANGER, SUCCESS, ToggleButtonGroupItem, WHITE, icons, pick_list_handle,
 };
 
 use crate::app::Message;
@@ -20,7 +20,7 @@ pub(crate) mod settings;
 pub(crate) mod tavern;
 pub(crate) mod versions;
 
-use self::console::{ConsoleState, console_view};
+use self::console::{ConsoleState, ConsoleStatus, console_view};
 use self::extensions::{ExtensionsState, extensions_view};
 use self::resource_manage::{ResourceManageState, resource_manage_view};
 use self::settings::{
@@ -88,12 +88,11 @@ pub fn page_view<'a>(
     versions: &'a VersionState,
     extensions: &'a ExtensionsState,
     resources: &'a ResourceManageState,
-    launch_requested: bool,
     console: &'a ConsoleState,
 ) -> Element<'a, Message> {
     match page {
-        Page::Home => home_view(settings, tavern, launch_requested),
-        Page::Settings => settings_view(settings),
+        Page::Home => home_view(settings, tavern, console),
+        Page::Settings => settings_view(settings, console.status.is_transitioning() || console.is_running()),
         Page::TavernConfig => tavern_view(tavern).map(Message::Tavern),
         Page::Version => versions_view(versions).map(Message::Version),
         Page::Extensions => extensions_view(extensions, versions).map(Message::Extensions),
@@ -106,14 +105,17 @@ pub fn page_view<'a>(
 fn home_view<'a>(
     state: &'a SettingsState,
     tavern: &'a TavernState,
-    launch_requested: bool,
+    console: &'a ConsoleState,
 ) -> Element<'a, Message> {
-    let launch_label = if launch_requested {
-        "已发送启动请求"
-    } else {
-        "一键启动"
+    let mode_controls_locked = console.status.is_transitioning() || console.is_running();
+    let (launch_label, launch_icon, launch_color) = match console.status {
+        ConsoleStatus::Running => ("立即停止", Icon::Square, DANGER),
+        ConsoleStatus::Starting => ("正在启动…", Icon::Loader, WHITE),
+        ConsoleStatus::Stopping => ("正在停止…", Icon::Loader, WHITE),
+        ConsoleStatus::NotStarted | ConsoleStatus::Stopped | ConsoleStatus::Failed => {
+            ("一键启动", Icon::Play, WHITE)
+        }
     };
-    let launch_color = if launch_requested { SUCCESS } else { WHITE };
 
     let hero = crate::theme::card(
         image("assets/imgs/og.png")
@@ -128,10 +130,10 @@ fn home_view<'a>(
         column![
             row![
                 column![
-                    text("运行环境").size(16).font(fonts::MEDIUM),
+                    text("运行环境").size(16).font(crate::core::typography::medium()),
                     text("启动器检测到的本机依赖与当前配置")
                         .size(11)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                 ]
                 .spacing(4),
@@ -161,7 +163,7 @@ fn home_view<'a>(
     let version_select = column![
         text("酒馆版本")
             .size(11)
-            .font(fonts::MEDIUM)
+            .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
         pick_list(
             TavernVersion::ALL,
@@ -171,7 +173,7 @@ fn home_view<'a>(
         .width(170)
         .padding([8, 11])
         .text_size(12)
-        .font(fonts::REGULAR)
+        .font(crate::core::typography::regular())
         .handle(pick_list_handle())
         .style(pick_list_style)
         .menu_style(pick_list_menu_style),
@@ -192,9 +194,9 @@ fn home_view<'a>(
     let mode_select = column![
         text("启动模式")
             .size(11)
-            .font(fonts::MEDIUM)
+            .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
-        themed_segmented_group(mode_items, |index| {
+        themed_segmented_group_enabled(mode_items, !mode_controls_locked, |index| {
             Message::SettingsLaunchModeSelected(quick_mode_from_index(index))
         }),
     ]
@@ -222,9 +224,9 @@ fn home_view<'a>(
             column![
                 text("浏览器")
                     .size(11)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                themed_segmented_group(browser_items, |index| {
+                themed_segmented_group_enabled(browser_items, !mode_controls_locked, |index| {
                     Message::HomeBrowserSelected(browser_type_from_index(index))
                 }),
             ]
@@ -246,9 +248,9 @@ fn home_view<'a>(
         column![
             text("服务模式")
                 .size(11)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
-            themed_segmented_group(items, |index| {
+            themed_segmented_group_enabled(items, !mode_controls_locked, |index| {
                 Message::SettingsServerServiceModeSelected(server_service_mode_from_index(index))
             }),
         ]
@@ -258,50 +260,71 @@ fn home_view<'a>(
 
     let launch_button = button(
         row![
-            icons::icon(Icon::Play, 17, launch_color),
+            icons::icon(launch_icon, 17, launch_color),
             text(launch_label)
                 .size(13)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .color(launch_color),
         ]
         .spacing(8)
         .align_y(Alignment::Center),
     )
-    .on_press(Message::LaunchTavern)
     .height(42)
     .padding([10, 18])
-    .style(button_style(ButtonVariant::Primary));
+    .style(button_style(if console.status == ConsoleStatus::Running {
+        ButtonVariant::DangerSoft
+    } else {
+        ButtonVariant::Primary
+    }));
+    let launch_button = if console.status.is_transitioning() {
+        launch_button
+    } else {
+        launch_button.on_press(Message::LaunchTavern)
+    };
 
-    let launch_controls = row![version_select, mode_select]
-        .spacing(16)
-        .align_y(Alignment::Center);
-    let launch_controls = if let Some(browser_select) = browser_select {
-        launch_controls.push(browser_select)
+    // 放大到 125% 及以上时，固定窗口的逻辑可用宽度会缩小；
+    // 将启动控件改为多行，避免浏览器和服务模式被裁切。
+    let launch_content: Element<'_, Message> = if state.ui_scale >= 1.25 {
+        let mut controls = column![
+            row![version_select, mode_select]
+                .spacing(16)
+                .align_y(Alignment::Center)
+        ]
+        .spacing(12)
+        .width(Fill);
+        if let Some(browser_select) = browser_select {
+            controls = controls.push(browser_select);
+        }
+        if let Some(service_mode_select) = service_mode_select {
+            controls = controls.push(service_mode_select);
+        }
+        controls.push(launch_button.width(Fill)).into()
     } else {
-        launch_controls
-    };
-    let launch_controls = if let Some(service_mode_select) = service_mode_select {
-        launch_controls.push(service_mode_select)
-    } else {
-        launch_controls
-    };
-    let launch_panel = crate::theme::card(
-        launch_controls
+        let mut controls = row![version_select, mode_select]
+            .spacing(16)
+            .align_y(Alignment::Center);
+        if let Some(browser_select) = browser_select {
+            controls = controls.push(browser_select);
+        }
+        if let Some(service_mode_select) = service_mode_select {
+            controls = controls.push(service_mode_select);
+        }
+        controls
             .push(space::horizontal())
-            .push(launch_button),
-        Fill,
-        18,
-    );
+            .push(launch_button)
+            .into()
+    };
+    let launch_panel = crate::theme::card(launch_content, Fill, 18);
 
     container(
         column![
             scrollable(
                 column![
                     column![
-                        text("主页").size(25).font(fonts::MEDIUM),
+                        text("主页").size(25).font(crate::core::typography::medium()),
                         text("AstraBrew Launcher")
                             .size(12)
-                            .font(fonts::REGULAR)
+                            .font(crate::core::typography::regular())
                             .style(crate::theme::muted_text_style),
                     ]
                     .spacing(4),
@@ -341,6 +364,15 @@ pub(crate) fn themed_segmented_group<'a>(
     items: Vec<ToggleButtonGroupItem<'a>>,
     on_toggle: impl Fn(usize) -> Message + Clone + 'a,
 ) -> Element<'a, Message> {
+    themed_segmented_group_enabled(items, true, on_toggle)
+}
+
+/// 可禁用的分段选择器，酒馆运行期间用于锁定启动模式相关设置。
+pub(crate) fn themed_segmented_group_enabled<'a>(
+    items: Vec<ToggleButtonGroupItem<'a>>,
+    enabled: bool,
+    on_toggle: impl Fn(usize) -> Message + Clone + 'a,
+) -> Element<'a, Message> {
     let item_count = items.len();
     let controls = items
         .into_iter()
@@ -354,7 +386,7 @@ pub(crate) fn themed_segmented_group<'a>(
                 let icon_text: iced::widget::Text<'a> = icon.into();
                 content = content.push(icon_text.size(15).style(move |theme| {
                     iced::widget::text::Style {
-                        color: Some(if selected {
+                        color: Some(if selected && enabled {
                             WHITE
                         } else {
                             crate::theme::text_muted(theme)
@@ -362,19 +394,22 @@ pub(crate) fn themed_segmented_group<'a>(
                     }
                 }));
             }
-            content = content.push(text(label).size(11).font(fonts::MEDIUM));
-            button(
+            content = content.push(text(label).size(11).font(crate::core::typography::medium()));
+            let control = button(
                 container(content)
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center),
             )
             .height(34)
             .padding([0, 11])
-            .on_press(on_toggle.clone()(index))
             .style(move |theme, status| {
-                segmented_button_style(theme, selected, status, index, item_count)
-            })
-            .into()
+                segmented_button_style(theme, selected, enabled, status, index, item_count)
+            });
+            if enabled {
+                control.on_press(on_toggle.clone()(index)).into()
+            } else {
+                control.into()
+            }
         })
         .collect::<Vec<_>>();
 
@@ -386,12 +421,13 @@ pub(crate) fn themed_segmented_group<'a>(
 fn segmented_button_style(
     theme: &Theme,
     selected: bool,
+    enabled: bool,
     status: button::Status,
     index: usize,
     item_count: usize,
 ) -> button::Style {
-    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-    let background = if selected {
+    let hovered = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let background = if selected && enabled {
         theme.palette().primary
     } else if hovered {
         crate::theme::surface(theme)
@@ -409,10 +445,12 @@ fn segmented_button_style(
     };
     button::Style {
         background: Some(Background::Color(background)),
-        text_color: if selected {
+        text_color: if selected && enabled {
             WHITE
-        } else {
+        } else if enabled {
             crate::theme::text(theme)
+        } else {
+            crate::theme::text_muted(theme)
         },
         border: Border {
             radius,
@@ -459,9 +497,9 @@ fn info_item(icon: Icon, label: &'static str, value: &'static str) -> Element<'s
             column![
                 text(label)
                     .size(11)
-                    .font(fonts::REGULAR)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
-                text(value).size(13).font(fonts::MEDIUM),
+                text(value).size(13).font(crate::core::typography::medium()),
             ]
             .spacing(2),
         ]
@@ -476,7 +514,7 @@ fn status_badge(label: &'static str) -> Element<'static, Message> {
     container(
         row![
             icons::icon(Icon::CircleCheck, 14, SUCCESS),
-            text(label).size(11).font(fonts::MEDIUM).color(SUCCESS),
+            text(label).size(11).font(crate::core::typography::medium()).color(SUCCESS),
         ]
         .spacing(5)
         .align_y(Alignment::Center),

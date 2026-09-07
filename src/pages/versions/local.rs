@@ -5,7 +5,7 @@ use crate::core::local_instances::{LocalError, scan::ScanProgress};
 use crate::lang::lang::current_language;
 use crate::lang::{t, text};
 use crate::theme::button_style;
-use astra_ui::{ButtonVariant, INK_MUTED, fonts, icons};
+use astra_ui::{ButtonVariant, INK_MUTED, icons};
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack};
 use iced::{Alignment, Element, Fill};
 use lucide_icons::Icon;
@@ -259,7 +259,7 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
             );
         }
         let body = column![
-            text("安装本地实例依赖").size(19).font(fonts::MEDIUM),
+            text("安装本地实例依赖").size(19).font(crate::core::typography::medium()),
             scrollable(
                 text(task.path.as_deref().unwrap_or(""))
                     .size(12)
@@ -286,7 +286,7 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     if scan.cancel_confirm_visible && scan.phase.active() {
         let body = column![
             row![
-                text("警告").size(17).font(fonts::MEDIUM),
+                text("警告").size(17).font(crate::core::typography::medium()),
                 space::horizontal(),
                 button(icons::icon(Icon::X, 15, INK_MUTED))
                     .on_press(VersionMessage::KeepScanning)
@@ -331,7 +331,7 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     };
     let mut body = column![
         row![
-            text("扫描本地实例").size(18).font(fonts::MEDIUM),
+            text("扫描本地实例").size(18).font(crate::core::typography::medium()),
             space::horizontal(),
             button(icons::icon(Icon::X, 16, INK_MUTED))
                 .on_press(VersionMessage::CloseScanLog)

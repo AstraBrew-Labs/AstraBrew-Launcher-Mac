@@ -12,6 +12,137 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use yaml_edit::{Mapping, YamlFile, YamlNode};
 
 pub type Values = BTreeMap<String, Value>;
+/// 酒馆服务模式决定由启动器托管的白名单地址集合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhitelistServiceMode {
+    Lan,
+    Internet,
+}
+
+/// 当前配置目标的白名单策略签名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhitelistPolicy {
+    pub server_enabled: bool,
+    pub service_mode: WhitelistServiceMode,
+}
+
+const ALL_RESERVED_WHITELIST_IPS: &[&str] = &[
+    "::1",
+    "127.0.0.1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "0.0.0.0/0",
+    "::/0",
+];
+const LOOPBACK_WHITELIST_IPS: &[&str] = &["::1", "127.0.0.1"];
+const LAN_WHITELIST_IPS: &[&str] = &[
+    "::1",
+    "127.0.0.1",
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+];
+const INTERNET_WHITELIST_IPS: &[&str] = &["::1", "127.0.0.1", "0.0.0.0/0", "::/0"];
+
+/// 返回跨全部服务模式由启动器保留的地址。
+pub fn all_reserved_whitelist_ips() -> &'static [&'static str] {
+    ALL_RESERVED_WHITELIST_IPS
+}
+
+/// 返回当前服务模式必须存在且不可删除的地址。
+pub fn fixed_whitelist(policy: WhitelistPolicy) -> Vec<String> {
+    let values = if !policy.server_enabled {
+        LOOPBACK_WHITELIST_IPS
+    } else {
+        match policy.service_mode {
+            WhitelistServiceMode::Lan => LAN_WHITELIST_IPS,
+            WhitelistServiceMode::Internet => INTERNET_WHITELIST_IPS,
+        }
+    };
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+/// 系统保留地址不能作为普通用户条目添加。
+pub fn is_reserved_whitelist_ip(value: &str) -> bool {
+    let value = value.trim();
+    all_reserved_whitelist_ips().contains(&value)
+}
+
+/// 旧版语义：移除旧模式保留段、全表去重、保留用户地址并补齐当前固定地址。
+pub fn normalize_whitelist(values: &[String], policy: WhitelistPolicy) -> Vec<String> {
+    let fixed = fixed_whitelist(policy);
+    let mut normalized = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values {
+        let value = value.trim();
+        if value.is_empty() {
+            // 输入中的空行由界面校验处理，系统修复不能擅自吞掉用户草稿。
+            if seen.insert(String::new()) {
+                normalized.push(String::new());
+            }
+            continue;
+        }
+        if is_reserved_whitelist_ip(value) && !fixed.iter().any(|item| item == value) {
+            continue;
+        }
+        if seen.insert(value.to_owned()) {
+            normalized.push(value.to_owned());
+        }
+    }
+    for value in fixed {
+        if seen.insert(value.clone()) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+/// 三方合并白名单的用户地址，同时让系统保留段始终服从当前服务模式。
+pub fn merge_whitelist(
+    base: &[String],
+    local: &[String],
+    disk: &[String],
+    policy: WhitelistPolicy,
+) -> Vec<String> {
+    let custom = |values: &[String]| {
+        values
+            .iter()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty() && !is_reserved_whitelist_ip(value))
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let keep_blank_draft = local.iter().any(|value| value.trim().is_empty());
+    let base_custom = custom(base);
+    let local_custom = custom(local);
+    let disk_custom = custom(disk);
+    let base_set = base_custom.iter().cloned().collect::<HashSet<_>>();
+    let disk_set = disk_custom.iter().cloned().collect::<HashSet<_>>();
+    let mut merged = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 本地仍保留的基线条目若被文件明确删除，则采用文件删除；本地新增和修改保留。
+    for value in local_custom {
+        if base_set.contains(&value) && !disk_set.contains(&value) {
+            continue;
+        }
+        if seen.insert(value.clone()) {
+            merged.push(value);
+        }
+    }
+    // 外部新增的用户地址追加到列表，不覆盖界面里的用户修改。
+    for value in disk_custom {
+        if !base_set.contains(&value) && seen.insert(value.clone()) {
+            merged.push(value);
+        }
+    }
+    if keep_blank_draft {
+        merged.push(String::new());
+    }
+    normalize_whitelist(&merged, policy)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Context {
     pub key: String,
@@ -524,10 +655,40 @@ fn create_new(path: &Path, text: &str) -> Result<(), ConfigError> {
     let _ = fs::remove_file(&temp);
     result
 }
+fn normalize_text_whitelist(
+    text: &str,
+    defaults: &Values,
+    policy: WhitelistPolicy,
+) -> Result<String, ConfigError> {
+    let (file, root) = parse(text)?;
+    let loaded = snapshot(text.to_owned(), PathBuf::new(), defaults)?;
+    let current = loaded
+        .values
+        .get("whitelist")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let normalized = normalize_whitelist(&current, policy);
+    let normalized_value = Value::Array(normalized.into_iter().map(Value::String).collect());
+    if loaded.raw.get("whitelist").and_then(Option::as_ref) != Some(&normalized_value) {
+        let field = schema::field("whitelist")
+            .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "未知配置字段。", "whitelist"))?;
+        set_at(&root, field, &normalized_value, defaults)?;
+    }
+    Ok(file.to_string())
+}
+
 pub fn generate(
     context: &Context,
     options: &NetworkOptions,
     defaults: &Values,
+    policy: WhitelistPolicy,
     progress: &mut impl FnMut(u64, Option<u64>),
 ) -> Result<Snapshot, ConfigError> {
     match load(context, defaults) {
@@ -536,6 +697,7 @@ pub fn generate(
         Err(error) => return Err(error),
     }
     let text = template(context, options, progress, defaults)?;
+    let text = normalize_text_whitelist(&text, defaults, policy)?;
     match create_new(&context.path, &text) {
         Ok(()) => load(context, defaults),
         Err(error) if error.kind == ErrorKind::Changed => load(context, defaults),
@@ -590,12 +752,14 @@ pub struct ImportPreview {
     pub target: Snapshot,
     pub template_text: String,
     pub merged_text: String,
+    pub policy: WhitelistPolicy,
 }
 pub fn prepare_import(
     context: &Context,
     source: &Path,
     options: &NetworkOptions,
     defaults: &Values,
+    policy: WhitelistPolicy,
     progress: &mut impl FnMut(u64, Option<u64>),
 ) -> Result<ImportPreview, ConfigError> {
     let target = load(context, defaults)?;
@@ -603,6 +767,7 @@ pub fn prepare_import(
     snapshot(source_text.clone(), source.to_owned(), defaults)?;
     let template_text = template(context, options, progress, defaults)?;
     let merged_text = merge_text(&template_text, &target.text, &source_text, defaults)?;
+    let merged_text = normalize_text_whitelist(&merged_text, defaults, policy)?;
     Ok(ImportPreview {
         context: context.clone(),
         source: source.to_owned(),
@@ -610,6 +775,7 @@ pub fn prepare_import(
         target,
         template_text,
         merged_text,
+        policy,
     })
 }
 #[derive(Debug, Clone)]
@@ -617,19 +783,26 @@ pub enum ImportResult {
     Saved(Snapshot, PathBuf),
     Reconfirm(ImportPreview),
 }
-pub fn import(preview: &ImportPreview, defaults: &Values) -> Result<ImportResult, ConfigError> {
+pub fn import(
+    preview: &ImportPreview,
+    defaults: &Values,
+    policy: WhitelistPolicy,
+) -> Result<ImportResult, ConfigError> {
     let target = load(&preview.context, defaults)?;
     let source_text =
         fs::read_to_string(&preview.source).map_err(|e| ConfigError::io(&preview.source, e))?;
     if target.text != preview.target.text
         || target.physical_path != preview.target.physical_path
         || source_text != preview.source_text
+        || policy != preview.policy
     {
         let merged_text = merge_text(&preview.template_text, &target.text, &source_text, defaults)?;
+        let merged_text = normalize_text_whitelist(&merged_text, defaults, policy)?;
         return Ok(ImportResult::Reconfirm(ImportPreview {
             target,
             source_text,
             merged_text,
+            policy,
             ..preview.clone()
         }));
     }
@@ -910,23 +1083,36 @@ mod tests {
             &source,
             &no_network(),
             &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
             &mut |_, _| {},
         )
         .unwrap();
         assert_eq!(fixture.load().values["port"], "8000");
         fixture.write("port: 8100\nlisten: true\n");
-        let ImportResult::Reconfirm(preview) = import(&preview, &fixture.defaults()).unwrap()
-        else {
+        let ImportResult::Reconfirm(preview) = import(
+            &preview,
+            &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
+        )
+        .unwrap() else {
             panic!("requires reconfirmation");
         };
         assert_eq!(fixture.load().values["port"], "8100");
         fs::write(&source, "port: 9200\n").unwrap();
-        let ImportResult::Reconfirm(preview) = import(&preview, &fixture.defaults()).unwrap()
-        else {
+        let ImportResult::Reconfirm(preview) = import(
+            &preview,
+            &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
+        )
+        .unwrap() else {
             panic!("requires reconfirmation");
         };
-        let ImportResult::Saved(saved, backup) = import(&preview, &fixture.defaults()).unwrap()
-        else {
+        let ImportResult::Saved(saved, backup) = import(
+            &preview,
+            &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
+        )
+        .unwrap() else {
             panic!("expected saved");
         };
         assert_eq!(saved.values["port"], "9200");
@@ -935,6 +1121,56 @@ mod tests {
             fs::read_to_string(backup).unwrap(),
             "port: 8100\nlisten: true\n"
         );
+    }
+
+    #[test]
+    fn import_requires_reconfirmation_when_service_policy_changes() {
+        let fixture = Fixture::new();
+        fixture.write(
+            "whitelist: ['::1', '127.0.0.1', '203.0.113.9']
+",
+        );
+        fs::write(
+            fixture.root.join("default/config.yaml"),
+            "whitelist: ['::1', '127.0.0.1']
+",
+        )
+        .unwrap();
+        let source = fixture.root.join("policy-import.yml");
+        fs::write(
+            &source,
+            "port: 9000
+",
+        )
+        .unwrap();
+        let preview = prepare_import(
+            &fixture.context,
+            &source,
+            &no_network(),
+            &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let ImportResult::Reconfirm(preview) = import(
+            &preview,
+            &fixture.defaults(),
+            policy(true, WhitelistServiceMode::Internet),
+        )
+        .unwrap() else {
+            panic!("policy change must be reconfirmed");
+        };
+        let merged = snapshot(
+            preview.merged_text,
+            fixture.context.path.clone(),
+            &fixture.defaults(),
+        )
+        .unwrap();
+        assert_eq!(
+            merged.values["whitelist"],
+            json!(["::1", "127.0.0.1", "203.0.113.9", "0.0.0.0/0", "::/0"])
+        );
+        assert_eq!(fixture.load().values["port"], "8000");
     }
 
     #[test]
@@ -949,12 +1185,14 @@ mod tests {
             &fixture.context,
             &no_network(),
             &fixture.defaults(),
+            policy(false, WhitelistServiceMode::Lan),
             &mut |_, _| {},
         )
         .unwrap();
         assert_eq!(generated.values["port"], "8000");
         assert_eq!(generated.values["listen"], false);
         assert_eq!(generated.values["protocol_ipv6"], false);
+        assert_eq!(generated.values["whitelist"], json!(["::1", "127.0.0.1"]));
         assert!(create_new(&fixture.context.path, "port: 9999\n").is_err());
         assert_eq!(fixture.load().values["port"], "8000");
     }
@@ -993,7 +1231,8 @@ mod tests {
                 &fixture.context,
                 &no_network(),
                 &fixture.defaults(),
-                &mut |_, _| {}
+                policy(false, WhitelistServiceMode::Lan),
+                &mut |_, _| {},
             )
             .is_err()
         );
@@ -1008,5 +1247,113 @@ mod tests {
         let global = Context::resolve(Some("/fixture/local"), "local", true, "/custom").unwrap();
         assert_eq!(global.path, Path::new("/custom/config.yaml"));
         assert_ne!(local.key, global.key);
+    }
+    fn policy(server_enabled: bool, service_mode: WhitelistServiceMode) -> WhitelistPolicy {
+        WhitelistPolicy {
+            server_enabled,
+            service_mode,
+        }
+    }
+
+    #[test]
+    fn fixed_whitelist_matches_the_legacy_service_modes() {
+        assert_eq!(
+            fixed_whitelist(policy(false, WhitelistServiceMode::Internet)),
+            ["::1", "127.0.0.1"]
+        );
+        assert_eq!(
+            fixed_whitelist(policy(true, WhitelistServiceMode::Lan)),
+            [
+                "::1",
+                "127.0.0.1",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16"
+            ]
+        );
+        assert_eq!(
+            fixed_whitelist(policy(true, WhitelistServiceMode::Internet)),
+            ["::1", "127.0.0.1", "0.0.0.0/0", "::/0"]
+        );
+        assert_eq!(all_reserved_whitelist_ips().len(), 7);
+        for value in all_reserved_whitelist_ips() {
+            assert!(is_reserved_whitelist_ip(value));
+        }
+    }
+
+    #[test]
+    fn mode_switch_replaces_only_reserved_ranges_and_deduplicates() {
+        let values = vec![
+            "::1".into(),
+            "203.0.113.8".into(),
+            "10.0.0.0/8".into(),
+            "203.0.113.8".into(),
+            "0.0.0.0/0".into(),
+            "2001:db8::/32".into(),
+        ];
+        assert_eq!(
+            normalize_whitelist(&values, policy(true, WhitelistServiceMode::Internet)),
+            [
+                "::1",
+                "203.0.113.8",
+                "0.0.0.0/0",
+                "2001:db8::/32",
+                "127.0.0.1",
+                "::/0"
+            ]
+        );
+        assert_eq!(
+            normalize_whitelist(&values, policy(false, WhitelistServiceMode::Lan)),
+            ["::1", "203.0.113.8", "2001:db8::/32", "127.0.0.1"]
+        );
+    }
+
+    #[test]
+    fn whitelist_three_way_merge_preserves_user_changes_on_both_sides() {
+        let base = vec![
+            "::1".into(),
+            "127.0.0.1".into(),
+            "198.51.100.1".into(),
+            "198.51.100.2".into(),
+        ];
+        let local = vec![
+            "::1".into(),
+            "127.0.0.1".into(),
+            "198.51.100.2".into(),
+            "203.0.113.1".into(),
+        ];
+        let disk = vec![
+            "127.0.0.1".into(),
+            "198.51.100.1".into(),
+            "198.51.100.2".into(),
+            "203.0.113.2".into(),
+        ];
+        assert_eq!(
+            merge_whitelist(
+                &base,
+                &local,
+                &disk,
+                policy(true, WhitelistServiceMode::Lan)
+            ),
+            [
+                "198.51.100.2",
+                "203.0.113.1",
+                "203.0.113.2",
+                "::1",
+                "127.0.0.1",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16"
+            ]
+        );
+    }
+
+    #[test]
+    fn whitelist_normalization_preserves_one_blank_editing_row() {
+        let values = vec!["".into(), " ".into(), "127.0.0.1".into()];
+        assert_eq!(
+            normalize_whitelist(&values, policy(false, WhitelistServiceMode::Lan)),
+            ["", "127.0.0.1", "::1"]
+        );
     }
 }

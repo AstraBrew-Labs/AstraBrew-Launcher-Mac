@@ -108,6 +108,9 @@ fn launchctl_print_enabled() -> bool {
     let target = format!("{domain}/{LABEL}");
     Command::new("launchctl")
         .args(["print", &target])
+        // 查询未注册服务是正常分支，不应把 launchctl 的错误输出到启动器终端。
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .map(|status| status.success())
         .unwrap_or(false)

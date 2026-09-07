@@ -4,7 +4,7 @@ use super::{TavernAction, TavernMessage};
 use crate::core::tavern_config::{ConfigError, schema};
 use crate::lang::text;
 use crate::theme::button_style;
-use astra_ui::{BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, WARNING, fonts};
+use astra_ui::{BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, WARNING};
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack};
 use iced::{Alignment, Color, Element, Fill};
 use std::path::PathBuf;
@@ -72,6 +72,8 @@ pub struct SyncView {
     pub total: Option<u64>,
     pub close_prompt: bool,
     pub pending_targets: Vec<PathBuf>,
+    /// 当前服务模式下由系统托管、在界面中只读的地址。
+    pub fixed_whitelist: Vec<String>,
 }
 
 pub fn validated_input<'a>(
@@ -81,7 +83,7 @@ pub fn validated_input<'a>(
 ) -> Element<'a, TavernMessage> {
     let error = schema::field(key).and_then(|field| schema::encode(field, value).err());
     if let Some(error) = error {
-        column![input, text(error).size(10).color(DANGER)]
+        column![input, text(error).size(12).color(DANGER)]
             .spacing(4)
             .into()
     } else {
@@ -105,7 +107,7 @@ fn alert<'a>(content: Element<'a, TavernMessage>) -> Element<'a, TavernMessage> 
         container(
             mouse_area(
                 container(content)
-                    .width(510)
+                    .width(Fill).max_width(510)
                     .padding(24)
                     .style(super::config_card_style)
             )
@@ -125,7 +127,7 @@ fn action(
     label: &'static str,
     message: TavernMessage,
 ) -> iced::widget::Button<'static, TavernMessage> {
-    button(text(label).size(12))
+    button(text(label).size(14))
         .padding([9, 14])
         .on_press(message)
         .style(button_style(ButtonVariant::Primary))
@@ -137,23 +139,23 @@ pub fn with_overlay<'a>(
 ) -> Element<'a, TavernMessage> {
     let mut body = column![].spacing(14);
     if let Some(import) = &view.import {
-        body = body.push(text("导入配置文件").size(18).font(fonts::MEDIUM));
+        body = body.push(text("导入配置文件").size(20).font(crate::core::typography::medium()));
         if import.changed {
             body = body.push(
                 text("源文件或目标文件已变化，请再次确认。")
-                    .size(12)
+                    .size(14)
                     .color(WARNING),
             );
         }
         body = body
-            .push(text("是否覆盖已有配置项？导入字段优先，缺失字段保留并由模板补全。").size(13));
-        body = body.push(text("导入源文件").size(11).color(INK_MUTED));
-        body = body.push(scrollable(text(import.source.display()).size(11)).height(36));
-        body = body.push(text("目标配置文件").size(11).color(INK_MUTED));
-        body = body.push(scrollable(text(import.target.display()).size(11)).height(36));
+            .push(text("是否覆盖已有配置项？导入字段优先，缺失字段保留并由模板补全。").size(15));
+        body = body.push(text("导入源文件").size(13).color(INK_MUTED));
+        body = body.push(scrollable(text(import.source.display()).size(13)).height(36));
+        body = body.push(text("目标配置文件").size(13).color(INK_MUTED));
+        body = body.push(scrollable(text(import.target.display()).size(13)).height(36));
         body = body.push(
             text("确认后会先备份原配置，列表字段整体替换。")
-                .size(11)
+                .size(13)
                 .color(INK_MUTED),
         );
         body = body.push(
@@ -165,13 +167,13 @@ pub fn with_overlay<'a>(
             .spacing(10),
         );
     } else if !view.conflicts.is_empty() {
-        body = body.push(text("配置存在冲突").size(18).font(fonts::MEDIUM));
-        body = body.push(text("以下字段同时在界面和文件中修改，尚未覆盖任何一方。").size(12));
+        body = body.push(text("配置存在冲突").size(20).font(crate::core::typography::medium()));
+        body = body.push(text("以下字段同时在界面和文件中修改，尚未覆盖任何一方。").size(14));
         body = body.push(
             scrollable(
                 column(view.conflicts.iter().map(|key| {
                     text(schema::field(key).map(|f| f.path).unwrap_or(key))
-                        .size(12)
+                        .size(14)
                         .into()
                 }))
                 .spacing(5),
@@ -195,23 +197,23 @@ pub fn with_overlay<'a>(
             | Status::Generating
             | Status::Importing
     ) {
-        body = body.push(text(view.status.label()).size(18).font(fonts::MEDIUM));
+        body = body.push(text(view.status.label()).size(20).font(crate::core::typography::medium()));
         if let Some(path) = &view.target {
-            body = body.push(scrollable(text(path.display()).size(11).color(INK_MUTED)).height(44));
+            body = body.push(scrollable(text(path.display()).size(13).color(INK_MUTED)).height(44));
         }
         match view.status {
             Status::NoTarget => {
-                body = body.push(text("请先在版本管理中选择一个酒馆实例。").size(12));
+                body = body.push(text("请先在版本管理中选择一个酒馆实例。").size(14));
                 body = body.push(action("前往版本管理", TavernMessage::GoToVersions));
             }
             Status::Missing => {
                 body = body.push(
-                    text("目标配置文件不存在，请点击立即生成。生成前不会写入页面默认值。").size(12),
+                    text("目标配置文件不存在，请点击立即生成。生成前不会写入页面默认值。").size(14),
                 );
                 body = body.push(action("立即生成", TavernMessage::GenerateConfig));
             }
             Status::Invalid | Status::ReadFailed => {
-                body = body.push(text("原文件不会被覆盖，请修复后重新加载。").size(12));
+                body = body.push(text("原文件不会被覆盖，请修复后重新加载。").size(14));
                 body = body.push(
                     row![
                         action("重新加载", TavernMessage::RetryConfig),
@@ -234,7 +236,7 @@ pub fn with_overlay<'a>(
                         .show_value(progress.is_some()),
                 );
                 body = body
-                    .push(text("正在处理当前目标，请稍候。不会自动修改网络访问设置。").size(12));
+                    .push(text("正在处理当前目标，请稍候。不会自动修改网络访问设置。").size(14));
             }
             _ => {}
         }
@@ -242,8 +244,8 @@ pub fn with_overlay<'a>(
         return base;
     }
     if let Some(error) = &view.error {
-        body = body.push(text(error.message).size(12).color(DANGER));
-        body = body.push(scrollable(text(&error.detail).size(11)).height(45));
+        body = body.push(text(error.message).size(14).color(DANGER));
+        body = body.push(scrollable(text(&error.detail).size(13)).height(45));
     }
     stack![base, alert(body.into())]
         .width(Fill)
@@ -254,14 +256,14 @@ pub fn with_overlay<'a>(
 pub fn close_overlay(view: &SyncView) -> Element<'_, TavernMessage> {
     alert(
         column![
-            text("仍有未保存的配置").size(18).font(fonts::MEDIUM),
+            text("仍有未保存的配置").size(20).font(crate::core::typography::medium()),
             text("存在无效输入、文件冲突或保存失败。继续编辑，或放弃尚未保存的修改并退出？")
-                .size(13),
+                .size(15),
             scrollable(
                 column(
                     view.pending_targets
                         .iter()
-                        .map(|path| text(path.display()).size(11).into())
+                        .map(|path| text(path.display()).size(13).into())
                 )
                 .spacing(5)
             )

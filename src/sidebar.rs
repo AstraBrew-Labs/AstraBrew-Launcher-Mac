@@ -8,7 +8,7 @@ use iced::widget::{button, column, container, space};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{Avatar, AvatarColor, AvatarShape, AvatarSize, WHITE, fonts, icons};
+use astra_ui::{Avatar, AvatarColor, AvatarShape, AvatarSize, WHITE, icons};
 
 use crate::app::Message;
 use crate::lang::text;
@@ -39,53 +39,72 @@ const SECONDARY_PAGES: [Page; 2] = [Page::Console, Page::Settings];
 
 /// 渲染主界面左侧导航栏。
 pub fn sidebar<'a>(page: Page, versions: &'a VersionState) -> Element<'a, Message> {
-    let primary = PRIMARY_PAGES.iter().map(|&item| nav_button(item, page));
-    let secondary = SECONDARY_PAGES.iter().map(|&item| nav_button(item, page));
+    let scale = crate::core::typography::current_ui_scale().max(1.0);
+    // 侧边栏导航采用反向尺寸补偿：界面整体放大时缩小导航的逻辑尺寸，
+    // 使其屏幕视觉尺寸基本稳定，并保证 150% 下“设置”入口仍然可见。
+    let sidebar_width = (SIDEBAR_WIDTH / scale).clamp(64.0, SIDEBAR_WIDTH);
+    let horizontal_padding = (12.0 / scale).clamp(8.0, 12.0);
+    let vertical_padding = (16.0 / scale).clamp(8.0, 16.0);
+    let nav_item_size = (NAV_ITEM_SIZE / scale).clamp(48.0, NAV_ITEM_SIZE);
+    let nav_spacing = (4.0 / scale).clamp(2.0, 4.0);
+    let section_spacing = (10.0 / scale).clamp(4.0, 10.0);
 
-    container(
-        column![
-            logo_section(versions),
-            crate::theme::separator(),
-            column(primary)
-                .spacing(4)
-                .align_x(Alignment::Center)
-                .width(Fill),
-            space::vertical(),
-            crate::theme::separator(),
-            column(secondary)
-                .spacing(4)
-                .align_x(Alignment::Center)
-                .width(Fill),
-        ]
-        .spacing(10)
-        .height(Fill)
-        .width(Fill),
-    )
-    .width(SIDEBAR_WIDTH)
+    let primary = PRIMARY_PAGES
+        .iter()
+        .map(|&item| nav_button(item, page, scale, nav_item_size));
+    let secondary = SECONDARY_PAGES
+        .iter()
+        .map(|&item| nav_button(item, page, scale, nav_item_size));
+
+    let content = column![
+        logo_section(versions, scale),
+        crate::theme::separator(),
+        column(primary)
+            .spacing(nav_spacing)
+            .align_x(Alignment::Center)
+            .width(Fill),
+        space::vertical(),
+        crate::theme::separator(),
+        column(secondary)
+            .spacing(nav_spacing)
+            .align_x(Alignment::Center)
+            .width(Fill),
+    ]
+    .spacing(section_spacing)
     .height(Fill)
-    .padding([16, 12])
-    .style(crate::theme::sidebar_style)
-    .into()
+    .width(Fill);
+
+    container(content)
+        .width(sidebar_width)
+        .height(Fill)
+        .padding(iced::Padding {
+            top: vertical_padding,
+            right: horizontal_padding,
+            bottom: vertical_padding,
+            left: horizontal_padding,
+        })
+        .style(crate::theme::sidebar_style)
+        .into()
 }
 
 /// Logo 区会同步展示当前酒馆版本及实例来源。
 /// 本地实例使用绿色，在线实例使用蓝色，未选择时仅保留中性占位信息。
-fn logo_section<'a>(versions: &'a VersionState) -> Element<'a, Message> {
+fn logo_section<'a>(versions: &'a VersionState, scale: f32) -> Element<'a, Message> {
     let version_info: Element<'a, Message> =
         match (versions.current_version.as_deref(), versions.current_source) {
             (Some(version), Some(source)) => text(format!(
                 "{version} - {}",
                 crate::lang::display_label(source.label())
             ))
-            .size(10)
-            .font(fonts::REGULAR)
+            .size((10.0 / scale).clamp(8.0, 10.0))
+            .font(crate::core::typography::regular())
             .style(move |_theme| iced::widget::text::Style {
                 color: Some(source.color()),
             })
             .into(),
             _ => text("酒馆版本 —")
-                .size(10)
-                .font(fonts::REGULAR)
+                .size((10.0 / scale).clamp(8.0, 10.0))
+                .font(crate::core::typography::regular())
                 .style(crate::theme::subtle_text_style)
                 .into(),
         };
@@ -93,7 +112,11 @@ fn logo_section<'a>(versions: &'a VersionState) -> Element<'a, Message> {
     column![
         Avatar::new("AstraBrew")
             .fallback(icons::icon(Icon::Beer, 22, WHITE))
-            .size(AvatarSize::Medium)
+            .size(if scale >= 1.25 {
+                AvatarSize::Small
+            } else {
+                AvatarSize::Medium
+            })
             .shape(AvatarShape::Rounded)
             .color(AvatarColor::Accent),
         version_info,
@@ -108,20 +131,28 @@ fn logo_section<'a>(versions: &'a VersionState) -> Element<'a, Message> {
 ///
 /// iced 的 `button` 不会自动居中内容，因此将图标与文字的列包在一个
 /// `Fill` 且水平/垂直居中的 `container` 中，使内容在正方形按钮内居中。
-fn nav_button(page: Page, current: Page) -> Element<'static, Message> {
+fn nav_button(
+    page: Page,
+    current: Page,
+    scale: f32,
+    item_size: f32,
+) -> Element<'static, Message> {
     let active = page == current;
+    let icon_size = ((22.0 / scale).round() as u32).clamp(15, 22);
+    let text_size = (11.0 / scale).clamp(8.0, 11.0);
+    let content_spacing = (6.0 / scale).clamp(2.0, 6.0);
 
     button(
         container(
             column![
                 if active {
-                    crate::theme::primary_icon(page.icon(), 22)
+                    crate::theme::primary_icon(page.icon(), icon_size)
                 } else {
-                    crate::theme::muted_icon(page.icon(), 22)
+                    crate::theme::muted_icon(page.icon(), icon_size)
                 },
                 text(page.title())
-                    .size(11)
-                    .font(fonts::MEDIUM)
+                    .size(text_size)
+                    .font(crate::core::typography::medium())
                     .style(move |theme| iced::widget::text::Style {
                         color: Some(if active {
                             theme.palette().primary
@@ -130,7 +161,7 @@ fn nav_button(page: Page, current: Page) -> Element<'static, Message> {
                         }),
                     }),
             ]
-            .spacing(6)
+            .spacing(content_spacing)
             .align_x(Alignment::Center),
         )
         .width(Fill)
@@ -138,8 +169,8 @@ fn nav_button(page: Page, current: Page) -> Element<'static, Message> {
         .align_x(Alignment::Center)
         .align_y(Alignment::Center),
     )
-    .width(NAV_ITEM_SIZE)
-    .height(NAV_ITEM_SIZE)
+    .width(item_size)
+    .height(item_size)
     .padding(0)
     .on_press(Message::Navigate(page))
     .style(nav_item_style(active))

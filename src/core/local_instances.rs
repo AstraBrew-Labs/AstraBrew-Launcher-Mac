@@ -37,6 +37,8 @@ pub enum LocalErrorKind {
     Service,
     Io,
     PermissionDenied,
+    /// 本地实例依赖检查无法找到 Node.js 或 npm，需要引导用户安装运行环境。
+    MissingNodeJs,
     Cancelled,
     InvalidInstance,
     OnlineInstance,
@@ -89,10 +91,7 @@ pub fn online_dir() -> PathBuf {
 }
 
 pub fn store_path() -> PathBuf {
-    online_dir()
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("data/local_instances.json")
+    crate::utils::app_paths().instances_file()
 }
 
 /// 保留无法访问的路径用于展示，但不靠字符串小写化合并大小写敏感卷上的目录。

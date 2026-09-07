@@ -3,11 +3,12 @@
 use super::{Launcher, Message};
 use crate::core::tavern_config::{
     self as service, ConfigError, Context, ErrorKind, ImportPreview, ImportResult, NetworkOptions,
-    Patch, SaveResult, Snapshot, Values, schema,
+    Patch, SaveResult, Snapshot, Values, WhitelistPolicy, WhitelistServiceMode, fixed_whitelist,
+    is_reserved_whitelist_ip, merge_whitelist, normalize_whitelist, schema,
 };
 use crate::pages::{
     Page,
-    settings::{ProxyMode, TavernDataMode},
+    settings::{ProxyMode, ServerServiceMode, TavernDataMode},
     tavern::{
         TavernAction, TavernMessage, TavernState,
         sync::{ImportPrompt, Status, SyncView},
@@ -39,6 +40,7 @@ struct Session {
     write_failed: bool,
     saved: bool,
     next_read: Instant,
+    whitelist_policy: Option<WhitelistPolicy>,
 }
 impl Session {
     fn new(context: Context, defaults: &Values) -> Self {
@@ -52,6 +54,7 @@ impl Session {
             write_failed: false,
             saved: false,
             next_read: Instant::now(),
+            whitelist_policy: None,
         }
     }
     fn accept(&mut self, snapshot: Snapshot, applied: &[(String, u64)]) {
@@ -119,6 +122,80 @@ impl Session {
     fn flush(&mut self) {
         for edit in self.edits.values_mut() {
             edit.due = Instant::now();
+        }
+    }
+
+    fn value_list(value: Option<&Value>) -> Vec<String> {
+        value
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 系统白名单修复与用户编辑分开合并，服务模式变化不会丢失用户地址。
+    fn apply_whitelist_policy(&mut self, policy: WhitelistPolicy, serial: &mut u64) {
+        if self.state != Status::Ready {
+            self.whitelist_policy = Some(policy);
+            return;
+        }
+        let Some(snapshot) = self.snapshot.as_ref() else {
+            self.whitelist_policy = Some(policy);
+            return;
+        };
+        let policy_changed = self.whitelist_policy.replace(policy) != Some(policy);
+        let disk = Self::value_list(snapshot.values.get("whitelist"));
+        let disk_raw = snapshot.raw.get("whitelist").cloned().flatten();
+        let local = Self::value_list(self.draft.get("whitelist"));
+        let (normalized, existing_needs_refresh) = if let Some(edit) = self.edits.get("whitelist") {
+            let normalized = if edit.base == disk_raw && !edit.conflict {
+                // 没有外部并发修改时沿用旧版顺序，只替换系统保留段。
+                normalize_whitelist(&local, policy)
+            } else {
+                let base = Self::value_list(edit.base.as_ref());
+                merge_whitelist(&base, &local, &disk, policy)
+            };
+            let needs = edit.conflict
+                || edit.base != disk_raw
+                || edit.ui != Value::Array(normalized.iter().cloned().map(Value::String).collect())
+                || policy_changed;
+            (normalized, needs)
+        } else {
+            (normalize_whitelist(&disk, policy), false)
+        };
+        let normalized_value =
+            Value::Array(normalized.iter().cloned().map(Value::String).collect());
+        // 键被外部完整删除时，decode 会给出界面默认值；必须比较原始磁盘值才能发现缺失。
+        let needs_repair = disk_raw.as_ref() != Some(&normalized_value);
+        if needs_repair || existing_needs_refresh {
+            let already_queued = self
+                .edits
+                .get("whitelist")
+                .is_some_and(|edit| !existing_needs_refresh && edit.ui == normalized_value);
+            if already_queued {
+                self.draft.insert("whitelist".into(), normalized_value);
+                return;
+            }
+            *serial = serial.wrapping_add(1);
+            self.edits.insert(
+                "whitelist".into(),
+                Edit {
+                    ui: normalized_value.clone(),
+                    base: disk_raw,
+                    revision: *serial,
+                    due: Instant::now(),
+                    conflict: false,
+                },
+            );
+            self.draft.insert("whitelist".into(), normalized_value);
+            self.write_failed = false;
+        } else if self.edits.get("whitelist").is_none() {
+            self.draft.insert("whitelist".into(), normalized_value);
         }
     }
 }
@@ -209,7 +286,72 @@ impl Launcher {
                 .values()
                 .any(|session| !session.edits.is_empty())
     }
+
+    /// 启动酒馆前刷新并保存当前配置。
+    ///
+    /// 返回 `Ok(true)` 表示配置已经稳定可读；`Ok(false)` 表示保存任务已排队，
+    /// 完成后由 `poll_tavern_config` 自动继续启动。
+    pub(super) fn prepare_config_for_launch(&mut self) -> Result<bool, String> {
+        let Some(key) = self.config_runtime.active.clone() else {
+            return Err("尚未选择酒馆实例。".to_owned());
+        };
+        if self.config_runtime.busy.is_some() {
+            return Ok(false);
+        }
+        let Some(session) = self.config_runtime.sessions.get_mut(&key) else {
+            return Err("酒馆配置尚未加载完成。".to_owned());
+        };
+        if session.invalid_or_blocked() {
+            return Err(session.error.as_ref().map_or_else(
+                || "酒馆配置存在无效输入或冲突，请先处理。".to_owned(),
+                |error| format!("{} {}", error.message, error.detail),
+            ));
+        }
+        if session.state == Status::Loading {
+            return Ok(false);
+        }
+        if session.state != Status::Ready || session.snapshot.is_none() {
+            return Err("酒馆配置尚未加载完成，请稍后重试。".to_owned());
+        }
+        if !session.edits.is_empty() {
+            session.flush();
+            self.schedule_config_job();
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    /// 检查待启动配置是否已经完成保存。
+    fn config_ready_for_pending_launch(&self) -> Result<bool, String> {
+        let Some(key) = self.config_runtime.active.as_ref() else {
+            return Err("尚未选择酒馆实例。".to_owned());
+        };
+        if self.config_runtime.busy.is_some() {
+            return Ok(false);
+        }
+        let Some(session) = self.config_runtime.sessions.get(key) else {
+            return Err("酒馆配置尚未加载完成。".to_owned());
+        };
+        if session.invalid_or_blocked() || session.write_failed {
+            return Err(session.error.as_ref().map_or_else(
+                || "酒馆配置保存失败或存在冲突。".to_owned(),
+                |error| format!("{} {}", error.message, error.detail),
+            ));
+        }
+        Ok(session.state == Status::Ready && session.edits.is_empty())
+    }
+    fn current_whitelist_policy(&self) -> WhitelistPolicy {
+        WhitelistPolicy {
+            server_enabled: self.settings.server_mode_enabled,
+            service_mode: match self.settings.server_service_mode {
+                ServerServiceMode::Lan => WhitelistServiceMode::Lan,
+                ServerServiceMode::Internet => WhitelistServiceMode::Internet,
+            },
+        }
+    }
+
     pub(super) fn reconcile_tavern_config(&mut self) {
+        let whitelist_policy = self.current_whitelist_policy();
         let source = match self.versions.current_source {
             Some(VersionSource::Local) => "local",
             Some(VersionSource::Online) => "online",
@@ -246,6 +388,14 @@ impl Launcher {
                     .or_insert_with(|| Session::new(context, &self.config_runtime.defaults));
                 session.next_read = Instant::now();
             }
+        }
+        if let Some(session) = self
+            .config_runtime
+            .active
+            .as_ref()
+            .and_then(|key| self.config_runtime.sessions.get_mut(key))
+        {
+            session.apply_whitelist_policy(whitelist_policy, &mut self.config_runtime.serial);
         }
         self.schedule_config_job();
         self.refresh_config_view();
@@ -297,6 +447,7 @@ impl Launcher {
             self.tavern.sync = SyncView {
                 close_prompt,
                 pending_targets,
+                fixed_whitelist: fixed_whitelist(self.current_whitelist_policy()),
                 ..Default::default()
             };
             return;
@@ -371,6 +522,7 @@ impl Launcher {
             total: self.config_runtime.download.1,
             close_prompt,
             pending_targets,
+            fixed_whitelist: fixed_whitelist(self.current_whitelist_policy()),
         };
         if let Err(error) = self.tavern.apply_values(session.draft.clone()) {
             self.tavern.sync.status = Status::Invalid;
@@ -422,6 +574,32 @@ impl Launcher {
             self.versions.local.notify("请先选择酒馆实例。", "", true);
             return Task::none();
         };
+        match &message {
+            TavernMessage::EditList(crate::pages::tavern::ListField::Whitelist, index, value) => {
+                let current = self.tavern.whitelist().get(*index).map(String::as_str);
+                if current.is_some_and(is_reserved_whitelist_ip) || is_reserved_whitelist_ip(value)
+                {
+                    self.versions
+                        .local
+                        .notify("此地址由酒馆服务模式自动管理。", value, true);
+                    return Task::none();
+                }
+            }
+            TavernMessage::RemoveListItem(crate::pages::tavern::ListField::Whitelist, index) => {
+                if self
+                    .tavern
+                    .whitelist()
+                    .get(*index)
+                    .is_some_and(|value| is_reserved_whitelist_ip(value))
+                {
+                    self.versions
+                        .local
+                        .notify("系统保留的白名单地址不能删除。", "", true);
+                    return Task::none();
+                }
+            }
+            _ => {}
+        }
         if let Some((field, immediate)) = Self::field_changed(&message) {
             let Some(session) = self.config_runtime.sessions.get(&key) else {
                 return Task::none();
@@ -673,6 +851,7 @@ impl Launcher {
             return;
         }
         if let Some((key, action)) = self.config_runtime.action.take() {
+            let whitelist_policy = self.current_whitelist_policy();
             let Some(context) = self
                 .config_runtime
                 .sessions
@@ -690,6 +869,7 @@ impl Launcher {
                             &context,
                             network,
                             defaults,
+                            whitelist_policy,
                             &mut |n, total| {
                                 let _ = tx.send(Event::Progress(id, context.key.clone(), n, total));
                             },
@@ -705,6 +885,7 @@ impl Launcher {
                             &source,
                             network,
                             defaults,
+                            whitelist_policy,
                             &mut |n, total| {
                                 let _ = tx.send(Event::Progress(id, context.key.clone(), n, total));
                             },
@@ -713,7 +894,7 @@ impl Launcher {
                 ),
                 Action::Commit(preview) => {
                     self.launch_config_job(key, JobKind::Import, move |defaults, _, _, _| {
-                        ResultData::Imported(service::import(&preview, defaults))
+                        ResultData::Imported(service::import(&preview, defaults, whitelist_policy))
                     })
                 }
                 Action::Reveal => {
@@ -923,6 +1104,19 @@ impl Launcher {
                 }
             }
         }
+        if self.pending_console_launch {
+            match self.config_ready_for_pending_launch() {
+                Ok(true) => {
+                    self.pending_console_launch = false;
+                    self.start_tavern_now();
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.pending_console_launch = false;
+                    self.console.add_error(error);
+                }
+            }
+        }
         if let Some(id) = self.config_runtime.close_window {
             let dirty = self
                 .config_runtime
@@ -1023,7 +1217,15 @@ mod tests {
             progress: 0.0,
             last_tick: None,
             settings: Default::default(),
+            font_catalog: Default::default(),
+            active_font: crate::core::typography::FontChoice::default_choice(),
+            loaded_fonts: Default::default(),
+            font_load_request_id: 0,
+            font_load_pending: 0,
+            font_load_failed: false,
             environment_task_receiver: None,
+            environment_task_cancel: None,
+            nodejs_required_visible: false,
             github_test_receiver: None,
             github_test_id: 0,
             github_test_cancel: None,
@@ -1037,10 +1239,25 @@ mod tests {
             extensions: Default::default(),
             resources: Default::default(),
             console: Default::default(),
-            launch_requested: false,
+            global_notices: Default::default(),
+            global_notice_serial: 0,
+            pending_console_launch: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_suppressed: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_ready: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_count: 0,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_at: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_load_deadline: None,
             settings_store: SettingsStore::load(settings_path).0,
             window_position: None,
             system_theme: iced::theme::Mode::Light,
+            window_ready: false,
         }
     }
     fn attach(app: &mut Launcher, session: Session) -> String {
@@ -1450,5 +1667,188 @@ mod tests {
             app.config_runtime.action,
             Some((_, Action::Generate))
         ));
+    }
+    fn whitelist_policy(server: bool, mode: WhitelistServiceMode) -> WhitelistPolicy {
+        WhitelistPolicy {
+            server_enabled: server,
+            service_mode: mode,
+        }
+    }
+
+    #[test]
+    fn external_deletion_of_fixed_ips_is_repaired_even_when_whitelist_is_disabled() {
+        let context = context("whitelist-disabled");
+        let mut session = Session::new(context.clone(), &defaults());
+        session.accept(
+            service::snapshot(
+                "whitelistMode: false
+whitelist: [203.0.113.9]
+"
+                .into(),
+                context.path,
+                &defaults(),
+            )
+            .unwrap(),
+            &[],
+        );
+        let mut serial = 0;
+        session.apply_whitelist_policy(
+            whitelist_policy(false, WhitelistServiceMode::Lan),
+            &mut serial,
+        );
+        assert_eq!(
+            session.draft["whitelist"],
+            json!(["203.0.113.9", "::1", "127.0.0.1"])
+        );
+        assert_eq!(session.valid_patches(Instant::now()).len(), 1);
+        assert!(!session.edits["whitelist"].conflict);
+    }
+
+    #[test]
+    fn service_mode_changes_only_replace_reserved_ranges() {
+        let context = context("service-mode");
+        let mut session = Session::new(context.clone(), &defaults());
+        session.accept(
+            service::snapshot(
+                "whitelist: ['::1', '127.0.0.1', '10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '203.0.113.9']
+".into(),
+                context.path,
+                &defaults(),
+            )
+            .unwrap(),
+            &[],
+        );
+        let mut serial = 0;
+        session.apply_whitelist_policy(
+            whitelist_policy(true, WhitelistServiceMode::Lan),
+            &mut serial,
+        );
+        assert!(session.edits.get("whitelist").is_none());
+        session.apply_whitelist_policy(
+            whitelist_policy(true, WhitelistServiceMode::Internet),
+            &mut serial,
+        );
+        assert_eq!(
+            session.draft["whitelist"],
+            json!(["::1", "127.0.0.1", "203.0.113.9", "0.0.0.0/0", "::/0"])
+        );
+        session.apply_whitelist_policy(
+            whitelist_policy(false, WhitelistServiceMode::Internet),
+            &mut serial,
+        );
+        assert_eq!(
+            session.draft["whitelist"],
+            json!(["::1", "127.0.0.1", "203.0.113.9"])
+        );
+    }
+
+    #[test]
+    fn system_repair_merges_external_and_local_user_ips_without_conflict() {
+        let context = context("whitelist-merge");
+        let mut session = Session::new(context.clone(), &defaults());
+        session.accept(
+            service::snapshot(
+                "whitelist: ['::1', '127.0.0.1', '198.51.100.1']
+"
+                .into(),
+                context.path.clone(),
+                &defaults(),
+            )
+            .unwrap(),
+            &[],
+        );
+        edit(
+            &mut session,
+            "whitelist",
+            json!(["::1", "127.0.0.1", "198.51.100.1", "203.0.113.1"]),
+            1,
+            Instant::now(),
+        );
+        session.accept(
+            service::snapshot(
+                "whitelist: ['127.0.0.1', '198.51.100.1', '203.0.113.2']
+"
+                .into(),
+                context.path,
+                &defaults(),
+            )
+            .unwrap(),
+            &[],
+        );
+        assert!(session.edits["whitelist"].conflict);
+        let mut serial = 1;
+        session.apply_whitelist_policy(
+            whitelist_policy(true, WhitelistServiceMode::Lan),
+            &mut serial,
+        );
+        assert!(!session.edits["whitelist"].conflict);
+        assert_eq!(
+            session.draft["whitelist"],
+            json!([
+                "198.51.100.1",
+                "203.0.113.1",
+                "203.0.113.2",
+                "::1",
+                "127.0.0.1",
+                "10.0.0.0/8",
+                "172.16.0.0/12",
+                "192.168.0.0/16"
+            ])
+        );
+    }
+
+    #[test]
+    fn fixed_entries_and_reserved_custom_values_are_rejected_before_editing() {
+        use crate::pages::tavern::ListField;
+        let mut app = launcher();
+        let mut session = session("locked-whitelist");
+        session.draft.insert(
+            "whitelist".into(),
+            json!(["::1", "127.0.0.1", "203.0.113.9"]),
+        );
+        let key = attach(&mut app, session);
+        let _ = app
+            .handle_tavern_config_message(TavernMessage::RemoveListItem(ListField::Whitelist, 0));
+        assert!(app.config_runtime.sessions[&key].edits.is_empty());
+        assert!(app.versions.local.toast.as_ref().unwrap().danger);
+        let _ = app.handle_tavern_config_message(TavernMessage::EditList(
+            ListField::Whitelist,
+            2,
+            "10.0.0.0/8".into(),
+        ));
+        assert_eq!(app.tavern.whitelist()[2], "203.0.113.9");
+        assert!(app.config_runtime.sessions[&key].edits.is_empty());
+        let _ = app
+            .handle_tavern_config_message(TavernMessage::RemoveListItem(ListField::Whitelist, 2));
+        assert!(
+            app.config_runtime.sessions[&key]
+                .edits
+                .contains_key("whitelist")
+        );
+        assert_eq!(app.tavern.whitelist(), ["::1", "127.0.0.1"]);
+    }
+
+    #[test]
+    fn repeated_reconcile_does_not_churn_the_same_system_repair_revision() {
+        let context = context("repair-once");
+        let mut session = Session::new(context.clone(), &defaults());
+        session.accept(
+            service::snapshot(
+                "whitelist: []
+"
+                .into(),
+                context.path,
+                &defaults(),
+            )
+            .unwrap(),
+            &[],
+        );
+        let mut serial = 0;
+        let policy = whitelist_policy(false, WhitelistServiceMode::Lan);
+        session.apply_whitelist_policy(policy, &mut serial);
+        let revision = session.edits["whitelist"].revision;
+        session.apply_whitelist_policy(policy, &mut serial);
+        assert_eq!(session.edits["whitelist"].revision, revision);
+        assert_eq!(serial, revision);
     }
 }

@@ -57,7 +57,7 @@ astra_ui文档：https://docs.rs/iced-astraui/0.0.1
 /tmp/AstraBrew Launcher/ 用于存放临时文件，程序运行结束后可以清理掉
 
 ## 多语言支持
-要支持中文和英文的国际化适配
+要支持中文和英文的国际化适配，用n18n的规范，用 键值对 的方式来实现多语言切换，比如：“settings.title”:"设置"。
 src
  - lang
   - zh.rs 中文

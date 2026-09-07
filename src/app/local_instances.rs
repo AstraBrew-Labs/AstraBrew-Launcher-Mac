@@ -409,6 +409,20 @@ impl Launcher {
         }
     }
 
+    /// Node.js 安装完成后重新检查所有本地实例，使界面无需用户逐个点击重试。
+    pub(super) fn recheck_all_local_dependencies(&mut self) {
+        let paths: Vec<_> = self
+            .versions
+            .local_instances
+            .iter()
+            .filter(|instance| instance.dependencies != DependencyStatus::Installing)
+            .map(|instance| instance.path.clone())
+            .collect();
+        for path in paths {
+            self.queue_dependency_check(path, false);
+        }
+    }
+
     fn install_local_dependencies(&mut self, path: String) {
         if self.versions.install_task.running || self.versions.local.install.running {
             self.versions
@@ -610,11 +624,22 @@ impl Launcher {
                                 }
                             }
                             Err(error) => {
-                                item.dependencies = DependencyStatus::Failed(format!(
-                                    "{}\n{}",
-                                    error.message, error.detail
-                                ));
-                                self.versions.local.report(&error);
+                                if error.kind == LocalErrorKind::MissingNodeJs {
+                                    // Node.js 缺失属于可恢复的环境问题：不显示底层 ENOENT，
+                                    // 改为全局安装引导，并避免多个实例重复弹出提示。
+                                    item.dependencies =
+                                        DependencyStatus::Failed(error.message.to_owned());
+                                    self.versions.local.toast = None;
+                                    if !self.settings.environment_task.running {
+                                        self.nodejs_required_visible = true;
+                                    }
+                                } else {
+                                    item.dependencies = DependencyStatus::Failed(format!(
+                                        "{}\n{}",
+                                        error.message, error.detail
+                                    ));
+                                    self.versions.local.report(&error);
+                                }
                             }
                         }
                     }
@@ -693,7 +718,15 @@ mod tests {
             progress: 0.0,
             last_tick: None,
             settings: Default::default(),
+            font_catalog: Default::default(),
+            active_font: crate::core::typography::FontChoice::default_choice(),
+            loaded_fonts: Default::default(),
+            font_load_request_id: 0,
+            font_load_pending: 0,
+            font_load_failed: false,
             environment_task_receiver: None,
+            environment_task_cancel: None,
+            nodejs_required_visible: false,
             github_test_receiver: None,
             github_test_id: 0,
             github_test_cancel: None,
@@ -707,10 +740,25 @@ mod tests {
             extensions: Default::default(),
             resources: Default::default(),
             console: Default::default(),
-            launch_requested: false,
+            global_notices: Default::default(),
+            global_notice_serial: 0,
+            pending_console_launch: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_suppressed: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_ready: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_count: 0,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_at: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_load_deadline: None,
             settings_store: SettingsStore::load(path).0,
             window_position: None,
             system_theme: iced::theme::Mode::Light,
+            window_ready: false,
         }
     }
     fn instance(path: &str, dependencies: DependencyStatus) -> LocalInstance {
@@ -909,6 +957,37 @@ mod tests {
             Event::Checked("/fixture/one".into(), id, Ok(DependencyStatus::Ready)),
         );
         assert_eq!(app.versions.current_source, Some(VersionSource::Local));
+    }
+    #[test]
+    fn missing_nodejs_uses_install_prompt_instead_of_raw_spawn_error() {
+        let mut app = launcher();
+        let path = "/fixture/one";
+        app.versions
+            .local_instances
+            .push(instance(path, DependencyStatus::Checking));
+        app.local_runtime.check_ids.insert(path.into(), 1);
+        app.local_runtime.checking = 1;
+
+        send(
+            &mut app,
+            Event::Checked(
+                path.into(),
+                1,
+                Err(LocalError::new("environment.nodejs_required.error", "")
+                    .with_kind(LocalErrorKind::MissingNodeJs)),
+            ),
+        );
+
+        assert!(app.nodejs_required_visible);
+        assert!(app.versions.local.toast.is_none());
+        assert!(matches!(
+            &app.versions.local_instances[0].dependencies,
+            DependencyStatus::Failed(detail) if !detail.contains("No such file or directory")
+        ));
+
+        let _ = app.update_inner(Message::InstallRequiredNodeJs);
+        assert_eq!(app.page, Page::Settings);
+        assert!(!app.nodejs_required_visible);
     }
     #[test]
     fn install_is_exclusive_and_success_does_not_switch() {

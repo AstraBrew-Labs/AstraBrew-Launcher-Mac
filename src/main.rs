@@ -11,31 +11,56 @@ mod pages;
 mod platform;
 mod sidebar;
 mod theme;
+mod utils;
 
 use iced::window;
 use lucide_icons::LUCIDE_FONT_BYTES;
 
 fn main() -> iced::Result {
-    let (settings_store, preferences) = core::settings::SettingsStore::load_default();
+    let (settings_store, mut preferences) = core::settings::SettingsStore::load_default();
+    // 启动前只扫描字体元数据，并注册上次选择的字体文件，避免首帧闪回默认字体。
+    let font_catalog = core::typography::SystemFontCatalog::discover();
+    let mut initial_font = font_catalog.resolve(&preferences.font_family);
+    let startup_font_bytes = match font_catalog.load_family_bytes(initial_font) {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            initial_font = core::typography::FontChoice::default_choice();
+            preferences.font_family = core::typography::DEFAULT_FONT_KEY.to_owned();
+            Vec::new()
+        }
+    };
     let saved_position = preferences
         .remember_window_position
         .then_some(preferences.window_position)
         .flatten();
     let placement = platform::initial_window_placement(saved_position);
     let initial_store = settings_store.clone();
+    let initial_font_catalog = font_catalog.clone();
 
     let mut application = iced::application(
-        move || app::Launcher::new(initial_store.clone(), preferences.clone()),
+        move || {
+            app::Launcher::new(
+                initial_store.clone(),
+                preferences.clone(),
+                initial_font_catalog.clone(),
+                initial_font,
+            )
+        },
         app::Launcher::update,
         app::Launcher::view,
     )
     .title(app::Launcher::title)
     .subscription(app::Launcher::subscription)
     .theme(app::Launcher::theme)
+    .scale_factor(app::Launcher::scale_factor)
     .font(LUCIDE_FONT_BYTES);
 
-    // 注册 astra_ui 内置的 HarmonyOS Sans 字体（六档字重）
+    // 注册 astra_ui 内置的 HarmonyOS Sans 字体（六档字重）。
     for (_, bytes) in astra_ui::fonts::FONT_MAPPINGS {
+        application = application.font(bytes);
+    }
+    // 用户上次选择的系统字体在渲染器创建前注册，首次绘制即可生效。
+    for bytes in startup_font_bytes {
         application = application.font(bytes);
     }
 

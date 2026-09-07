@@ -13,16 +13,27 @@ lucide-icons = { version = "1.31.0", features = ["iced"] }
 astra_ui = { git = "https://github.com/AstraBrew-Labs/iced-astraui", branch = "beta", package = "iced-astraui" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# 严格解析 SillyTavern 输出的 Go to 访问地址，避免误取代理 URL。
+regex = "1.11"
 # 无损编辑配置，保留未知字段及未修改部分的注释。
 yaml-edit = "=0.3.1"
 reqwest = { version = "0.12", default-features = true, features = ["blocking", "socks"] }
 rfd = "0.15"
+# 枚举并读取 macOS 已安装字体，供界面动态切换。
+fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 
 # macOS 原生窗口定制（禁用绿色缩放按钮、移除独占全屏），版本与 winit 保持一致以去重
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSEnumerator", "NSThread", "dispatch"] }
 objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSWindow", "NSButton", "NSControl", "NSScreen"] }
+# 桌面模式 WebView 使用与 WebKit 绑定一致的 objc2 0.6 依赖，别名避免影响现有窗口代码。
+objc2_06 = { package = "objc2", version = "0.6.4" }
+objc2_foundation_06 = { package = "objc2-foundation", version = "0.3.2", features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSObject", "NSString", "NSURL", "NSURLRequest", "NSValue"] }
+objc2_app_kit_06 = { package = "objc2-app-kit", version = "0.3.2", features = ["NSApplication", "NSWindow", "NSOpenPanel", "NSWorkspace", "NSResponder", "NSView", "objc2-uniform-type-identifiers"] }
+objc2_uniform_type_identifiers_06 = { package = "objc2-uniform-type-identifiers", version = "0.3.2" }
+objc2-web-kit = { version = "0.3.2", features = ["WKContentWorld", "WKNavigation", "WKNavigationAction", "WKNavigationResponse", "WKOpenPanelParameters", "WKScriptMessage", "WKUserContentController", "WKUserScript", "WKWebView", "WKWebViewConfiguration"] }
+block2 = "0.6.2"
 
 [profile.release]
 lto = "thin"

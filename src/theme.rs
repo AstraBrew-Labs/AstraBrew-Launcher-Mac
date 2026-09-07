@@ -4,7 +4,7 @@ use astra_ui::AlertKind;
 use astra_ui::ButtonVariant;
 use iced::theme;
 use iced::widget::overlay::menu;
-use iced::widget::{button, column, container, pick_list, row, space, stack, text_input};
+use iced::widget::{button, column, container, pick_list, row, slider, space, stack, text_input};
 use iced::{Background, Border, Color, Element, Length, Theme};
 use lucide_icons::Icon;
 
@@ -175,7 +175,10 @@ pub fn switch<'a, Message: Clone + 'a>(
     button(
         row![
             control,
-            iced::widget::text(label).size(12).style(text_style),
+            iced::widget::text(label)
+                .size(12)
+                .font(crate::core::typography::regular())
+                .style(text_style),
         ]
         .spacing(10)
         .align_y(iced::Alignment::Center),
@@ -234,11 +237,13 @@ pub fn alert<'a, Message: 'a>(
             column![
                 iced::widget::text(title)
                     .size(13)
+                    .font(crate::core::typography::medium())
                     .style(move |theme| iced::widget::text::Style {
                         color: Some(accent(theme)),
                     }),
                 iced::widget::text(description)
                     .size(12)
+                    .font(crate::core::typography::regular())
                     .style(muted_text_style),
             ]
             .spacing(2)
@@ -292,6 +297,35 @@ fn switch_thumb_style(theme: &Theme) -> container::Style {
         },
         ..container::Style::default()
     }
+}
+
+/// 使用当前动态字体渲染的扁平状态标签。
+pub fn flat_chip<'a, Message: 'a>(label: &'a str, color: Color) -> Element<'a, Message> {
+    container(
+        iced::widget::text(label)
+            .size(11)
+            .font(crate::core::typography::medium())
+            .color(color),
+    )
+    .height(24)
+    .padding([2, 8])
+    .align_x(iced::Alignment::Center)
+    .align_y(iced::Alignment::Center)
+    .style(move |theme| container::Style {
+        background: Some(Background::Color(Color::from_rgba(
+            color.r,
+            color.g,
+            color.b,
+            if is_dark(theme) { 0.18 } else { 0.10 },
+        ))),
+        border: Border {
+            color: Color::from_rgba(color.r, color.g, color.b, 0.22),
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
 }
 
 /// 主题感知的一像素分隔线。
@@ -498,6 +532,35 @@ pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input
             palette.primary.b,
             0.25,
         ),
+    }
+}
+
+/// 主题感知滑块样式。
+pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
+    let primary = match status {
+        slider::Status::Active => theme.palette().primary,
+        slider::Status::Hovered => lighten(theme.palette().primary, 0.08),
+        slider::Status::Dragged => lighten(theme.palette().primary, 0.14),
+    };
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (
+                Background::Color(primary),
+                Background::Color(surface_alt(theme)),
+            ),
+            width: 5.0,
+            border: Border {
+                color: line(theme),
+                width: 1.0,
+                radius: 3.0.into(),
+            },
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 8.0 },
+            background: Background::Color(surface(theme)),
+            border_width: 2.0,
+            border_color: primary,
+        },
     }
 }
 

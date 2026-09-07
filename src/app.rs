@@ -4,6 +4,7 @@
 //! 运行环境初始化，完成后进入主界面（左侧导航栏 + 右侧内容区）。
 //! 界面组件统一来自 astra_ui（Astra UI）组件库。
 
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,21 +15,25 @@ use iced::widget::{button, column, container, row, space};
 use iced::{Alignment, Element, Fill, Point, Size, Subscription, Task, Theme, theme, window};
 use lucide_icons::Icon;
 
-use astra_ui::fonts;
 use astra_ui::icons;
 use astra_ui::{
-    AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500, ChipVariant,
-    INK_SUBTLE, ProgressBar, ProgressBarColor, SUCCESS, WHITE, chip, tag_style,
+    AlertKind, Avatar, AvatarColor, AvatarShape, AvatarSize, ButtonVariant, CYAN_500, INK_SUBTLE,
+    ProgressBar, ProgressBarColor, SUCCESS, WHITE, tag_style,
 };
 
+use crate::core::local_instances::DependencyStatus;
 use crate::core::network::{
     DownloadChannel, DownloadChannelTestEvent, GithubTestEvent, SillyTavernCatalog,
     SillyTavernInstallEvent, SillyTavernInstallTarget,
 };
 use crate::core::settings::{PersistentPreferences, SettingsStore};
+use crate::core::typography::{FontChoice, SystemFontCatalog};
+use crate::core::tavern_process::{
+    TavernDataMode as ProcessDataMode, TavernLaunchMode, TavernLaunchSpec,
+};
 use crate::lang::{effective_language, t, text};
 use crate::pages::Page;
-use crate::pages::console::{ConsoleMessage, ConsoleState};
+use crate::pages::console::{ConsoleAction, ConsoleMessage, ConsoleState, ConsoleStatus, NetworkMode};
 use crate::pages::extensions::{ExtensionsMessage, ExtensionsState};
 use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
 #[cfg(not(test))]
@@ -40,7 +45,7 @@ use crate::pages::settings::{
     SystemProxyStatus, TavernDataMode, TavernVersion, ThemeMode,
 };
 use crate::pages::tavern::{BrowserType, TavernMessage, TavernState};
-use crate::pages::versions::{TavernBranch, VersionMessage, VersionState};
+use crate::pages::versions::{TavernBranch, VersionMessage, VersionSource, VersionState};
 use crate::theme::button_style;
 use crate::{pages, sidebar};
 
@@ -139,6 +144,17 @@ fn window_profile(monitor: Option<Size>) -> WindowProfile {
     }
 }
 
+/// 显示在所有页面上方的临时消息。
+#[derive(Debug, Clone)]
+struct GlobalNotice {
+    id: u64,
+    title_key: &'static str,
+    detail: String,
+    danger: bool,
+    reveal_path: Option<PathBuf>,
+    until: Instant,
+}
+
 /// 应用消息
 #[derive(Debug, Clone)]
 pub(crate) enum Message {
@@ -162,6 +178,14 @@ pub(crate) enum Message {
     SettingsLanguageSelected(DisplayLanguage),
     /// 修改界面主题
     SettingsThemeSelected(ThemeMode),
+    /// 修改普通界面与布局的缩放比例。
+    SettingsUiScaleChanged(f32),
+    /// 请求切换普通界面字体。
+    SettingsFontSelected(FontChoice),
+    /// 后台完成字体文件读取。
+    SettingsFontBytesReady(u64, FontChoice, Result<Vec<Vec<u8>>, String>),
+    /// iced 渲染器完成单个字体文件注册。
+    SettingsFontLoaded(u64, FontChoice, Result<(), String>),
     /// 切换是否记住窗口位置
     SettingsRememberWindowPosition(bool),
     SettingsAutoStart(bool),
@@ -199,8 +223,16 @@ pub(crate) enum Message {
     EnvironmentTaskTick(Instant),
     /// 关闭已经完成或超时的安装窗口。
     EnvironmentTaskClose,
+    /// 展开或收起环境安装任务的详细日志。
+    EnvironmentTaskToggleDetails,
     /// 消费环境安装弹窗内部及遮罩点击。
     EnvironmentModalInteract,
+    /// 从本地实例检测弹窗前往设置并自动触发 Node.js 安装。
+    InstallRequiredNodeJs,
+    /// 暂时关闭本地实例的 Node.js 安装引导。
+    DismissNodeJsRequired,
+    /// 消费 Node.js 安装引导弹窗内部及遮罩点击。
+    NodeJsRequiredInteract,
     /// 恢复设置页默认值
     SettingsRestoreDefaults,
     /// 更新酒馆配置页的本地配置草稿
@@ -213,6 +245,12 @@ pub(crate) enum Message {
     Resources(ResourceManageMessage),
     /// 更新控制台页面状态
     Console(ConsoleMessage),
+    /// 关闭指定全局消息。
+    DismissGlobalNotice(u64),
+    /// 全局消息内部交互占位，阻止点击穿透。
+    GlobalNoticeInteract,
+    /// 在访达中显示下载完成的文件。
+    RevealDownloadedFile(u64, PathBuf),
     /// 主窗口已打开，记录初始坐标并校准固定尺寸。
     WindowOpened(window::Id, Option<Point>),
     /// 已测得窗口所在显示器的逻辑分辨率。
@@ -261,8 +299,24 @@ pub struct Launcher {
     last_tick: Option<Instant>,
     /// 设置页面的本地界面状态
     settings: SettingsState,
+    /// 当前机器可选择的字体目录。
+    font_catalog: SystemFontCatalog,
+    /// 当前真正用于普通界面渲染的字体。
+    active_font: FontChoice,
+    /// 已经交给 iced 渲染器注册的字体族。
+    loaded_fonts: HashSet<&'static str>,
+    /// 字体异步加载请求序号，用于丢弃过期结果。
+    font_load_request_id: u64,
+    /// 当前字体请求尚未返回的文件数量。
+    font_load_pending: usize,
+    /// 当前字体请求是否已有文件加载失败。
+    font_load_failed: bool,
     /// 旧版环境安装任务的后台日志通道。
     environment_task_receiver: Option<Receiver<String>>,
+    /// 当前环境安装任务的取消信号。
+    environment_task_cancel: Option<Arc<AtomicBool>>,
+    /// 本地实例依赖检查发现 Node.js 缺失时显示全局安装引导。
+    nodejs_required_visible: bool,
     /// GitHub 测试完成结果的后台通道。
     github_test_receiver: Option<Receiver<GithubTestEvent>>,
     /// 当前 GitHub 测试序号，用于丢弃取消后的旧结果。
@@ -289,20 +343,45 @@ pub struct Launcher {
     resources: ResourceManageState,
     /// 控制台页面状态
     console: ConsoleState,
-    /// 主页上的启动请求状态（服务层接入前用于反馈操作结果）
-    launch_requested: bool,
+    /// 跨页面显示的下载完成或失败消息。
+    global_notices: VecDeque<GlobalNotice>,
+    global_notice_serial: u64,
+    /// 配置保存完成后自动继续执行的启动请求。
+    pending_console_launch: bool,
+    /// 桌面模式使用的原生 WebView 窗口。
+    #[cfg(target_os = "macos")]
+    desktop_webview: Option<crate::core::desktop_webview::DesktopWebView>,
+    /// 用户主动关闭桌面窗口后，避免定时轮询立即把它重新打开。
+    #[cfg(target_os = "macos")]
+    desktop_webview_suppressed: bool,
+    /// 当前 WebView 导航是否已经成功完成。
+    #[cfg(target_os = "macos")]
+    desktop_webview_ready: bool,
+    /// 当前加载失败后的重试次数。
+    #[cfg(target_os = "macos")]
+    desktop_webview_retry_count: u8,
+    /// 延迟重试时间点，避免失败时在主线程中紧密循环。
+    #[cfg(target_os = "macos")]
+    desktop_webview_retry_at: Option<Instant>,
+    /// 当前导航的完成期限，WebKit 没有回调时也能退出空白等待。
+    #[cfg(target_os = "macos")]
+    desktop_webview_load_deadline: Option<Instant>,
     /// 保留旧版未知字段的配置存储器。
     settings_store: SettingsStore,
     /// 当前窗口最新的逻辑坐标，仅在正常关闭时写入磁盘。
     window_position: Option<[f32; 2]>,
     /// iced 当前检测到的系统明暗模式。
     system_theme: theme::Mode,
+    /// 窗口完成首次固定尺寸校准后才启用用户界面缩放。
+    window_ready: bool,
 }
 
 impl Launcher {
     pub fn new(
         settings_store: SettingsStore,
         preferences: PersistentPreferences,
+        font_catalog: SystemFontCatalog,
+        initial_font: FontChoice,
     ) -> (Self, Task<Message>) {
         // 调试期间暂时跳过首次运行初始化，直接进入主界面。
         // 初始化状态与视图仍保留，后续恢复时只需将 screen 改回 Screen::Init。
@@ -316,6 +395,20 @@ impl Launcher {
 
         let mut settings = SettingsState::default();
         settings.apply_persistent_preferences(&preferences);
+        // 控制台默认日志在 Launcher 状态构造期间生成，需提前应用用户语言。
+        crate::lang::set_language(effective_language(settings.language));
+        let saved_font_family = settings.font_family.clone();
+        let resolved_font = settings.configure_fonts(&font_catalog);
+        let active_font = if resolved_font == initial_font {
+            initial_font
+        } else {
+            FontChoice::default_choice()
+        };
+        if active_font != resolved_font {
+            settings.select_font(active_font);
+            settings.font_family = active_font.key().to_owned();
+        }
+        let font_preference_repaired = settings.font_family != saved_font_family;
         if let Some(cache) = crate::core::network::load_download_channel_cache() {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -338,6 +431,12 @@ impl Launcher {
         {
             settings.environment = EnvironmentVersions::detect_all();
         }
+        let background_preference_repaired = settings.server_mode_enabled
+            && settings.allow_tavern_background
+            && settings.environment.pm2.is_none();
+        if background_preference_repaired {
+            settings.allow_tavern_background = false;
+        }
 
         let mut versions = VersionState::default();
         versions.set_staging_risk_confirmed(preferences.staging_risk_confirmed);
@@ -354,7 +453,18 @@ impl Launcher {
             progress: 0.0,
             last_tick: None,
             settings,
+            font_catalog,
+            active_font,
+            loaded_fonts: active_font
+                .family()
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            font_load_request_id: 0,
+            font_load_pending: 0,
+            font_load_failed: false,
             environment_task_receiver: None,
+            environment_task_cancel: None,
+            nodejs_required_visible: false,
             github_test_receiver: None,
             github_test_id: 0,
             github_test_cancel: None,
@@ -368,18 +478,44 @@ impl Launcher {
             extensions: ExtensionsState::default(),
             resources: ResourceManageState::default(),
             console: ConsoleState::default(),
-            launch_requested: false,
+            global_notices: VecDeque::new(),
+            global_notice_serial: 0,
+            pending_console_launch: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_suppressed: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_ready: false,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_count: 0,
+            #[cfg(target_os = "macos")]
+            desktop_webview_retry_at: None,
+            #[cfg(target_os = "macos")]
+            desktop_webview_load_deadline: None,
             settings_store,
             window_position: preferences.window_position,
             system_theme: theme::Mode::Light,
+            window_ready: false,
         };
+        if launcher.settings.server_mode_enabled {
+            launcher.console.network_mode = Some(match launcher.settings.server_service_mode {
+                ServerServiceMode::Lan => NetworkMode::Lan,
+                ServerServiceMode::Internet => NetworkMode::Internet,
+            });
+            launcher.console.active_launch_mode = Some(TavernLaunchMode::Server);
+            launcher.console.active_export_path = launcher.settings.tavern_export_path.clone();
+        }
         // 应用启动即加载默认稳定版目录，避免用户必须进入页面后点击安装才能恢复状态。
         launcher.start_version_catalog_load(false);
         #[cfg(not(test))]
         launcher.load_local_instances();
         #[cfg(not(test))]
         launcher.reconcile_tavern_config();
-        if launcher.settings.auto_start != preferences.auto_start {
+        if launcher.settings.auto_start != preferences.auto_start
+            || font_preference_repaired
+            || background_preference_repaired
+        {
             launcher.persist_preferences();
         }
 
@@ -398,6 +534,15 @@ impl Launcher {
 
     pub fn theme(&self) -> Theme {
         crate::theme::resolve(self.settings.theme, self.system_theme)
+    }
+
+    /// 返回额外的用户界面缩放；系统 DPI 由 iced 自动相乘。
+    pub fn scale_factor(&self) -> f32 {
+        if self.window_ready {
+            self.settings.ui_scale
+        } else {
+            1.0
+        }
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
@@ -470,7 +615,14 @@ impl Launcher {
         } else {
             Subscription::none()
         };
+        let console_timer = if self.console.needs_tick() {
+            time::every(Duration::from_millis(100))
+                .map(|_| Message::Console(ConsoleMessage::Poll))
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            console_timer,
             config_timer,
             local_timer,
             init_timer,
@@ -485,6 +637,8 @@ impl Launcher {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        let now = Instant::now();
+        self.global_notices.retain(|notice| notice.until > now);
         // 所有早返回路径也要同步配置上下文，不能遗漏异步实例切换或首页快捷操作。
         self.reconcile_tavern_config();
         let task = self.update_inner(message);
@@ -535,33 +689,108 @@ impl Launcher {
                 }
             }
             Message::LaunchTavern => {
-                self.launch_requested = true;
-                self.console.network_mode = if self.settings.server_mode_enabled {
-                    Some(match self.settings.server_service_mode {
-                        ServerServiceMode::Lan => crate::pages::console::NetworkMode::Lan,
-                        ServerServiceMode::Internet => crate::pages::console::NetworkMode::Internet,
-                    })
-                } else {
-                    None
-                };
+                self.page = Page::Console;
+                // 先消费后台恢复事件，避免把已经由 PM2 运行的服务当作未启动。
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if self.console.is_running() {
+                    let _ = self.console.update(ConsoleMessage::Stop);
+                } else if !self.console.status.is_transitioning() {
+                    self.request_tavern_start();
+                }
             }
             Message::HomeTavernVersionSelected(version) => {
                 self.settings.tavern_version = version;
             }
             Message::SettingsLaunchModeSelected(mode) => {
-                self.apply_launch_mode(mode);
-                self.persist_preferences();
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.launch_mode_controls_locked() {
+                    self.apply_launch_mode(mode);
+                    self.persist_preferences();
+                }
             }
             Message::HomeBrowserSelected(browser) => {
-                self.tavern.update(TavernMessage::SelectBrowser(browser));
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.launch_mode_controls_locked() {
+                    self.tavern.update(TavernMessage::SelectBrowser(browser));
+                }
             }
             Message::SettingsLanguageSelected(language) => {
                 self.settings.language = language;
+                crate::lang::set_language(effective_language(language));
+                // 语言变化后重建搜索匹配文本，使默认字体选项也能按当前语言搜索。
+                self.settings.select_font(self.settings.selected_font);
                 self.persist_preferences();
             }
             Message::SettingsThemeSelected(theme) => {
                 self.settings.theme = theme;
                 self.persist_preferences();
+            }
+            Message::SettingsUiScaleChanged(scale) => {
+                self.settings.ui_scale =
+                    crate::core::typography::normalize_ui_scale(scale);
+                self.persist_preferences();
+            }
+            Message::SettingsFontSelected(choice) => {
+                return self.request_font_change(choice);
+            }
+            Message::SettingsFontBytesReady(request_id, choice, result) => {
+                if request_id != self.font_load_request_id {
+                    return Task::none();
+                }
+                let bytes = match result {
+                    Ok(bytes) if !bytes.is_empty() => bytes,
+                    Ok(_) | Err(_) => {
+                        self.finish_font_load_failure(
+                            t(
+                                "settings.interface.font.read_error",
+                                effective_language(self.settings.language),
+                            )
+                            .to_owned(),
+                        );
+                        return Task::none();
+                    }
+                };
+                self.font_load_pending = bytes.len();
+                self.font_load_failed = false;
+                return Task::batch(bytes.into_iter().map(move |bytes| {
+                    iced::font::load(bytes).map(move |result| {
+                        Message::SettingsFontLoaded(
+                            request_id,
+                            choice,
+                            result.map_err(|error| format!("{error:?}")),
+                        )
+                    })
+                }));
+            }
+            Message::SettingsFontLoaded(request_id, choice, result) => {
+                if request_id != self.font_load_request_id {
+                    return Task::none();
+                }
+                if result.is_err() {
+                    self.font_load_failed = true;
+                }
+                self.font_load_pending = self.font_load_pending.saturating_sub(1);
+                if self.font_load_pending == 0 {
+                    if self.font_load_failed {
+                        self.finish_font_load_failure(
+                            t(
+                                "settings.interface.font.render_error",
+                                effective_language(self.settings.language),
+                            )
+                            .to_owned(),
+                        );
+                    } else {
+                        if let Some(family) = choice.family() {
+                            self.loaded_fonts.insert(family);
+                        }
+                        self.active_font = choice;
+                        self.settings.select_font(choice);
+                        self.settings.font_family = choice.key().to_owned();
+                        self.settings.font_loading = false;
+                        self.settings.appearance_error = None;
+                        self.persist_preferences();
+                    }
+                }
             }
             Message::SettingsRememberWindowPosition(remember) => {
                 self.settings.remember_window_position = remember;
@@ -586,21 +815,36 @@ impl Launcher {
             }
             Message::SettingsCpuCoresSelected(value) => self.settings.cpu_cores = value,
             Message::SettingsAutoStopTavern(enabled) => {
-                self.settings.auto_stop_tavern_on_window_close = enabled
-            }
-            Message::SettingsServerMode(enabled) => {
-                self.apply_launch_mode(if enabled {
-                    QuickStartMode::Server
-                } else {
-                    QuickStartMode::Normal
-                });
+                self.settings.auto_stop_tavern_on_window_close = enabled;
                 self.persist_preferences();
             }
+            Message::SettingsServerMode(enabled) => {
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.launch_mode_controls_locked() {
+                    self.apply_launch_mode(if enabled {
+                        QuickStartMode::Server
+                    } else {
+                        QuickStartMode::Normal
+                    });
+                    self.persist_preferences();
+                }
+            }
             Message::SettingsServerServiceModeSelected(value) => {
-                self.settings.server_service_mode = value
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.launch_mode_controls_locked() && self.settings.server_mode_enabled {
+                    self.settings.server_service_mode = value;
+                    self.persist_preferences();
+                }
             }
             Message::SettingsAllowTavernBackground(enabled) => {
-                self.settings.allow_tavern_background = enabled
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.launch_mode_controls_locked()
+                    && self.settings.server_mode_enabled
+                    && self.settings.environment.pm2.is_some()
+                {
+                    self.settings.allow_tavern_background = enabled;
+                    self.persist_preferences();
+                }
             }
             Message::SettingsDataModeSelected(value) => {
                 self.settings.data_mode = value;
@@ -609,7 +853,8 @@ impl Launcher {
                 self.persist_preferences();
             }
             Message::SettingsShowStartupCommand(enabled) => {
-                self.settings.show_startup_command = enabled
+                self.settings.show_startup_command = enabled;
+                self.persist_preferences();
             }
             Message::SettingsNpmRegistrySelected(registry) => {
                 self.settings.npm_registry = registry;
@@ -703,20 +948,61 @@ impl Launcher {
                 self.poll_environment_task(now);
             }
             Message::EnvironmentTaskClose => {
-                if !self.settings.environment_task.running {
+                if self.settings.environment_task.running {
+                    if let Some(cancel) = &self.environment_task_cancel {
+                        cancel.store(true, Ordering::Relaxed);
+                    }
+                } else {
                     self.settings.environment_task.show = false;
                     self.settings.environment_task.timed_out = false;
                     self.settings.environment_task.failed = false;
                     self.settings.environment_task.started_at = None;
                     self.settings.environment_task.done_at = None;
+                    self.settings.environment_task.show_details = false;
                 }
             }
+            Message::EnvironmentTaskToggleDetails => {
+                self.settings.environment_task.show_details =
+                    !self.settings.environment_task.show_details;
+            }
             Message::EnvironmentModalInteract => {}
+            Message::InstallRequiredNodeJs => {
+                self.nodejs_required_visible = false;
+                self.versions.local.toast = None;
+                self.screen = Screen::Main;
+                self.page = Page::Settings;
+
+                // 复用设置页 Node.js 右侧安装按钮的同一消息，确保两条入口行为一致。
+                return Task::batch([
+                    Task::done(Message::EnvironmentInstall(EnvironmentDependency::NodeJs)),
+                    iced::widget::operation::snap_to(
+                        crate::pages::settings::settings_scroll_id(),
+                        iced::widget::scrollable::RelativeOffset { x: 0.0, y: 0.42 },
+                    ),
+                ]);
+            }
+            Message::DismissNodeJsRequired => {
+                self.nodejs_required_visible = false;
+            }
+            Message::NodeJsRequiredInteract => {}
             Message::SettingsRestoreDefaults => {
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if self.launch_mode_controls_locked() {
+                    return Task::none();
+                }
                 let environment = self.settings.environment.clone();
                 self.settings = SettingsState::default();
                 self.settings.environment = environment;
+                self.settings.configure_fonts(&self.font_catalog);
+                self.active_font = FontChoice::default_choice();
+                self.font_load_request_id = self.font_load_request_id.wrapping_add(1);
+                self.font_load_pending = 0;
+                self.font_load_failed = false;
                 self.environment_task_receiver = None;
+                if let Some(cancel) = &self.environment_task_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.environment_task_cancel = None;
                 if let Some(cancel) = &self.github_test_cancel {
                     cancel.store(true, Ordering::Relaxed);
                 }
@@ -746,7 +1032,38 @@ impl Launcher {
                 self.resources.configure(&self.settings, &self.versions);
                 self.resources.update(message);
             }
-            Message::Console(message) => self.console.update(message),
+            Message::Console(ConsoleMessage::Start) => {
+                let _ = self.console.update(ConsoleMessage::Poll);
+                if !self.console.is_running() {
+                    self.request_tavern_start();
+                }
+            }
+            Message::Console(message) => {
+                let action = self.console.update(message);
+                if action == ConsoleAction::OpenServer {
+                    self.open_console_server();
+                }
+                self.sync_desktop_webview();
+            }
+            Message::DismissGlobalNotice(id) => {
+                self.global_notices.retain(|notice| notice.id != id);
+            }
+            Message::GlobalNoticeInteract => {}
+            Message::RevealDownloadedFile(id, path) => {
+                self.global_notices.retain(|notice| notice.id != id);
+                if let Err(error) = std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&path)
+                    .spawn()
+                {
+                    self.push_global_notice(
+                        "webview.download.reveal_failed",
+                        error.to_string(),
+                        true,
+                        None,
+                    );
+                }
+            }
             Message::WindowOpened(id, position) => {
                 if let Some(position) = position {
                     self.window_position = Some([position.x, position.y]);
@@ -762,6 +1079,7 @@ impl Launcher {
             }
             Message::MonitorMeasured(id, monitor, apply_default) => {
                 let profile = window_profile(monitor);
+                self.window_ready = true;
                 let tasks = vec![
                     window::set_min_size(id, Some(profile.default_size)),
                     window::set_max_size(id, Some(profile.default_size)),
@@ -791,6 +1109,15 @@ impl Launcher {
                         .local
                         .notify("正在保存本地实例，请稍后关闭。", "", false);
                     return Task::none();
+                }
+                if self.console.status != ConsoleStatus::Stopped
+                    && (self.console.is_direct_runtime() || !self.settings.allow_tavern_background)
+                {
+                    let _ = self.console.update(ConsoleMessage::Kill);
+                }
+                #[cfg(target_os = "macos")]
+                if let Some(mut webview) = self.desktop_webview.take() {
+                    webview.close();
                 }
                 if self.settings.remember_window_position {
                     self.persist_preferences();
@@ -836,6 +1163,8 @@ impl Launcher {
         PersistentPreferences {
             language: self.settings.language,
             theme: self.settings.theme,
+            ui_scale: self.settings.ui_scale,
+            font_family: self.settings.font_family.clone(),
             remember_window_position: self.settings.remember_window_position,
             window_position: if self.settings.remember_window_position {
                 self.window_position
@@ -864,6 +1193,10 @@ impl Launcher {
                 StartMode::Desktop => "desktop".to_owned(),
             },
             server_mode_enabled: self.settings.server_mode_enabled,
+            server_service_mode: self.settings.server_service_mode.key().to_owned(),
+            auto_stop_tavern_on_window_close: self.settings.auto_stop_tavern_on_window_close,
+            allow_tavern_background: self.settings.allow_tavern_background,
+            show_startup_command: self.settings.show_startup_command,
             staging_risk_confirmed: self.versions.staging_risk_confirmed,
         }
     }
@@ -1348,6 +1681,399 @@ impl Launcher {
         }
     }
 
+    /// 保存当前配置后启动酒馆；配置仍在写入时由配置轮询自动续接。
+    fn request_tavern_start(&mut self) {
+        if self.pending_console_launch {
+            return;
+        }
+        match self.prepare_config_for_launch() {
+            Ok(true) => self.start_tavern_now(),
+            Ok(false) => {
+                self.pending_console_launch = true;
+            }
+            Err(error) => self.console.add_error(error),
+        }
+    }
+
+    /// 根据版本选择和设置构建冻结的启动参数。
+    fn start_tavern_now(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            self.desktop_webview_suppressed = false;
+            self.desktop_webview_ready = false;
+            self.desktop_webview_retry_count = 0;
+            self.desktop_webview_retry_at = None;
+            self.desktop_webview_load_deadline = None;
+        }
+        let Some(instance_path) = self.versions.current_path.as_deref() else {
+            self.console.add_error("尚未选择酒馆实例，请先前往版本管理选择。");
+            return;
+        };
+        if self.versions.current_source == Some(VersionSource::Local) {
+            let dependency = self
+                .versions
+                .local_instances
+                .iter()
+                .find(|instance| instance.path == instance_path)
+                .map(|instance| &instance.dependencies);
+            if dependency != Some(&DependencyStatus::Ready) {
+                self.console.add_error("当前本地实例的 npm 依赖尚未就绪，请先在版本管理中完成检测或安装。");
+                return;
+            }
+        }
+        let instance_path = crate::core::tavern_config::expand_home(instance_path);
+        let launch_mode = if self.settings.server_mode_enabled {
+            TavernLaunchMode::Server
+        } else if self.settings.start_mode == StartMode::Desktop {
+            TavernLaunchMode::Desktop
+        } else {
+            TavernLaunchMode::Normal
+        };
+        let proxy = match self.settings.proxy_mode {
+            ProxyMode::None => None,
+            ProxyMode::Custom => (!self.settings.custom_proxy.trim().is_empty())
+                .then(|| self.settings.custom_proxy.clone()),
+            ProxyMode::System => crate::core::network::read_system_proxy()
+                .and_then(|(proxy, enabled)| enabled.then_some(proxy))
+                .filter(|proxy| !proxy.is_empty()),
+        };
+        let github_proxy_url = (self.settings.github_proxy_enabled
+            && !self.settings.github_proxy_url.trim().is_empty())
+            .then(|| self.settings.github_proxy_url.clone());
+        let data_mode = match self.settings.data_mode {
+            TavernDataMode::Current => ProcessDataMode::Current,
+            TavernDataMode::Global => ProcessDataMode::Global,
+        };
+        let network_mode = self.settings.server_mode_enabled.then_some(match self.settings.server_service_mode {
+            ServerServiceMode::Lan => NetworkMode::Lan,
+            ServerServiceMode::Internet => NetworkMode::Internet,
+        });
+        self.console.start(
+            TavernLaunchSpec {
+                instance_path,
+                instance_version: self.versions.current_version.clone().unwrap_or_default(),
+                data_mode,
+                global_data_path: crate::core::tavern_config::expand_home(&self.settings.global_data_path),
+                proxy,
+                github_proxy_url,
+                launch_mode,
+                allow_background: self.settings.allow_tavern_background,
+                show_startup_command: self.settings.show_startup_command,
+                export_path: self.settings.tavern_export_path.clone(),
+            },
+            network_mode,
+        );
+    }
+
+    /// 根据当前模式在浏览器或原生 WebView 中打开酒馆。
+    fn open_console_server(&mut self) {
+        let Some(url) = self.console.server_url.clone() else {
+            self.console.add_error("酒馆访问地址尚未就绪。");
+            return;
+        };
+        if self.console.active_launch_mode == Some(TavernLaunchMode::Desktop) {
+            #[cfg(target_os = "macos")]
+            {
+                if let Some(webview) = self.desktop_webview.as_mut() {
+                    webview.bring_to_front();
+                    if !self.desktop_webview_ready {
+                        self.desktop_webview_retry_count = 0;
+                        self.desktop_webview_retry_at = None;
+                        self.desktop_webview_load_deadline =
+                            Some(Instant::now() + Duration::from_secs(10));
+                        if let Err(error) = webview.reload(false) {
+                            self.queue_desktop_webview_retry(error);
+                        }
+                    }
+                } else {
+                    self.desktop_webview_suppressed = false;
+                    self.open_desktop_webview(&url);
+                }
+            }
+            return;
+        }
+        let mut command = std::process::Command::new("open");
+        match self.tavern.browser_type() {
+            BrowserType::Chrome => { command.args(["-a", "Google Chrome"]); }
+            BrowserType::Firefox => { command.args(["-a", "Firefox"]); }
+            BrowserType::Edge => { command.args(["-a", "Microsoft Edge"]); }
+            BrowserType::Safari => { command.args(["-a", "Safari"]); }
+            BrowserType::Unknown | BrowserType::System => {}
+        }
+        if let Err(error) = command.arg(&url).spawn() {
+            self.console.add_error(format!("无法打开酒馆：{error}"));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn open_desktop_webview(&mut self, url: &str) {
+        let title = if self.console.active_version.is_empty() {
+            "SillyTavern".to_owned()
+        } else {
+            format!("SillyTavern - v{}", self.console.active_version)
+        };
+        self.desktop_webview_ready = false;
+        self.desktop_webview_retry_count = 0;
+        self.desktop_webview_retry_at = None;
+        self.desktop_webview_load_deadline = Some(Instant::now() + Duration::from_secs(10));
+        match crate::core::desktop_webview::DesktopWebView::open(
+            url,
+            &title,
+            self.console.active_export_path.clone(),
+        ) {
+            Ok(webview) => self.desktop_webview = Some(webview),
+            Err(error) => {
+                self.desktop_webview_load_deadline = None;
+                self.desktop_webview_suppressed = true;
+                self.console.add_error_log(format!(
+                    "{} {error}",
+                    t("console.webview.failed", effective_language(self.settings.language))
+                ));
+            }
+        }
+    }
+
+    fn push_global_notice(
+        &mut self,
+        title_key: &'static str,
+        detail: String,
+        danger: bool,
+        reveal_path: Option<PathBuf>,
+    ) {
+        self.global_notice_serial = self.global_notice_serial.wrapping_add(1);
+        while self.global_notices.len() >= 4 {
+            self.global_notices.pop_front();
+        }
+        self.global_notices.push_back(GlobalNotice {
+            id: self.global_notice_serial,
+            title_key,
+            detail,
+            danger,
+            reveal_path,
+            until: Instant::now() + Duration::from_secs(6),
+        });
+    }
+
+    /// URL 就绪后自动打开桌面窗口，并处理加载、重试和关闭策略。
+    fn sync_desktop_webview(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            use crate::core::desktop_webview::{
+                DesktopWebView, WebViewDownloadEvent, WebViewEvent, drain_download_notifications,
+            };
+
+            for event in drain_download_notifications() {
+                match event {
+                    WebViewDownloadEvent::Saved(path) => {
+                        let detail = path.display().to_string();
+                        self.console.add_success(format!(
+                            "{} {detail}",
+                            t(
+                                "webview.download.saved",
+                                effective_language(self.settings.language),
+                            )
+                        ));
+                        self.push_global_notice(
+                            "webview.download.saved",
+                            detail,
+                            false,
+                            Some(path),
+                        );
+                    }
+                    WebViewDownloadEvent::Failed(error) => {
+                        self.console.add_error_log(format!(
+                            "{} {error}",
+                            t(
+                                "webview.download.failed",
+                                effective_language(self.settings.language),
+                            )
+                        ));
+                        self.push_global_notice(
+                            "webview.download.failed",
+                            error,
+                            true,
+                            None,
+                        );
+                    }
+                }
+            }
+
+            let desktop_running = self.console.active_launch_mode == Some(TavernLaunchMode::Desktop)
+                && self.console.is_running();
+            if desktop_running {
+                DesktopWebView::set_export_path(&self.settings.tavern_export_path);
+            }
+
+            let closed = self
+                .desktop_webview
+                .as_ref()
+                .is_some_and(|webview| webview.is_closed());
+            if closed {
+                self.desktop_webview = None;
+                self.desktop_webview_ready = false;
+                self.desktop_webview_retry_at = None;
+                self.desktop_webview_load_deadline = None;
+                if self.settings.auto_stop_tavern_on_window_close && self.console.is_running() {
+                    self.console.add_system(t(
+                        "console.webview.closed_stopping",
+                        effective_language(self.settings.language),
+                    ));
+                    let _ = self.console.update(ConsoleMessage::Stop);
+                } else {
+                    self.desktop_webview_suppressed = true;
+                    self.console.add_system(t(
+                        "console.webview.closed_running",
+                        effective_language(self.settings.language),
+                    ));
+                }
+            }
+
+            let events = self
+                .desktop_webview
+                .as_ref()
+                .map(DesktopWebView::drain_events)
+                .unwrap_or_default();
+            for event in events {
+                match event {
+                    WebViewEvent::Loading => {
+                        self.desktop_webview_ready = false;
+                        // 真实导航已经开始时，取消由 about:blank 安排的预备重试。
+                        self.desktop_webview_retry_at = None;
+                        self.desktop_webview_load_deadline =
+                            Some(Instant::now() + Duration::from_secs(10));
+                    }
+                    WebViewEvent::Ready(url) => {
+                        if url.starts_with("http://") || url.starts_with("https://") {
+                            if !self.desktop_webview_ready {
+                                self.console.add_success(t(
+                                    "console.webview.ready",
+                                    effective_language(self.settings.language),
+                                ));
+                            }
+                            self.desktop_webview_ready = true;
+                            self.desktop_webview_retry_count = 0;
+                            self.desktop_webview_retry_at = None;
+                            self.desktop_webview_load_deadline = None;
+                        } else {
+                            // WKWebView 创建时会先完成一次 about:blank；它不能代表酒馆加载成功。
+                            self.desktop_webview_ready = false;
+                            self.desktop_webview_load_deadline = None;
+                            self.queue_desktop_webview_retry(format!(
+                                "{} {url}",
+                                t(
+                                    "console.webview.blank_page",
+                                    effective_language(self.settings.language),
+                                )
+                            ));
+                        }
+                    }
+                    WebViewEvent::Failed(error) => {
+                        self.desktop_webview_ready = false;
+                        self.desktop_webview_load_deadline = None;
+                        self.queue_desktop_webview_retry(error);
+                    }
+                    WebViewEvent::ContentProcessTerminated => {
+                        self.desktop_webview_ready = false;
+                        self.desktop_webview_load_deadline = None;
+                        self.queue_desktop_webview_retry(
+                            t(
+                                "console.webview.process_terminated",
+                                effective_language(self.settings.language),
+                            )
+                            .to_owned(),
+                        );
+                    }
+                }
+            }
+
+            if self
+                .desktop_webview_load_deadline
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.desktop_webview_load_deadline = None;
+                self.queue_desktop_webview_retry(
+                    t(
+                        "console.webview.timeout",
+                        effective_language(self.settings.language),
+                    )
+                    .to_owned(),
+                );
+            }
+
+            if self
+                .desktop_webview_retry_at
+                .is_some_and(|deadline| Instant::now() >= deadline)
+            {
+                self.desktop_webview_retry_at = None;
+                self.desktop_webview_load_deadline =
+                    Some(Instant::now() + Duration::from_secs(10));
+                let use_loopback = self.desktop_webview_retry_count >= 2;
+                let result = self
+                    .desktop_webview
+                    .as_mut()
+                    .ok_or_else(|| "WebView 窗口不存在。".to_owned())
+                    .and_then(|webview| webview.reload(use_loopback));
+                if let Err(error) = result {
+                    self.desktop_webview_load_deadline = None;
+                    self.queue_desktop_webview_retry(error);
+                }
+            }
+
+            if desktop_running
+                && self.desktop_webview.is_none()
+                && !self.desktop_webview_suppressed
+                && let Some(url) = self.console.server_url.clone()
+            {
+                self.open_desktop_webview(&url);
+            }
+
+            if !self.console.is_running() {
+                self.desktop_webview_suppressed = false;
+                self.desktop_webview_ready = false;
+                self.desktop_webview_retry_count = 0;
+                self.desktop_webview_retry_at = None;
+                self.desktop_webview_load_deadline = None;
+                if let Some(mut webview) = self.desktop_webview.take() {
+                    webview.close();
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn queue_desktop_webview_retry(&mut self, error: String) {
+        if self.desktop_webview_retry_at.is_some() {
+            return;
+        }
+        let language = effective_language(self.settings.language);
+        if self.desktop_webview_retry_count < 2 {
+            self.desktop_webview_retry_count += 1;
+            let delay = if self.desktop_webview_retry_count == 1 {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_millis(1_500)
+            };
+            self.desktop_webview_retry_at = Some(Instant::now() + delay);
+            self.console.add_warning(format!(
+                "{} ({}/2)：{}",
+                t("console.webview.retrying", language),
+                self.desktop_webview_retry_count,
+                error
+            ));
+        } else {
+            self.desktop_webview_retry_at = None;
+            self.console.add_error_log(format!(
+                "{} {error}",
+                t("console.webview.failed", language)
+            ));
+        }
+    }
+
+    /// 酒馆生命周期未停止时锁定模式相关设置，避免直接进程与 PM2 状态错位。
+    fn launch_mode_controls_locked(&self) -> bool {
+        self.console.is_running() || self.console.status.is_transitioning()
+    }
+
     /// 统一更新启动模式，设置页为唯一状态源，主页仅调用同一入口进行快捷切换。
     fn apply_launch_mode(&mut self, mode: QuickStartMode) {
         match mode {
@@ -1362,6 +2088,9 @@ impl Launcher {
             QuickStartMode::Server => {
                 self.settings.server_mode_enabled = true;
                 self.settings.start_mode = StartMode::Normal;
+                if self.settings.environment.pm2.is_none() {
+                    self.settings.allow_tavern_background = false;
+                }
             }
         }
     }
@@ -1580,7 +2309,9 @@ impl Launcher {
         }
 
         let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
         self.environment_task_receiver = Some(receiver);
+        self.environment_task_cancel = Some(cancel.clone());
         self.settings.environment_task = EnvironmentTaskState {
             dependency: Some(dependency),
             show: true,
@@ -1590,20 +2321,38 @@ impl Launcher {
             started_at: Some(Instant::now()),
             timed_out: false,
             failed: false,
+            show_details: false,
         };
+
+        // PM2 通过 npm 安装，应与本地实例依赖安装共用用户选择的软件源和代理。
+        let npm_registry = self.settings.npm_registry.url().to_owned();
+        let proxy_mode = match self.settings.proxy_mode {
+            ProxyMode::None => "none",
+            ProxyMode::System => "system",
+            ProxyMode::Custom => "custom",
+        }
+        .to_owned();
+        let proxy_host = self.settings.custom_proxy.clone();
 
         std::thread::spawn(move || match dependency {
             EnvironmentDependency::Git => {
-                crate::core::settings::env_detect::run_brew_install("git", sender)
+                crate::core::settings::env_detect::run_brew_install("git", sender, cancel)
             }
             EnvironmentDependency::NodeJs => {
-                crate::core::settings::env_detect::run_brew_install("node@24", sender)
+                crate::core::settings::env_detect::run_brew_install("node@24", sender, cancel)
             }
             EnvironmentDependency::Caddy => {
-                crate::core::settings::env_detect::run_brew_install("caddy", sender)
+                crate::core::settings::env_detect::run_brew_install("caddy", sender, cancel)
             }
             EnvironmentDependency::Pm2 => {
-                crate::core::settings::env_detect::run_npm_install_global("pm2", sender)
+                crate::core::settings::env_detect::run_npm_install_global(
+                    "pm2",
+                    &npm_registry,
+                    &proxy_mode,
+                    &proxy_host,
+                    sender,
+                    cancel,
+                )
             }
             EnvironmentDependency::Homebrew => {}
         });
@@ -1623,6 +2372,10 @@ impl Launcher {
             self.settings.environment_task.running = false;
             self.settings.environment_task.timed_out = true;
             self.settings.environment_task.done_at = None;
+            if let Some(cancel) = &self.environment_task_cancel {
+                cancel.store(true, Ordering::Relaxed);
+            }
+            self.environment_task_cancel = None;
             self.environment_task_receiver = None;
             if !self.settings.environment_task.log.is_empty() {
                 self.settings.environment_task.log.push('\n');
@@ -1635,18 +2388,29 @@ impl Launcher {
         }
 
         let mut keep_receiver = true;
+        let mut nodejs_installed = false;
         if let Some(receiver) = self.environment_task_receiver.take() {
-            loop {
+            // npm info/timing 会持续产生大量日志；每帧限量消费，避免日志刷新阻塞界面。
+            for _ in 0..128 {
                 match receiver.try_recv() {
                     Ok(line) if line == "__FAILED__" => {
                         self.settings.environment_task.running = false;
                         self.settings.environment_task.failed = true;
                         self.settings.environment_task.done_at = None;
                         keep_receiver = false;
+                        self.environment_task_cancel = None;
+                        break;
+                    }
+                    Ok(line) if line == "__CANCELLED__" => {
+                        self.settings.environment_task = EnvironmentTaskState::default();
+                        keep_receiver = false;
+                        self.environment_task_cancel = None;
                         break;
                     }
                     Ok(line) if line == "__DONE__" => {
                         self.settings.environment_task.running = false;
+                        nodejs_installed = self.settings.environment_task.dependency
+                            == Some(EnvironmentDependency::NodeJs);
                         if !self.settings.environment_task.log.is_empty() {
                             self.settings.environment_task.log.push('\n');
                         }
@@ -1656,9 +2420,18 @@ impl Launcher {
                             .push_str("✅ 安装完成，3 秒后自动关闭");
                         self.settings.environment_task.done_at = Some(now);
                         keep_receiver = false;
+                        self.environment_task_cancel = None;
                         break;
                     }
                     Ok(line) => {
+                        if let Some(key) = line.strip_prefix("__NOTICE__:") {
+                            let notice = crate::lang::display_label(key);
+                            if !self.settings.environment_task.log.is_empty() {
+                                self.settings.environment_task.log.push('\n');
+                            }
+                            self.settings.environment_task.log.push_str(&notice);
+                            continue;
+                        }
                         if let Some(error) = line.strip_prefix("__ERROR__:") {
                             if !self.settings.environment_task.log.is_empty() {
                                 self.settings.environment_task.log.push('\n');
@@ -1694,6 +2467,7 @@ impl Launcher {
                                 .log
                                 .push_str("\n安装进程意外结束，请关闭窗口后重试。");
                         }
+                        self.environment_task_cancel = None;
                         break;
                     }
                 }
@@ -1701,6 +2475,11 @@ impl Launcher {
             if keep_receiver {
                 self.environment_task_receiver = Some(receiver);
             }
+        }
+
+        if nodejs_installed {
+            // 安装成功后立即恢复本地实例检测，不要求用户返回版本页逐个重试。
+            self.recheck_all_local_dependencies();
         }
 
         if self
@@ -1730,11 +2509,55 @@ impl Launcher {
             .map(|path| path.to_string_lossy().into_owned())
     }
 
+    /// 根据字体选择启动读取与渲染器注册流程。
+    fn request_font_change(&mut self, choice: FontChoice) -> Task<Message> {
+        self.font_load_request_id = self.font_load_request_id.wrapping_add(1);
+        self.font_load_pending = 0;
+        self.font_load_failed = false;
+        self.settings.appearance_error = None;
+        self.settings.select_font(choice);
+
+        if choice == self.active_font {
+            self.settings.font_loading = false;
+            return Task::none();
+        }
+        if choice == FontChoice::default_choice()
+            || choice
+                .family()
+                .is_some_and(|family| self.loaded_fonts.contains(family))
+        {
+            self.active_font = choice;
+            self.settings.font_family = choice.key().to_owned();
+            self.settings.font_loading = false;
+            self.persist_preferences();
+            return Task::none();
+        }
+
+        self.settings.font_loading = true;
+        let request_id = self.font_load_request_id;
+        let catalog = self.font_catalog.clone();
+        Task::perform(
+            async move { catalog.load_family_bytes(choice) },
+            move |result| Message::SettingsFontBytesReady(request_id, choice, result),
+        )
+    }
+
+    /// 字体加载失败时保留原字体，并把搜索框恢复到有效选项。
+    fn finish_font_load_failure(&mut self, error: String) {
+        self.font_load_pending = 0;
+        self.font_load_failed = false;
+        self.settings.font_loading = false;
+        self.settings.select_font(self.active_font);
+        self.settings.appearance_error = Some(error);
+    }
+
     /// 保存已接入的偏好，同时把失败原因交给设置页展示。
     fn persist_preferences(&mut self) {
         let preferences = PersistentPreferences {
             language: self.settings.language,
             theme: self.settings.theme,
+            ui_scale: self.settings.ui_scale,
+            font_family: self.settings.font_family.clone(),
             remember_window_position: self.settings.remember_window_position,
             window_position: if self.settings.remember_window_position {
                 self.window_position
@@ -1763,6 +2586,10 @@ impl Launcher {
                 StartMode::Desktop => "desktop".to_owned(),
             },
             server_mode_enabled: self.settings.server_mode_enabled,
+            server_service_mode: self.settings.server_service_mode.key().to_owned(),
+            auto_stop_tavern_on_window_close: self.settings.auto_stop_tavern_on_window_close,
+            allow_tavern_background: self.settings.allow_tavern_background,
+            show_startup_command: self.settings.show_startup_command,
             staging_risk_confirmed: self.versions.staging_risk_confirmed,
         };
         self.settings.save_error = self
@@ -1774,6 +2601,8 @@ impl Launcher {
 
     pub fn view(&self) -> Element<'_, Message> {
         crate::lang::set_language(effective_language(self.settings.language));
+        crate::core::typography::set_render_font(self.active_font);
+        crate::core::typography::set_render_scale(self.settings.ui_scale);
         let mut page = match self.screen {
             Screen::Init => self.init_view(),
             Screen::Main => self.main_view(),
@@ -1794,6 +2623,49 @@ impl Launcher {
             page = iced::widget::stack![
                 page,
                 crate::pages::tavern::sync::close_overlay(&self.tavern.sync).map(Message::Tavern)
+            ]
+            .into();
+        }
+        if self.nodejs_required_visible {
+            page =
+                iced::widget::stack![page, crate::pages::settings::nodejs_required_modal()].into();
+        }
+        if !self.global_notices.is_empty() {
+            let language = effective_language(self.settings.language);
+            let notices = self.global_notices.iter().fold(
+                column!().spacing(8).align_x(Alignment::End),
+                |column, notice| {
+                    let action = notice.reveal_path.clone().map(|path| {
+                        (
+                            t("webview.download.reveal", language),
+                            Message::RevealDownloadedFile(notice.id, path),
+                        )
+                    });
+                    column.push(
+                        container(astra_ui::toast(
+                            t(notice.title_key, language),
+                            &notice.detail,
+                            if notice.danger {
+                                astra_ui::ToastVariant::Danger
+                            } else {
+                                astra_ui::ToastVariant::Success
+                            },
+                            action,
+                            Message::DismissGlobalNotice(notice.id),
+                            Message::GlobalNoticeInteract,
+                        ))
+                        .max_width(680),
+                    )
+                },
+            );
+            page = iced::widget::stack![
+                page,
+                container(notices)
+                    .width(Fill)
+                    .height(Fill)
+                    .padding(16)
+                    .align_x(Alignment::End)
+                    .align_y(Alignment::Start)
             ]
             .into();
         }
@@ -1827,7 +2699,6 @@ impl Launcher {
                 &self.versions,
                 &self.extensions,
                 &self.resources,
-                self.launch_requested,
                 &self.console,
             ),
         ]
@@ -1844,10 +2715,10 @@ impl Launcher {
                 .size(AvatarSize::Large)
                 .shape(AvatarShape::Rounded)
                 .color(AvatarColor::Accent),
-            text("AstraBrew Launcher").size(30).font(fonts::MEDIUM),
+            text("AstraBrew Launcher").size(30).font(crate::core::typography::medium()),
             text("Native macOS launcher for AstraBrew-Labs")
                 .size(14)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(14)
@@ -1867,10 +2738,10 @@ impl Launcher {
         };
 
         let header = column![
-            text(title).size(18).font(fonts::MEDIUM),
+            text(title).size(18).font(crate::core::typography::medium()),
             text(description)
                 .size(12)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(6);
@@ -1927,15 +2798,15 @@ impl Launcher {
                 .align_y(Alignment::Center)
                 .style(tag_style(color)),
             column![
-                text(step.name).size(13).font(fonts::MEDIUM),
+                text(step.name).size(13).font(crate::core::typography::medium()),
                 text(step.path)
                     .size(11)
-                    .font(fonts::REGULAR)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
             ]
             .spacing(2),
             space::horizontal(),
-            chip(label, None, color, ChipVariant::Flat),
+            crate::theme::flat_chip(label, color),
         ]
         .spacing(12)
         .align_y(Alignment::Center)
@@ -1950,10 +2821,22 @@ impl Launcher {
             InitStage::Complete => (100.0, ProgressBarColor::Success),
         };
 
-        ProgressBar::new(value)
-            .label("初始化进度")
-            .color(color)
-            .into()
+        column![
+            row![
+                text("初始化进度")
+                    .size(12)
+                    .font(crate::core::typography::medium()),
+                space::horizontal(),
+                text(format!("{value:.0}%"))
+                    .size(12)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
+            ]
+            .align_y(Alignment::Center),
+            ProgressBar::new(value).show_value(false).color(color),
+        ]
+        .spacing(4)
+        .into()
     }
 
     /// 状态提示，随初始化阶段切换语义与文案
@@ -2009,7 +2892,7 @@ impl Launcher {
 
     /// 主操作按钮（Primary 语义）
     fn primary_button(&self, label: &'static str, message: Message) -> Element<'_, Message> {
-        button(text(label).size(13).font(fonts::MEDIUM))
+        button(text(label).size(13).font(crate::core::typography::medium()))
             .on_press(message)
             .height(40)
             .padding([10, 20])
@@ -2019,7 +2902,7 @@ impl Launcher {
 
     /// 次要操作按钮（Outline 语义）
     fn outline_button(&self, label: &'static str, message: Message) -> Element<'_, Message> {
-        button(text(label).size(13).font(fonts::MEDIUM))
+        button(text(label).size(13).font(crate::core::typography::medium()))
             .on_press(message)
             .height(40)
             .padding([10, 20])
@@ -2029,7 +2912,7 @@ impl Launcher {
 
     /// 禁用态按钮（不绑定点击事件，自动呈现禁用样式）
     fn disabled_button(&self, label: &'static str) -> Element<'_, Message> {
-        button(text(label).size(13).font(fonts::MEDIUM))
+        button(text(label).size(13).font(crate::core::typography::medium()))
             .height(40)
             .padding([10, 20])
             .style(button_style(ButtonVariant::Primary))
@@ -2069,6 +2952,8 @@ mod tests {
         DownloadChannel, DownloadChannelTestEvent, DownloadChannelTestResult, GithubTestEvent,
     };
     use crate::core::settings::{PersistentPreferences, SettingsStore};
+    use crate::core::typography::{FontChoice, SystemFontCatalog};
+    use crate::pages::console::ConsoleStatus;
     use crate::pages::settings::{
         DisplayLanguage, DownloadChannelTestState, EnvironmentDependency, EnvironmentTaskState,
         GithubTestState, ProxyMode, QuickStartMode, StartMode, ThemeMode,
@@ -2085,7 +2970,13 @@ mod tests {
     fn launcher() -> Launcher {
         let path = test_path("state");
         let (store, _) = SettingsStore::load(path);
-        Launcher::new(store, PersistentPreferences::default()).0
+        Launcher::new(
+            store,
+            PersistentPreferences::default(),
+            SystemFontCatalog::default(),
+            FontChoice::default_choice(),
+        )
+        .0
     }
 
     #[test]
@@ -2133,6 +3024,34 @@ mod tests {
         assert_eq!(launcher.settings.language, DisplayLanguage::System);
         assert_eq!(launcher.settings.start_mode, StartMode::Normal);
         assert!(launcher.settings.remember_window_position);
+        assert!((launcher.settings.ui_scale - 1.10).abs() < f32::EPSILON);
+        assert_eq!(
+            launcher.settings.font_family,
+            crate::core::typography::DEFAULT_FONT_KEY
+        );
+    }
+
+    #[test]
+    fn ui_scale_waits_for_window_and_then_updates_immediately() {
+        let mut launcher = launcher();
+        assert_eq!(launcher.scale_factor(), 1.0);
+        launcher.window_ready = true;
+        let _ = launcher.update(Message::SettingsUiScaleChanged(1.13));
+        assert!((launcher.scale_factor() - 1.15).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn stale_font_results_do_not_replace_the_active_font() {
+        let mut launcher = launcher();
+        launcher.font_load_request_id = 2;
+        let active = launcher.active_font;
+        let _ = launcher.update(Message::SettingsFontBytesReady(
+            1,
+            FontChoice::default_choice(),
+            Err("过期结果".to_owned()),
+        ));
+        assert_eq!(launcher.active_font, active);
+        assert!(launcher.settings.appearance_error.is_none());
     }
 
     #[test]
@@ -2150,6 +3069,7 @@ mod tests {
             started_at: Some(now),
             timed_out: false,
             failed: false,
+            show_details: false,
         };
         sender
             .send("__ERROR__:命令执行失败（退出码：7）".into())
@@ -2288,6 +3208,7 @@ mod tests {
             started_at: Some(now),
             timed_out: false,
             failed: false,
+            show_details: false,
         };
         sender
             .send("__VERSION__:2.47.0".into())
@@ -2371,13 +3292,25 @@ mod tests {
     fn proxy_mode_is_saved_and_restored() {
         let path = test_path("proxy-mode");
         let (store, _) = SettingsStore::load(&path);
-        let mut launcher = Launcher::new(store, PersistentPreferences::default()).0;
+        let mut launcher = Launcher::new(
+            store,
+            PersistentPreferences::default(),
+            SystemFontCatalog::default(),
+            FontChoice::default_choice(),
+        )
+        .0;
         let _ = launcher.update(Message::SettingsProxyModeSelected(ProxyMode::System));
 
         let (_, preferences) = SettingsStore::load(&path);
         assert_eq!(preferences.proxy_mode, "system");
         let (store, preferences) = SettingsStore::load(&path);
-        let restored = Launcher::new(store, preferences).0;
+        let restored = Launcher::new(
+            store,
+            preferences,
+            SystemFontCatalog::default(),
+            FontChoice::default_choice(),
+        )
+        .0;
         assert_eq!(restored.settings.proxy_mode, ProxyMode::System);
         let _ = std::fs::remove_file(path);
     }
@@ -2386,7 +3319,13 @@ mod tests {
     fn disabling_window_restore_clears_saved_coordinate() {
         let path = test_path("window-position");
         let (store, _) = SettingsStore::load(&path);
-        let mut launcher = Launcher::new(store, PersistentPreferences::default()).0;
+        let mut launcher = Launcher::new(
+            store,
+            PersistentPreferences::default(),
+            SystemFontCatalog::default(),
+            FontChoice::default_choice(),
+        )
+        .0;
 
         let _ = launcher.update(Message::WindowMoved(iced::Point::new(-320.0, 96.0)));
         let _ = launcher.update(Message::SettingsRememberWindowPosition(false));
@@ -2397,6 +3336,20 @@ mod tests {
         assert_eq!(document["remember_window_pos"], false);
         assert!(document["window_position"].is_null());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn running_service_locks_launch_mode_changes() {
+        let mut launcher = launcher();
+        launcher.console.status = ConsoleStatus::Running;
+        launcher.settings.start_mode = StartMode::Normal;
+        launcher.settings.server_mode_enabled = false;
+
+        let _ = launcher.update(Message::SettingsLaunchModeSelected(QuickStartMode::Desktop));
+        let _ = launcher.update(Message::SettingsServerMode(true));
+
+        assert_eq!(launcher.settings.start_mode, StartMode::Normal);
+        assert!(!launcher.settings.server_mode_enabled);
     }
 
     #[test]

@@ -2,6 +2,9 @@
 
 /// 翻译静态或运行时拼接的界面文案。
 pub fn translate_owned(content: &str) -> String {
+    if let Some(value) = translate_key(content) {
+        return value.to_owned();
+    }
     if let Some(value) = translate_config(content) {
         return value.to_owned();
     }
@@ -316,6 +319,9 @@ pub fn translate_owned(content: &str) -> String {
 
 /// 兼容按键查询接口；未收录键保持原文，便于逐步迁移页面文案。
 pub fn translate(key: &'static str) -> &'static str {
+    if let Some(value) = translate_key(key) {
+        return value;
+    }
     if let Some(value) = translate_config(key) {
         return value;
     }
@@ -327,6 +333,116 @@ pub fn translate(key: &'static str) -> &'static str {
         "设置未能保存" => "Settings could not be saved",
         _ => key,
     }
+}
+
+/// 新增界面统一使用稳定键名，避免再以中文原文作为翻译键。
+fn translate_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "console.title" => "Service Console",
+        "console.status.not_started" => "Not started",
+        "console.status.starting" => "Starting",
+        "console.status.running" => "Running",
+        "console.status.stopping" => "Stopping",
+        "console.status.stopped" => "Stopped",
+        "console.status.failed" => "Failed",
+        "console.start" => "Start",
+        "console.stop" => "Stop",
+        "console.kill" => "Force stop",
+        "console.restart" => "Restart",
+        "console.open" => "Open Tavern",
+        "console.follow" => "Follow logs",
+        "console.export" => "Export logs",
+        "console.export.success" => "Logs exported to:",
+        "console.export.failed" => "Failed to export logs:",
+        "console.logs.empty" => "No log output",
+        "console.log.ready" => "Console ready.",
+        "console.log.startup_command" => "Startup command",
+        "console.webview.ready" => "The desktop window loaded SillyTavern successfully.",
+        "console.webview.retrying" => "The desktop window failed to load and will retry",
+        "console.webview.failed" => "The desktop window failed to load:",
+        "console.webview.process_terminated" => "The WebView content process terminated unexpectedly.",
+        "console.webview.timeout" => "The desktop window timed out while loading.",
+        "console.webview.blank_page" => "WebView only completed a blank-page navigation:",
+        "webview.download.saved" => "File saved to:",
+        "webview.download.failed" => "File download failed:",
+        "webview.download.reveal" => "Show in Finder",
+        "webview.download.reveal_failed" => "Could not reveal the file in Finder",
+        "console.webview.closed_stopping" => "The desktop window closed. Stopping SillyTavern.",
+        "console.webview.closed_running" => "The desktop window closed. SillyTavern is still running.",
+        "console.log.starting" => "Preparing the SillyTavern runtime…",
+        "console.log.started" => "SillyTavern started.",
+        "console.log.stopping" => "Stopping SillyTavern…",
+        "console.log.stopped" => "SillyTavern stopped.",
+        "console.log.exited" => "Tavern process exited with code:",
+        "console.pm2.unavailable" => "PM2 was not found. Falling back to direct mode; closing the launcher will stop the service.",
+        "console.pm2.restored" => "Restored the PM2-managed SillyTavern service.",
+        "console.network.lan" => "LAN access",
+        "console.network.internet" => "Internet access",
+        "console.network.lan_hint" => "Devices on the same LAN can use the address below.",
+        "console.network.internet_warning" => "Internet mode only adjusts the allowlist. Reverse proxy support is not implemented; do not expose an unsecured port directly.",
+        "console.network.local_url" => "Local address",
+        "console.network.lan_url" => "LAN address",
+        "console.network.security" => "Connection security",
+        "console.port.title" => "Port in use",
+        "console.port.description" => "SillyTavern could not listen on port:",
+        "console.port.detected" => "Port conflict detected:",
+        "console.port.warning_title" => "Stop another process",
+        "console.port.warning" => "Continue only if these processes can be stopped. The launcher never terminates an unconfirmed process.",
+        "console.port.confirm" => "Release port and retry",
+        "console.port.cancel" => "Cancel",
+        "console.port.releasing" => "Stopping the confirmed port owners and retrying…",
+        "console.port.cancelled" => "Port release cancelled. The service remains stopped.",
+        "settings.interface.scale.title" => "Text Size",
+        "settings.interface.scale.description" => {
+            "Scale text, controls, and spacing together to keep the layout aligned."
+        }
+        "settings.interface.font.title" => "Display Font",
+        "settings.interface.font.description" => {
+            "Choose an interface font from the visible fonts installed on this Mac."
+        }
+        "settings.interface.font.placeholder" => "Search system fonts",
+        "settings.interface.font.loading" => "Applying font…",
+        "settings.interface.font.error_title" => "Could Not Change Font",
+        "settings.interface.font.read_error" => "The selected font files could not be read. The current font was kept.",
+        "settings.interface.font.render_error" => "The selected font could not be registered with the renderer. The current font was kept.",
+        "settings.interface.font.default" => "Default (HarmonyOS Sans)",
+        "environment.nodejs_required.title" => "Node.js Required",
+        "environment.nodejs_required.description" => {
+            "Local Tavern instances need Node.js and npm to verify dependencies and run."
+        }
+        "environment.nodejs_required.action_hint" => {
+            "Install opens Settings and automatically starts installing Node.js 24."
+        }
+        "environment.nodejs_required.install" => "Install Node.js",
+        "environment.nodejs_required.later" => "Install Later",
+        "environment.nodejs_required.error" => "No working Node.js and npm runtime was detected.",
+        "environment.install.running" => "Installing",
+        "environment.install.success" => "Installation complete",
+        "environment.install.failed" => "Installation failed",
+        "environment.install.timed_out" => "Installation timed out",
+        "environment.install.elapsed" => "Elapsed",
+        "environment.install.executing" => "Running the installer",
+        "environment.install.ready" => "The runtime is ready",
+        "environment.install.not_completed" => "The installation did not complete",
+        "environment.install.timeout_description" => "The installation timed out",
+        "environment.install.progress_unknown" => "The installer has not reported a percentage.",
+        "environment.install.waiting" => "Waiting for installation output…",
+        "environment.install.show_details" => "Show details",
+        "environment.install.hide_details" => "Hide details",
+        "environment.install.cancel" => "Cancel",
+        "environment.install.close" => "Close",
+        "environment.install.nodejs_keg_ready" => {
+            "Node.js is installed in its dedicated runtime directory and does not need a global link."
+        }
+        "environment.install.pm2.preparing" => "Preparing the global npm environment…",
+        "environment.install.pm2.installing" => {
+            "Connecting to the npm registry and installing PM2…"
+        }
+        "environment.install.pm2.verifying" => {
+            "The install command completed. Verifying the PM2 version…"
+        }
+        _ => return None,
+    })
 }
 
 fn translate_dynamic(content: &str) -> String {
@@ -608,6 +724,13 @@ fn translate_local(key: &str) -> Option<&'static str> {
 /// 酒馆配置同步、导入和字段校验共用的中英文文案。
 fn translate_config(key: &str) -> Option<&'static str> {
     Some(match key {
+        "此地址由酒馆服务模式自动管理。" => {
+            "This address is managed automatically by the SillyTavern service mode."
+        }
+        "系统保留的白名单地址不能删除。" => {
+            "System-reserved whitelist addresses cannot be removed."
+        }
+        "由服务模式自动管理" => "Managed by service mode",
         "未支持的值（保留原值）" => "Unsupported value (preserved)",
         "配置后台任务失败，请重试。" => {
             "The configuration background task failed. Please retry."

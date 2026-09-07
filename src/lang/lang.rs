@@ -82,5 +82,5 @@ pub fn text<'a>(content: impl ToString) -> iced::widget::Text<'a> {
         Language::Chinese => content,
         Language::English => super::en::translate_owned(&content),
     };
-    iced::widget::text(translated)
+    iced::widget::text(translated).font(crate::core::typography::regular())
 }

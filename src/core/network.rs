@@ -1637,11 +1637,7 @@ const SILLYTAVERN_CACHE_TTL: u64 = 7 * 24 * 60 * 60;
 /// 在线酒馆安装目录：`~/Library/Application Support/AstraBrew Launcher/sillytavern`。
 #[allow(dead_code)]
 pub fn sillytavern_install_dir() -> PathBuf {
-    cache_home_dir()
-        .join("Library")
-        .join("Application Support")
-        .join(TEST_ROOT_DIR)
-        .join("sillytavern")
+    crate::utils::app_paths().sillytavern_dir()
 }
 
 /// 在线版本缓存文件路径。
@@ -2384,7 +2380,8 @@ pub fn run_sillytavern_install_with_cancel(
         let _ = sender.send(SillyTavernInstallEvent::DownloadComplete);
         wait_before_npm_install(&cancel)?;
         let _ = sender.send(SillyTavernInstallEvent::InstallStarted);
-        let mut npm = Command::new(resolve_command("npm"));
+        // node@24 是 keg-only formula，必须使用统一命令环境为 npm 的 shebang 注入 Node PATH。
+        let mut npm = crate::core::settings::env_detect::cmd("npm");
         npm.current_dir(&target).arg("install");
         if !npm_registry.trim().is_empty() {
             npm.env("npm_config_registry", npm_registry);

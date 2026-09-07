@@ -46,9 +46,16 @@ pub fn capture(
         } else {
             Stdio::null()
         });
-    let mut child = command
-        .spawn()
-        .map_err(|e| LocalError::new("无法启动本地实例任务。", e))?;
+    let mut child = command.spawn().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            // GUI 应用的 PATH 可能不包含 Node.js；不要把底层 ENOENT 暴露给用户，
+            // 交由应用层显示安装引导弹窗。
+            LocalError::new("environment.nodejs_required.error", "")
+                .with_kind(LocalErrorKind::MissingNodeJs)
+        } else {
+            LocalError::new("无法启动本地实例任务。", error)
+        }
+    })?;
     let stdout = child
         .stdout
         .take()
@@ -172,26 +179,8 @@ fn analyze_tree(tree: &Value, success: bool) -> Result<DependencyStatus, LocalEr
     Ok(DependencyStatus::Ready)
 }
 
-/// 与环境页选择一致，兼容未链接到全局 bin 的 Homebrew node@24。
+/// 与环境页共享命令解析，兼容未链接到全局 bin 的 Homebrew node@24。
 fn node_command(name: &str) -> Command {
-    for bin in [
-        "/opt/homebrew/opt/node@24/bin",
-        "/usr/local/opt/node@24/bin",
-    ] {
-        let bin = Path::new(bin);
-        if bin.join("node").is_file() && bin.join(name).is_file() {
-            let mut command = Command::new(bin.join(name));
-            command.env(
-                "PATH",
-                format!(
-                    "{}:/opt/homebrew/bin:/usr/local/bin:{}",
-                    bin.display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            );
-            return command;
-        }
-    }
     crate::core::settings::env_detect::cmd(name)
 }
 

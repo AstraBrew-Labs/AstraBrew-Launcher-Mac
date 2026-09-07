@@ -12,7 +12,7 @@ use lucide_icons::Icon;
 
 use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
 use astra_ui::{
-    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK_MUTED, SUCCESS, WARNING, WHITE, fonts, icons,
+    BLUE_600, ButtonVariant, CYAN_500, DANGER, INK_MUTED, SUCCESS, WARNING, WHITE, icons,
     pick_list_handle,
 };
 
@@ -759,6 +759,10 @@ impl TavernState {
         self.config.browser_type
     }
 
+    pub(crate) fn whitelist(&self) -> &[String] {
+        &self.config.whitelist
+    }
+
     pub(crate) fn update(&mut self, message: TavernMessage) {
         match message {
             TavernMessage::ToggleAdvancedSection(index) => {
@@ -898,12 +902,12 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
             .align_y(Alignment::Center)
             .style(page_icon_style),
         column![
-            text("酒馆配置").size(19).font(fonts::MEDIUM),
+            text("酒馆配置").size(21).font(crate::core::typography::medium()),
             row![
                 crate::theme::muted_icon(Icon::Settings, 10),
                 text("管理当前版本的 config.yaml 选项")
-                    .size(10)
-                    .font(fonts::REGULAR)
+                    .size(12)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style)
             ]
             .spacing(5)
@@ -960,7 +964,11 @@ fn config_groups(state: &TavernState) -> Element<'_, TavernMessage> {
     let config = &state.config;
     column![
         network_section(config, state.advanced_expanded[0]),
-        security_section(config, state.advanced_expanded[1]),
+        security_section(
+            config,
+            state.advanced_expanded[1],
+            &state.sync.fixed_whitelist,
+        ),
         ssl_section(config, state.advanced_expanded[2]),
         cors_section(config, state.advanced_expanded[3]),
         proxy_backup_section(config, state.advanced_expanded[4]),
@@ -1071,7 +1079,11 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
     )
 }
 
-fn security_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
+fn security_section<'a>(
+    config: &'a TavernConfig,
+    expanded: bool,
+    fixed_whitelist: &'a [String],
+) -> Element<'a, TavernMessage> {
     let mut rows = vec![
         field_row(
             "启用基础认证",
@@ -1129,11 +1141,7 @@ fn security_section(config: &TavernConfig, expanded: bool) -> Element<'_, Tavern
         rows.push(field_row(
             "白名单 IP 列表",
             "支持 IPv4 与 IPv6 地址。",
-            list_control(
-                &config.whitelist,
-                ListField::Whitelist,
-                "例如：192.168.1.100",
-            ),
+            whitelist_control(&config.whitelist, fixed_whitelist),
         ));
     }
     rows.extend([
@@ -1644,7 +1652,7 @@ fn status_badge(sync: &sync::SyncView) -> Element<'static, TavernMessage> {
                 13,
                 color
             ),
-            text(label).size(10).font(fonts::MEDIUM).color(color)
+            text(label).size(12).font(crate::core::typography::medium()).color(color)
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -1664,7 +1672,7 @@ fn status_badge(sync: &sync::SyncView) -> Element<'static, TavernMessage> {
         iced::widget::tooltip(
             badge,
             container(
-                column![text(error.message).size(11), text(&error.detail).size(10)].spacing(5),
+                column![text(error.message).size(13), text(&error.detail).size(12)].spacing(5),
             )
             .max_width(420)
             .padding(10)
@@ -1685,7 +1693,7 @@ fn header_button(
     button(
         row![
             crate::theme::muted_icon(icon, 14),
-            text(label).size(11).font(fonts::MEDIUM)
+            text(label).size(13).font(crate::core::typography::medium())
         ]
         .spacing(6)
         .align_y(Alignment::Center),
@@ -1717,12 +1725,12 @@ fn advanced_group<'a>(
                 .style(section_icon_style(accent)),
             column![
                 text(title)
-                    .size(15)
-                    .font(fonts::MEDIUM)
+                    .size(17)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
                 text(description)
-                    .size(11)
-                    .font(fonts::REGULAR)
+                    .size(13)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style)
             ]
             .spacing(3)
@@ -1766,12 +1774,12 @@ fn field_row<'a>(
         row![
             column![
                 text(title)
-                    .size(13)
-                    .font(fonts::MEDIUM)
+                    .size(15)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
                 text(description)
-                    .size(11)
-                    .font(fonts::REGULAR)
+                    .size(13)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style)
             ]
             .spacing(3)
@@ -1800,7 +1808,7 @@ fn dimension_row<'a>(
         "宽度 × 高度，单位为像素。",
         row![
             compact_text_control("宽", width, width_field),
-            text("×").size(12).style(crate::theme::muted_text_style),
+            text("×").size(14).style(crate::theme::muted_text_style),
             compact_text_control("高", height, height_field),
         ]
         .spacing(7)
@@ -1819,7 +1827,8 @@ fn compact_text_control<'a>(
         .on_input(move |value| TavernMessage::Edit(field, value))
         .width(112)
         .padding([8, 11])
-        .size(12)
+        .size(14)
+        .font(crate::core::typography::regular())
         .style(text_input_style)
         .into()
 }
@@ -1843,8 +1852,8 @@ fn pill_toggle(
                 crate::theme::muted_icon(Icon::Circle, 13)
             },
             text(label)
-                .size(11)
-                .font(fonts::MEDIUM)
+                .size(13)
+                .font(crate::core::typography::medium())
                 .style(move |theme| iced::widget::text::Style {
                     color: Some(if value {
                         WHITE
@@ -1870,8 +1879,8 @@ fn stacked_field<'a>(
 ) -> Element<'a, TavernMessage> {
     let mut content = column![
         text(label)
-            .size(10)
-            .font(fonts::MEDIUM)
+            .size(12)
+            .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
         control,
     ]
@@ -1880,8 +1889,8 @@ fn stacked_field<'a>(
     if let Some(help) = help {
         content = content.push(
             text(help)
-                .size(10)
-                .font(fonts::REGULAR)
+                .size(12)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         );
     }
@@ -1899,7 +1908,8 @@ fn text_control<'a>(
         .secure(secure)
         .width(CONTROL_WIDTH)
         .padding([8, 11])
-        .size(12)
+        .size(14)
+        .font(crate::core::typography::regular())
         .style(text_input_style)
         .into();
     sync::validated_input(
@@ -1920,7 +1930,8 @@ fn wide_text_control<'a>(
         .secure(secure)
         .width(Fill)
         .padding([10, 14])
-        .size(13)
+        .size(15)
+        .font(crate::core::typography::regular())
         .style(text_input_style)
         .into();
     sync::validated_input(
@@ -1939,7 +1950,7 @@ fn select_control<'a, T: Copy + Eq + fmt::Display + 'a>(
         .width(CONTROL_WIDTH)
         .padding([8, 11])
         .text_size(12)
-        .font(fonts::REGULAR)
+        .font(crate::core::typography::regular())
         .handle(pick_list_handle())
         .style(pick_list_style)
         .menu_style(pick_list_menu_style)
@@ -1955,11 +1966,114 @@ fn wide_select_control<'a, T: Copy + Eq + fmt::Display + 'a>(
         .width(Fill)
         .padding([10, 14])
         .text_size(13)
-        .font(fonts::REGULAR)
+        .font(crate::core::typography::regular())
         .handle(pick_list_handle())
         .style(pick_list_style)
         .menu_style(pick_list_menu_style)
         .into()
+}
+
+const LIST_ACTION_SIZE: f32 = 34.0;
+
+/// 所有动态列表共用双向居中的图标按钮，避免文字图标基线导致视觉偏上。
+fn list_icon_button(
+    glyph: Icon,
+    message: TavernMessage,
+    variant: ButtonVariant,
+) -> iced::widget::Button<'static, TavernMessage> {
+    button(
+        container(crate::theme::muted_icon(glyph, 14))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    )
+    .on_press(message)
+    .width(LIST_ACTION_SIZE)
+    .height(LIST_ACTION_SIZE)
+    .padding(0)
+    .style(button_style(variant))
+}
+
+fn whitelist_is_locked(value: &str, fixed: &[String]) -> bool {
+    fixed.iter().any(|item| item == value)
+}
+
+/// 系统保留地址只读且没有删除消息；用户地址继续使用当前输入框和删除样式。
+fn whitelist_control<'a>(values: &'a [String], fixed: &'a [String]) -> Element<'a, TavernMessage> {
+    let mut items = column![].spacing(7).width(LIST_WIDTH);
+    for (index, value) in values.iter().enumerate() {
+        let locked = whitelist_is_locked(value, fixed);
+        let input: Element<'a, TavernMessage> = if locked {
+            text_input("", value)
+                .width(Fill)
+                .padding([8, 11])
+                .size(14)
+                .font(crate::core::typography::regular())
+                .style(text_input_style)
+                .into()
+        } else {
+            text_input("例如：192.168.1.100", value)
+                .on_input(move |value| TavernMessage::EditList(ListField::Whitelist, index, value))
+                .width(Fill)
+                .padding([8, 11])
+                .size(14)
+                .font(crate::core::typography::regular())
+                .style(text_input_style)
+                .into()
+        };
+        let trailing: Element<'a, TavernMessage> = if locked {
+            iced::widget::tooltip(
+                container(crate::theme::muted_icon(Icon::LockKeyhole, 14))
+                    .width(LIST_ACTION_SIZE)
+                    .height(LIST_ACTION_SIZE)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center)
+                    .style(fixed_whitelist_style),
+                container(text("由服务模式自动管理").size(12))
+                    .padding([6, 9])
+                    .style(config_card_style),
+                iced::widget::tooltip::Position::Bottom,
+            )
+            .into()
+        } else {
+            list_icon_button(
+                Icon::Trash2,
+                TavernMessage::RemoveListItem(ListField::Whitelist, index),
+                ButtonVariant::DangerSoft,
+            )
+            .into()
+        };
+        items = items.push(row![input, trailing].spacing(7).align_y(Alignment::Center));
+    }
+    items = items.push(
+        button(
+            row![
+                icons::icon(Icon::Plus, 14, BLUE_600),
+                text("添加").size(13).font(crate::core::typography::medium()).color(BLUE_600)
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .on_press_maybe(
+            (!values.iter().any(|value| value.trim().is_empty()))
+                .then_some(TavernMessage::AddListItem(ListField::Whitelist)),
+        )
+        .height(LIST_ACTION_SIZE)
+        .padding([7, 11])
+        .style(button_style(ButtonVariant::Tertiary)),
+    );
+    sync::validated_input(
+        items.into(),
+        ListField::Whitelist.key(),
+        &serde_json::Value::Array(
+            values
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        ),
+    )
 }
 
 fn list_control<'a>(
@@ -1975,14 +2089,14 @@ fn list_control<'a>(
                     .on_input(move |value| TavernMessage::EditList(field, index, value))
                     .width(Fill)
                     .padding([8, 11])
-                    .size(12)
+                    .size(14)
+                    .font(crate::core::typography::regular())
                     .style(text_input_style),
-                button(container(crate::theme::muted_icon(Icon::Trash2, 14)))
-                    .on_press(TavernMessage::RemoveListItem(field, index))
-                    .width(34)
-                    .height(34)
-                    .padding(0)
-                    .style(button_style(ButtonVariant::DangerSoft)),
+                list_icon_button(
+                    Icon::Trash2,
+                    TavernMessage::RemoveListItem(field, index),
+                    ButtonVariant::DangerSoft,
+                ),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -1992,7 +2106,7 @@ fn list_control<'a>(
         button(
             row![
                 icons::icon(Icon::Plus, 14, BLUE_600),
-                text("添加").size(11).font(fonts::MEDIUM).color(BLUE_600)
+                text("添加").size(13).font(crate::core::typography::medium()).color(BLUE_600)
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -2108,6 +2222,18 @@ fn pill_toggle_style(active: bool) -> impl Fn(&Theme, button::Status) -> button:
     }
 }
 
+fn fixed_whitelist_style(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
+        border: Border {
+            color: crate::theme::line(theme),
+            width: 1.0,
+            radius: 10.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
 fn status_badge_style(color: Color) -> impl Fn(&Theme) -> container::Style {
     move |_theme| container::Style {
         background: Some(Background::Color(Color::from_rgba(
@@ -2124,7 +2250,10 @@ fn status_badge_style(color: Color) -> impl Fn(&Theme) -> container::Style {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoolField, ListField, TavernMessage, TavernState, TextField};
+    use super::{
+        BoolField, LIST_ACTION_SIZE, ListField, TavernMessage, TavernState, TextField,
+        whitelist_is_locked,
+    };
 
     #[test]
     fn edits_update_the_shared_configuration_draft() {
@@ -2165,6 +2294,15 @@ mod tests {
         state.update(TavernMessage::ToggleAdvancedSection(1));
         assert!(state.advanced_expanded[0]);
         assert!(state.advanced_expanded[1]);
+    }
+
+    #[test]
+    fn list_actions_are_square_and_system_whitelist_entries_are_locked() {
+        assert_eq!(LIST_ACTION_SIZE, 34.0);
+        let fixed = vec!["::1".to_owned(), "127.0.0.1".to_owned()];
+        assert!(whitelist_is_locked("::1", &fixed));
+        assert!(whitelist_is_locked("127.0.0.1", &fixed));
+        assert!(!whitelist_is_locked("203.0.113.9", &fixed));
     }
 }
 

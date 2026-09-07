@@ -10,7 +10,7 @@ use lucide_icons::Icon;
 
 use astra_ui::{
     BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS, SURFACE_ALT, WARNING,
-    WHITE, fonts, icons,
+    WHITE, icons,
 };
 
 use super::versions::{VersionSource, VersionState};
@@ -261,11 +261,11 @@ pub fn extensions_view<'a>(
         column![
             text("扩展管理")
                 .size(24)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
             text("管理酒馆已安装的第三方扩展")
                 .size(12)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(4),
@@ -274,7 +274,7 @@ pub fn extensions_view<'a>(
             row![
                 text("自动修复")
                     .size(11)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
                 compact_switch(
                     state.auto_repair_git,
@@ -362,12 +362,12 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
             column![
                 text("当前选择的酒馆版本")
                     .size(14)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
                 row![
                     text(format!("当前版本：{version}"))
                         .size(10)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                     badge(source, WARNING),
                 ]
@@ -377,7 +377,7 @@ fn selected_version_card(versions: &VersionState) -> Element<'_, ExtensionsMessa
                     crate::theme::subtle_icon(Icon::Folder, 12),
                     text(path)
                         .size(9)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::subtle_text_style),
                 ]
                 .spacing(5)
@@ -407,12 +407,12 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
             crate::theme::muted_icon(Icon::Puzzle, 18),
             text("已安装扩展")
                 .size(15)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
             container(
                 text(format!("{} 项", visible.len()))
                     .size(9)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
             )
             .padding([4, 8])
@@ -425,7 +425,7 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
                 .unwrap_or_else(|| space::horizontal().width(Length::Shrink).into()),
             text("显示系统扩展")
                 .size(11)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             compact_switch(
                 state.show_system_extensions,
@@ -453,11 +453,11 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
                 crate::theme::subtle_icon(Icon::Puzzle, 34),
                 text("没有找到扩展")
                     .size(13)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
                 text("安装扩展后，它们会显示在这里。")
                     .size(10)
-                    .font(fonts::REGULAR)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::subtle_text_style),
             ]
             .spacing(8)
@@ -502,7 +502,7 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
     let mut title = row![
         text(&extension.display_name)
             .size(15)
-            .font(fonts::MEDIUM)
+            .font(crate::core::typography::medium())
             .color(content_color),
         owned_badge(format!("v{}", extension.version), INK_MUTED),
     ]
@@ -523,13 +523,13 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
         crate::theme::subtle_icon(Icon::User, 12),
         text(&extension.author)
             .size(10)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
         text("|").size(10).style(crate::theme::subtle_text_style),
         crate::theme::subtle_icon(Icon::Folder, 12),
         text(&extension.id)
             .size(10)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
     ]
     .spacing(6)
@@ -557,7 +557,7 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
                 "已停用"
             })
             .size(11)
-            .font(fonts::MEDIUM)
+            .font(crate::core::typography::medium())
             .color(if extension.enabled {
                 INK_MUTED
             } else {
@@ -586,7 +586,7 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
             row![
                 text("自动更新")
                     .size(11)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
                 compact_switch(
                     enabled,
@@ -630,7 +630,7 @@ fn action_button(
     button(
         row![
             icons::icon(icon, 15, color),
-            text(label).size(11).font(fonts::MEDIUM).color(color),
+            text(label).size(11).font(crate::core::typography::medium()).color(color),
         ]
         .spacing(7)
         .align_y(Alignment::Center),
@@ -652,7 +652,7 @@ fn small_action(
             crate::theme::muted_icon(icon, 11),
             text(label)
                 .size(9)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(4)
@@ -684,7 +684,7 @@ fn icon_action(
 
     tooltip(
         action,
-        container(text(label).size(10).font(fonts::REGULAR).color(WHITE))
+        container(text(label).size(10).font(crate::core::typography::regular()).color(WHITE))
             .padding([6, 9])
             .style(tooltip_surface),
         tooltip::Position::Bottom,
@@ -727,14 +727,14 @@ fn compact_switch(
 }
 
 fn badge<'a>(label: &'a str, color: Color) -> Element<'a, ExtensionsMessage> {
-    container(text(label).size(8).font(fonts::MEDIUM).color(color))
+    container(text(label).size(8).font(crate::core::typography::medium()).color(color))
         .padding([4, 7])
         .style(move |_theme| badge_surface(color))
         .into()
 }
 
 fn owned_badge(label: String, color: Color) -> Element<'static, ExtensionsMessage> {
-    container(text(label).size(8).font(fonts::MEDIUM).color(color))
+    container(text(label).size(8).font(crate::core::typography::medium()).color(color))
         .padding([4, 7])
         .style(move |_theme| badge_surface(color))
         .into()
@@ -748,7 +748,7 @@ fn icon_badge(
     container(
         row![
             icons::icon(icon, 10, color),
-            text(label).size(8).font(fonts::MEDIUM).color(color),
+            text(label).size(8).font(crate::core::typography::medium()).color(color),
         ]
         .spacing(3)
         .align_y(Alignment::Center),
@@ -764,7 +764,7 @@ fn notice_badge(notice: &str) -> Element<'_, ExtensionsMessage> {
             icons::icon(Icon::Info, 11, BLUE_600),
             text(notice)
                 .size(9)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(5)

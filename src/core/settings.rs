@@ -13,6 +13,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// 全局酒馆数据目录遵循启动器统一的 Application Support 目录规范。
+pub(crate) const DEFAULT_GLOBAL_DATA_PATH: &str =
+    "~/Library/Application Support/AstraBrew Launcher/data/sillytavern/data";
+
+/// 历史版本使用过的错误默认目录；只迁移这些精确值，不覆盖用户自定义路径。
+const LEGACY_GLOBAL_DATA_PATHS: &[&str] = &[
+    "~/Library/Application Support/AstraBrew/data",
+    "~/Library/Application Support/AstraBrew Launcher/data/sillytavern",
+];
+
 /// 启动器显示语言。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum DisplayLanguage {
@@ -65,6 +75,10 @@ impl fmt::Display for ThemeMode {
 pub struct PersistentPreferences {
     pub language: DisplayLanguage,
     pub theme: ThemeMode,
+    /// 普通界面与布局的用户缩放比例。
+    pub ui_scale: f32,
+    /// 显示字体族；default 表示内置 HarmonyOS Sans。
+    pub font_family: String,
     pub remember_window_position: bool,
     pub window_position: Option<[f32; 2]>,
     /// 网络代理模式：none、system 或 custom。
@@ -90,6 +104,14 @@ pub struct PersistentPreferences {
     pub start_mode: String,
     /// 是否启用服务器模式。
     pub server_mode_enabled: bool,
+    /// 服务器对外服务范围：lan 或 internet。
+    pub server_service_mode: String,
+    /// 桌面 WebView 关闭时是否自动停止酒馆。
+    pub auto_stop_tavern_on_window_close: bool,
+    /// 是否允许服务器模式通过 PM2 在后台继续运行。
+    pub allow_tavern_background: bool,
+    /// 是否在控制台展示完整启动命令。
+    pub show_startup_command: bool,
     /// 用户是否已经确认过 staging 开发版风险提示。
     pub staging_risk_confirmed: bool,
 }
@@ -99,6 +121,8 @@ impl Default for PersistentPreferences {
         Self {
             language: DisplayLanguage::System,
             theme: ThemeMode::System,
+            ui_scale: crate::core::typography::DEFAULT_UI_SCALE,
+            font_family: crate::core::typography::DEFAULT_FONT_KEY.to_owned(),
             remember_window_position: true,
             window_position: None,
             proxy_mode: "system".to_owned(),
@@ -109,10 +133,14 @@ impl Default for PersistentPreferences {
             download_channel: "auto".to_owned(),
             auto_start: false,
             data_mode: "current".to_owned(),
-            global_data_path: "~/Library/Application Support/AstraBrew/data".to_owned(),
+            global_data_path: DEFAULT_GLOBAL_DATA_PATH.to_owned(),
             tavern_export_path: "~/Downloads".to_owned(),
             start_mode: "normal".to_owned(),
             server_mode_enabled: false,
+            server_service_mode: "lan".to_owned(),
+            auto_stop_tavern_on_window_close: true,
+            allow_tavern_background: false,
+            show_startup_command: false,
             staging_risk_confirmed: false,
         }
     }
@@ -156,6 +184,14 @@ impl SettingsStore {
             serde_json::to_value(preferences.theme).map_err(io::Error::other)?,
         );
         self.document.insert(
+            "ui_scale".into(),
+            Value::from(crate::core::typography::normalize_ui_scale(preferences.ui_scale) as f64),
+        );
+        self.document.insert(
+            "font_family".into(),
+            Value::String(preferences.font_family),
+        );
+        self.document.insert(
             "remember_window_pos".into(),
             Value::Bool(preferences.remember_window_position),
         );
@@ -180,7 +216,7 @@ impl SettingsStore {
         );
         self.document.insert(
             "global_data_path".into(),
-            Value::String(preferences.global_data_path),
+            Value::String(normalize_global_data_path(&preferences.global_data_path)),
         );
         self.document.insert(
             "tavern_export_path".into(),
@@ -193,6 +229,24 @@ impl SettingsStore {
         self.document.insert(
             "server_mode_enabled".into(),
             Value::Bool(preferences.server_mode_enabled),
+        );
+        self.document.insert(
+            "server_service_mode".into(),
+            Value::String(
+                normalize_server_service_mode(&preferences.server_service_mode).to_owned(),
+            ),
+        );
+        self.document.insert(
+            "auto_stop_tavern_on_window_close".into(),
+            Value::Bool(preferences.auto_stop_tavern_on_window_close),
+        );
+        self.document.insert(
+            "allow_tavern_background".into(),
+            Value::Bool(preferences.allow_tavern_background),
+        );
+        self.document.insert(
+            "show_startup_command".into(),
+            Value::Bool(preferences.show_startup_command),
         );
         self.document.insert(
             "staging_risk_confirmed".into(),
@@ -226,6 +280,7 @@ impl SettingsStore {
             "downloadChannelLastTested",
             "startMode",
             "serverModeEnabled",
+            "serverServiceMode",
             "stagingRiskConfirmed",
         ] {
             self.document.remove(key);
@@ -256,6 +311,18 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
         .unwrap_or(defaults.theme);
+    let ui_scale = document
+        .get("ui_scale")
+        .and_then(Value::as_f64)
+        .map(|value| crate::core::typography::normalize_ui_scale(value as f32))
+        .unwrap_or(defaults.ui_scale);
+    let font_family = document
+        .get("font_family")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&defaults.font_family)
+        .to_owned();
     let remember_window_position = document
         .get("remember_window_pos")
         .or_else(|| document.get("remember_window_position"))
@@ -341,13 +408,13 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         .and_then(Value::as_str)
         .map(normalize_data_mode)
         .unwrap_or_else(|| defaults.data_mode.clone());
-    let global_data_path = document
+    let stored_global_data_path = document
         .get("global_data_path")
         .or_else(|| document.get("globalDataPath"))
         .and_then(Value::as_str)
         .filter(|path| !path.trim().is_empty())
-        .unwrap_or(&defaults.global_data_path)
-        .to_owned();
+        .unwrap_or(&defaults.global_data_path);
+    let global_data_path = normalize_global_data_path(stored_global_data_path);
     let tavern_export_path = document
         .get("tavern_export_path")
         .or_else(|| document.get("tavernExportPath"))
@@ -367,6 +434,29 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         .or_else(|| document.get("serverModeEnabled"))
         .and_then(Value::as_bool)
         .unwrap_or(defaults.server_mode_enabled);
+    let server_service_mode = document
+        .get("server_service_mode")
+        .or_else(|| document.get("serverServiceMode"))
+        .and_then(Value::as_str)
+        .map(normalize_server_service_mode)
+        .unwrap_or_else(|| defaults.server_service_mode.clone());
+    let auto_stop_tavern_on_window_close = document
+        .get("auto_stop_tavern_on_window_close")
+        .or_else(|| document.get("auto_stop_tavern_on_webview_close"))
+        .or_else(|| document.get("autoStopTavernOnWebviewClose"))
+        .or_else(|| document.get("autoStopTavernOnWindowClose"))
+        .and_then(Value::as_bool)
+        .unwrap_or(defaults.auto_stop_tavern_on_window_close);
+    let allow_tavern_background = document
+        .get("allow_tavern_background")
+        .or_else(|| document.get("allowTavernBackground"))
+        .and_then(Value::as_bool)
+        .unwrap_or(defaults.allow_tavern_background);
+    let show_startup_command = document
+        .get("show_startup_command")
+        .or_else(|| document.get("showStartupCommand"))
+        .and_then(Value::as_bool)
+        .unwrap_or(defaults.show_startup_command);
     let staging_risk_confirmed = document
         .get("staging_risk_confirmed")
         .or_else(|| document.get("stagingRiskConfirmed"))
@@ -376,6 +466,8 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
     PersistentPreferences {
         language,
         theme,
+        ui_scale,
+        font_family,
         remember_window_position,
         window_position,
         proxy_mode,
@@ -390,6 +482,10 @@ fn preferences_from_document(document: &Map<String, Value>) -> PersistentPrefere
         tavern_export_path,
         start_mode,
         server_mode_enabled,
+        server_service_mode,
+        auto_stop_tavern_on_window_close,
+        allow_tavern_background,
+        show_startup_command,
         staging_risk_confirmed,
     }
 }
@@ -428,6 +524,33 @@ fn normalize_data_mode(value: &str) -> String {
     }
 }
 
+/// 将历史错误默认目录迁移到规范路径，同时保留用户主动选择的其他目录。
+fn normalize_global_data_path(value: &str) -> String {
+    let value = value.trim().trim_end_matches('/');
+    let is_legacy = LEGACY_GLOBAL_DATA_PATHS.iter().any(|legacy| {
+        if value == *legacy {
+            return true;
+        }
+        let Some(home) = std::env::var_os("HOME") else {
+            return false;
+        };
+        let expanded = PathBuf::from(home).join(legacy.trim_start_matches("~/"));
+        Path::new(value) == expanded
+    });
+    if is_legacy {
+        DEFAULT_GLOBAL_DATA_PATH.to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn normalize_server_service_mode(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "internet" | "public" | "互联网" => "internet".to_owned(),
+        _ => "lan".to_owned(),
+    }
+}
+
 fn normalize_start_mode(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "desktop" => "desktop".to_owned(),
@@ -451,13 +574,7 @@ fn legacy_proxy_type(value: &str) -> &'static str {
 }
 
 fn default_settings_path() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join("Library")
-        .join("Application Support")
-        .join("AstraBrew Launcher")
-        .join("settings.json")
+    crate::utils::app_paths().settings_file()
 }
 
 fn temporary_path(path: &Path) -> PathBuf {
@@ -470,7 +587,9 @@ fn temporary_path(path: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{DisplayLanguage, PersistentPreferences, SettingsStore, ThemeMode};
+    use super::{
+        DEFAULT_GLOBAL_DATA_PATH, DisplayLanguage, PersistentPreferences, SettingsStore, ThemeMode,
+    };
     use std::fs;
 
     fn test_path(name: &str) -> std::path::PathBuf {
@@ -509,6 +628,32 @@ mod tests {
     }
 
     #[test]
+    fn interface_preferences_default_normalize_and_roundtrip() {
+        let defaults = PersistentPreferences::default();
+        assert!((defaults.ui_scale - crate::core::typography::DEFAULT_UI_SCALE).abs() < f32::EPSILON);
+        assert_eq!(defaults.font_family, crate::core::typography::DEFAULT_FONT_KEY);
+
+        let path = test_path("interface-preferences");
+        fs::write(
+            &path,
+            r#"{"ui_scale":1.13,"font_family":"PingFang SC","unknown":true}"#,
+        )
+        .expect("write interface preferences fixture");
+        let (mut store, preferences) = SettingsStore::load(&path);
+        assert!((preferences.ui_scale - 1.15).abs() < f32::EPSILON);
+        assert_eq!(preferences.font_family, "PingFang SC");
+        store.save(preferences).expect("save interface preferences");
+
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("read interface preferences"))
+                .expect("parse interface preferences");
+        assert_eq!(value["ui_scale"], 1.15);
+        assert_eq!(value["font_family"], "PingFang SC");
+        assert_eq!(value["unknown"], true);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn persists_proxy_mode_and_custom_proxy() {
         let path = test_path("proxy");
         let (mut store, _) = SettingsStore::load(&path);
@@ -541,6 +686,48 @@ mod tests {
     }
 
     #[test]
+    fn global_data_path_uses_directory_spec_and_migrates_old_default() {
+        assert_eq!(
+            PersistentPreferences::default().global_data_path,
+            DEFAULT_GLOBAL_DATA_PATH
+        );
+
+        let legacy = test_path("legacy-global-data");
+        fs::write(
+            &legacy,
+            r#"{"global_data_path":"~/Library/Application Support/AstraBrew/data"}"#,
+        )
+        .expect("write legacy global data fixture");
+        let (mut store, preferences) = SettingsStore::load(&legacy);
+        assert_eq!(preferences.global_data_path, DEFAULT_GLOBAL_DATA_PATH);
+        store
+            .save(preferences)
+            .expect("save migrated global data path");
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&legacy).expect("read migrated global data settings"))
+                .expect("parse migrated global data settings");
+        assert_eq!(saved["global_data_path"], DEFAULT_GLOBAL_DATA_PATH);
+        let _ = fs::remove_file(legacy);
+
+        let previous = test_path("previous-global-data");
+        fs::write(
+            &previous,
+            r#"{"global_data_path":"~/Library/Application Support/AstraBrew Launcher/data/sillytavern"}"#,
+        )
+        .expect("write previous global data fixture");
+        let (_, preferences) = SettingsStore::load(&previous);
+        assert_eq!(preferences.global_data_path, DEFAULT_GLOBAL_DATA_PATH);
+        let _ = fs::remove_file(previous);
+
+        let custom = test_path("custom-global-data");
+        fs::write(&custom, r#"{"global_data_path":"~/Custom/Tavern"}"#)
+            .expect("write custom global data fixture");
+        let (_, preferences) = SettingsStore::load(&custom);
+        assert_eq!(preferences.global_data_path, "~/Custom/Tavern");
+        let _ = fs::remove_file(custom);
+    }
+
+    #[test]
     fn accepts_current_aliases_and_recovers_from_invalid_json() {
         let alias_path = test_path("aliases");
         fs::write(
@@ -558,5 +745,33 @@ mod tests {
         let (_, invalid) = SettingsStore::load(&invalid_path);
         assert_eq!(invalid, PersistentPreferences::default());
         let _ = fs::remove_file(invalid_path);
+    }
+    #[test]
+    fn persists_server_service_mode_and_reads_legacy_alias() {
+        let legacy = test_path("service-mode-legacy");
+        fs::write(
+            &legacy,
+            r#"{"serverModeEnabled":true,"serverServiceMode":"Internet"}"#,
+        )
+        .expect("write service mode fixture");
+        let (mut store, preferences) = SettingsStore::load(&legacy);
+        assert!(preferences.server_mode_enabled);
+        assert_eq!(preferences.server_service_mode, "internet");
+        store
+            .save(preferences)
+            .expect("save normalized service mode");
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&legacy).expect("read normalized settings"))
+                .expect("parse normalized settings");
+        assert_eq!(value["server_service_mode"], "internet");
+        assert!(value.get("serverServiceMode").is_none());
+        let _ = fs::remove_file(legacy);
+
+        let invalid = test_path("service-mode-invalid");
+        fs::write(&invalid, r#"{"server_service_mode":"unsupported"}"#)
+            .expect("write invalid mode fixture");
+        let (_, preferences) = SettingsStore::load(&invalid);
+        assert_eq!(preferences.server_service_mode, "lan");
+        let _ = fs::remove_file(invalid);
     }
 }

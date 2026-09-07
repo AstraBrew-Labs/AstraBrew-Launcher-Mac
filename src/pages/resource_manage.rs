@@ -13,7 +13,7 @@ use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK, INK_MUTED, INK_SUBTLE, SUCCESS, WARNING, WHITE, fonts,
+    BLUE_600, ButtonVariant, DANGER, SUCCESS, WARNING, WHITE,
     icons,
 };
 
@@ -1040,12 +1040,12 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                     .style(page_icon_surface),
                 column![
                     text("资源管理")
-                        .size(20)
-                        .font(fonts::MEDIUM)
+                        .size(22)
+                        .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     text("统一查看与整理 SillyTavern 本地资源")
-                        .size(11)
-                        .font(fonts::REGULAR)
+                        .size(13)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                 ]
                 .spacing(3),
@@ -1071,13 +1071,13 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 ),
                 column![
                     text(&state.source_label)
-                        .size(11)
-                        .font(fonts::MEDIUM)
+                        .size(13)
+                        .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     text(state.current_directory())
-                        .size(9)
-                        .font(fonts::REGULAR)
-                        .style(crate::theme::subtle_text_style),
+                        .size(12)
+                        .font(crate::core::typography::regular())
+                        .style(crate::theme::muted_text_style),
                 ]
                 .spacing(2),
             ]
@@ -1102,8 +1102,8 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             row![
                 icons::icon(Icon::FileUp, 14, WHITE),
                 text(format!("导入{}", state.tab.singular()))
-                    .size(11)
-                    .font(fonts::MEDIUM),
+                    .size(13)
+                    .font(crate::core::typography::medium()),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -1123,8 +1123,8 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 text_input("搜索名称、文件名或标签", &state.search)
                     .on_input(ResourceManageMessage::SearchChanged)
                     .padding([7, 2])
-                    .size(11)
-                    .font(fonts::REGULAR),
+                    .size(13)
+                    .font(crate::core::typography::regular()),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -1136,8 +1136,8 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             row![
                 icons::icon(state.tab.icon(), 13, BLUE_600),
                 text(format!("{} 项", state.current_count()))
-                    .size(10)
-                    .font(fonts::MEDIUM)
+                    .size(12)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
             ]
             .spacing(6)
@@ -1152,7 +1152,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 .width(34)
                 .height(34)
                 .style(button_style(ButtonVariant::Outline)),
-            container(text("打开目录").size(10))
+            container(text("打开目录").size(12))
                 .padding([5, 8])
                 .style(tooltip_surface),
             tooltip::Position::Bottom,
@@ -1163,7 +1163,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 .width(34)
                 .height(34)
                 .style(button_style(ButtonVariant::Outline)),
-            container(text("重新扫描").size(10))
+            container(text("重新扫描").size(12))
                 .padding([5, 8])
                 .style(tooltip_surface),
             tooltip::Position::Bottom,
@@ -1178,15 +1178,15 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             row![
                 icons::icon(Icon::TriangleAlert, 15, DANGER),
                 text(format!("确定删除“{}”吗？此操作无法撤销。", pending.label))
-                    .size(11)
-                    .font(fonts::REGULAR)
+                    .size(13)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::text_style),
                 space::horizontal(),
-                button(text("取消").size(10).font(fonts::MEDIUM))
+                button(text("取消").size(12).font(crate::core::typography::medium()))
                     .on_press(ResourceManageMessage::CancelDelete)
                     .padding([6, 10])
                     .style(button_style(ButtonVariant::Outline)),
-                button(text("确认删除").size(10).font(fonts::MEDIUM))
+                button(text("确认删除").size(12).font(crate::core::typography::medium()))
                     .on_press(ResourceManageMessage::ConfirmDelete)
                     .padding([6, 10])
                     .style(danger_button_style),
@@ -1201,8 +1201,8 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             row![
                 icons::icon(Icon::Info, 14, BLUE_600),
                 text(notice)
-                    .size(10)
-                    .font(fonts::REGULAR)
+                    .size(12)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
                 space::horizontal(),
                 button(crate::theme::subtle_icon(Icon::X, 13))
@@ -1256,26 +1256,45 @@ fn resource_tab(
     tab: ResourceTab,
 ) -> Element<'static, ResourceManageMessage> {
     let active = state.tab == tab;
-    let color = if active { BLUE_600 } else { INK_MUTED };
+    let tab_icon: Element<'static, ResourceManageMessage> = if active {
+        icons::icon(tab.icon(), 16, BLUE_600)
+    } else {
+        crate::theme::muted_icon(tab.icon(), 16)
+    };
     button(
         column![
             container(
                 row![
-                    icons::icon(tab.icon(), 14, color),
-                    text(tab.label()).size(12).font(fonts::MEDIUM).color(color),
+                    tab_icon,
+                    text(tab.label())
+                        .size(14)
+                        .font(crate::core::typography::medium())
+                        .style(move |theme| iced::widget::text::Style {
+                            color: Some(if active {
+                                theme.palette().primary
+                            } else {
+                                crate::theme::text_muted(theme)
+                            }),
+                        }),
                     container(
                         text(state.resource_count(tab).to_string())
-                            .size(9)
-                            .font(fonts::MEDIUM)
-                            .color(color),
+                            .size(12)
+                            .font(crate::core::typography::medium())
+                            .style(move |theme| iced::widget::text::Style {
+                                color: Some(if active {
+                                    theme.palette().primary
+                                } else {
+                                    crate::theme::text_muted(theme)
+                                }),
+                            }),
                     )
-                    .padding([2, 6])
-                    .style(move |_theme| tab_count_surface(active)),
+                    .padding([2, 7])
+                    .style(move |theme| tab_count_surface(theme, active)),
                 ]
-                .spacing(7)
+                .spacing(8)
                 .align_y(Alignment::Center),
             )
-            .height(32)
+            .height(36)
             .align_y(Alignment::Center),
             container(space::vertical())
                 .height(2)
@@ -1302,14 +1321,14 @@ fn resource_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessa
             container(
                 row![
                     text(format!("{}列表", state.tab.label()))
-                        .size(12)
-                        .font(fonts::MEDIUM)
+                        .size(14)
+                        .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     space::horizontal(),
                     text("按修改时间排序")
-                        .size(9)
-                        .font(fonts::REGULAR)
-                        .style(crate::theme::subtle_text_style),
+                        .size(12)
+                        .font(crate::core::typography::regular())
+                        .style(crate::theme::muted_text_style),
                 ]
                 .align_y(Alignment::Center),
             )
@@ -1356,16 +1375,16 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                     .style(thumbnail_surface),
                     column![
                         text(&item.name)
-                            .size(12)
-                            .font(fonts::MEDIUM)
+                            .size(14)
+                            .font(crate::core::typography::medium())
                             .style(crate::theme::text_style),
                         text(if item.creator.is_empty() {
                             "未知作者".to_owned()
                         } else {
                             format!("作者：{}", item.creator)
                         })
-                        .size(9)
-                        .font(fonts::REGULAR)
+                        .size(12)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                         text(format!(
                             "{} · {}×{} · {} 个标签",
@@ -1374,17 +1393,17 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                             item.image_height,
                             item.tags.len()
                         ))
-                        .size(9)
-                        .font(fonts::REGULAR)
-                        .style(crate::theme::subtle_text_style),
+                        .size(12)
+                        .font(crate::core::typography::regular())
+                        .style(crate::theme::muted_text_style),
                     ]
                     .spacing(5),
                     space::horizontal(),
-                    icons::icon(
-                        Icon::ChevronRight,
-                        14,
-                        if selected { BLUE_600 } else { INK_SUBTLE }
-                    ),
+                    if selected {
+                        icons::icon(Icon::ChevronRight, 16, BLUE_600)
+                    } else {
+                        crate::theme::muted_icon(Icon::ChevronRight, 16)
+                    },
                 ]
                 .spacing(10)
                 .align_y(Alignment::Center),
@@ -1455,14 +1474,14 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
                 row![
                     icons::icon(Icon::UserRound, 13, BLUE_600),
                     text(&group.name)
-                        .size(10)
-                        .font(fonts::MEDIUM)
+                        .size(12)
+                        .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     space::horizontal(),
                     text(format!("{} 个会话", matching.len()))
-                        .size(9)
-                        .font(fonts::REGULAR)
-                        .style(crate::theme::subtle_text_style),
+                        .size(12)
+                        .font(crate::core::typography::regular())
+                        .style(crate::theme::muted_text_style),
                 ]
                 .spacing(7)
                 .align_y(Alignment::Center),
@@ -1531,46 +1550,49 @@ fn simple_list_item<'a>(
     selected: bool,
     message: ResourceManageMessage,
 ) -> Element<'a, ResourceManageMessage> {
+    let leading_icon: Element<'a, ResourceManageMessage> = if selected {
+        icons::icon(icon, 19, BLUE_600)
+    } else {
+        crate::theme::muted_icon(icon, 19)
+    };
+    let trailing_icon: Element<'a, ResourceManageMessage> = if selected {
+        icons::icon(Icon::ChevronRight, 16, BLUE_600)
+    } else {
+        crate::theme::muted_icon(Icon::ChevronRight, 16)
+    };
+
     button(
         row![
-            container(icons::icon(
-                icon,
-                17,
-                if selected { BLUE_600 } else { INK_MUTED }
-            ))
-            .width(36)
-            .height(36)
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(move |_theme| item_icon_surface(selected)),
+            container(leading_icon)
+                .width(40)
+                .height(40)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(move |theme| item_icon_surface(theme, selected)),
             column![
                 text(title)
-                    .size(11)
-                    .font(fonts::MEDIUM)
+                    .size(13)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
                 text(truncate(subtitle, 35))
-                    .size(9)
-                    .font(fonts::REGULAR)
+                    .size(12)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
                 text(meta)
-                    .size(9)
-                    .font(fonts::REGULAR)
-                    .style(crate::theme::subtle_text_style),
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
             ]
-            .spacing(3),
+            .spacing(4),
             space::horizontal(),
-            icons::icon(
-                Icon::ChevronRight,
-                14,
-                if selected { BLUE_600 } else { INK_SUBTLE }
-            ),
+            trailing_icon,
         ]
-        .spacing(9)
+        .spacing(10)
         .align_y(Alignment::Center),
     )
     .on_press(message)
     .width(Fill)
-    .padding([9, 11])
+    .padding([10, 12])
     .style(move |theme, status| list_item_style(theme, selected, status))
     .into()
 }
@@ -1585,13 +1607,13 @@ fn list_scroll<'a>(
             column![
                 crate::theme::subtle_icon(Icon::Inbox, 25),
                 text(title)
-                    .size(11)
-                    .font(fonts::MEDIUM)
+                    .size(13)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
                 text(description)
-                    .size(9)
-                    .font(fonts::REGULAR)
-                    .style(crate::theme::subtle_text_style),
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(7)
             .align_x(Alignment::Center),
@@ -1664,13 +1686,13 @@ fn detail_header<'a>(
                 .style(page_icon_surface),
             column![
                 text(title)
-                    .size(15)
-                    .font(fonts::MEDIUM)
+                    .size(17)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
                 text(subtitle)
-                    .size(9)
-                    .font(fonts::REGULAR)
-                    .style(crate::theme::subtle_text_style),
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(3),
             space::horizontal(),
@@ -1680,7 +1702,7 @@ fn detail_header<'a>(
                     .width(34)
                     .height(34)
                     .style(danger_outline_button_style),
-                container(text("删除文件").size(10))
+                container(text("删除文件").size(12))
                     .padding([5, 8])
                     .style(tooltip_surface),
                 tooltip::Position::Bottom,
@@ -1698,9 +1720,9 @@ fn detail_header<'a>(
 fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessage> {
     let tags: Element<'_, ResourceManageMessage> = if item.tags.is_empty() {
         text("无标签")
-            .size(9)
-            .font(fonts::REGULAR)
-            .style(crate::theme::subtle_text_style)
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(crate::theme::muted_text_style)
             .into()
     } else {
         row(item.tags.iter().take(8).map(|tag| tag_chip(tag, BLUE_600)))
@@ -1742,9 +1764,9 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
                     }
                 ),
                 text("标签")
-                    .size(9)
-                    .font(fonts::MEDIUM)
-                    .style(crate::theme::subtle_text_style),
+                    .size(12)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
                 tags,
             ]
             .spacing(9),
@@ -1984,20 +2006,22 @@ fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, Resour
     container(
         column![
             text(title)
-                .size(10)
-                .font(fonts::MEDIUM)
+                .size(12)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             text(if value.trim().is_empty() {
                 "未填写"
             } else {
                 value
             })
-            .size(10)
-            .font(fonts::REGULAR)
-            .color(if value.trim().is_empty() {
-                INK_SUBTLE
-            } else {
-                INK
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(move |theme| iced::widget::text::Style {
+                color: Some(if value.trim().is_empty() {
+                    crate::theme::text_subtle(theme)
+                } else {
+                    crate::theme::text(theme)
+                }),
             }),
         ]
         .spacing(6),
@@ -2026,12 +2050,12 @@ fn info_pair<'a>(label: &'static str, value: String) -> Element<'a, ResourceMana
     container(
         column![
             text(label)
-                .size(8)
-                .font(fonts::MEDIUM)
-                .style(crate::theme::subtle_text_style),
+                .size(12)
+                .font(crate::core::typography::medium())
+                .style(crate::theme::muted_text_style),
             text(value)
-                .size(10)
-                .font(fonts::MEDIUM)
+                .size(12)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
         ]
         .spacing(2),
@@ -2058,12 +2082,12 @@ fn metric_card(
                 .style(move |_theme| accent_surface(accent)),
             column![
                 text(label)
-                    .size(8)
-                    .font(fonts::MEDIUM)
-                    .style(crate::theme::subtle_text_style),
-                text(value)
                     .size(12)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
+                text(value)
+                    .size(14)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
             ]
             .spacing(2),
@@ -2085,14 +2109,14 @@ fn section_heading<'a>(
     row![
         icons::icon(icon, 14, BLUE_600),
         text(title)
-            .size(11)
-            .font(fonts::MEDIUM)
+            .size(13)
+            .font(crate::core::typography::medium())
             .style(crate::theme::text_style),
         space::horizontal(),
         text(meta)
-            .size(9)
-            .font(fonts::REGULAR)
-            .style(crate::theme::subtle_text_style),
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(crate::theme::muted_text_style),
     ]
     .spacing(7)
     .align_y(Alignment::Center)
@@ -2105,55 +2129,53 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
     } else {
         entry.keys.join("、")
     };
+    let status_icon: Element<'_, ResourceManageMessage> = if entry.enabled {
+        icons::icon(Icon::CircleCheck, 15, SUCCESS)
+    } else {
+        crate::theme::muted_icon(Icon::CircleOff, 15)
+    };
     container(
         column![
             row![
-                container(icons::icon(
-                    if entry.enabled {
-                        Icon::CircleCheck
-                    } else {
-                        Icon::CircleOff
-                    },
-                    13,
-                    if entry.enabled { SUCCESS } else { INK_SUBTLE },
-                ))
-                .width(24),
+                container(status_icon).width(26),
                 text(if entry.comment.is_empty() {
                     "未命名条目"
                 } else {
                     &entry.comment
                 })
-                .size(10)
-                .font(fonts::MEDIUM)
+                .size(12)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
                 space::horizontal(),
-                text(if entry.enabled {
-                    "已启用"
-                } else {
-                    "已禁用"
-                })
-                .size(8)
-                .font(fonts::MEDIUM)
-                .color(if entry.enabled { SUCCESS } else { INK_SUBTLE }),
+                text(if entry.enabled { "已启用" } else { "已禁用" })
+                    .size(12)
+                    .font(crate::core::typography::medium())
+                    .style(move |theme| iced::widget::text::Style {
+                        color: Some(if entry.enabled {
+                            SUCCESS
+                        } else {
+                            crate::theme::text_muted(theme)
+                        }),
+                    }),
             ]
             .align_y(Alignment::Center),
             text(format!("关键词：{}", truncate(&keywords, 80)))
-                .size(9)
-                .font(fonts::REGULAR)
+                .size(12)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             text(if entry.content.trim().is_empty() {
                 "无正文".into()
             } else {
                 truncate(&entry.content, 220)
             })
-            .size(9)
-            .font(fonts::REGULAR)
+            .size(12)
+            .font(crate::core::typography::regular())
             .style(crate::theme::text_style),
         ]
-        .spacing(6),
+        .spacing(7),
     )
     .width(Fill)
-    .padding(11)
+    .padding(12)
     .style(info_surface)
     .into()
 }
@@ -2181,20 +2203,20 @@ fn chat_bubble(message: &ChatMessage) -> Element<'_, ResourceManageMessage> {
                 } else {
                     &message.name
                 })
-                .size(9)
-                .font(fonts::MEDIUM)
+                .size(12)
+                .font(crate::core::typography::medium())
                 .color(accent),
                 space::horizontal(),
                 text(&message.send_date)
-                    .size(8)
-                    .font(fonts::REGULAR)
-                    .style(crate::theme::subtle_text_style),
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
             text(&message.content)
-                .size(9)
-                .font(fonts::REGULAR)
+                .size(12)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::text_style),
         ]
         .spacing(6),
@@ -2206,17 +2228,28 @@ fn chat_bubble(message: &ChatMessage) -> Element<'_, ResourceManageMessage> {
 }
 
 fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManageMessage> {
+    let role = if prompt.role.is_empty() {
+        "marker"
+    } else {
+        &prompt.role
+    };
+    let role_chip = if prompt.enabled {
+        tag_chip(role, SUCCESS)
+    } else {
+        muted_tag_chip(role)
+    };
+    let content_is_empty = prompt.content.trim().is_empty();
     container(
         column![
             row![
                 container(
                     text((index + 1).to_string())
-                        .size(9)
-                        .font(fonts::MEDIUM)
+                        .size(12)
+                        .font(crate::core::typography::medium())
                         .color(BLUE_600),
                 )
-                .width(24)
-                .height(24)
+                .width(26)
+                .height(26)
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(count_surface),
@@ -2225,49 +2258,56 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
                 } else {
                     &prompt.name
                 })
-                .size(10)
-                .font(fonts::MEDIUM)
+                .size(12)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
                 space::horizontal(),
-                tag_chip(
-                    if prompt.role.is_empty() {
-                        "marker"
-                    } else {
-                        &prompt.role
-                    },
-                    if prompt.enabled { SUCCESS } else { INK_SUBTLE },
-                ),
+                role_chip,
             ]
-            .spacing(7)
+            .spacing(8)
             .align_y(Alignment::Center),
             text(if prompt.marker {
                 "结构标记，不包含正文".into()
-            } else if prompt.content.trim().is_empty() {
+            } else if content_is_empty {
                 "无正文".into()
             } else {
                 truncate(&prompt.content, 260)
             })
-            .size(9)
-            .font(fonts::REGULAR)
-            .color(if prompt.content.trim().is_empty() {
-                INK_SUBTLE
-            } else {
-                INK
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(move |theme| iced::widget::text::Style {
+                color: Some(if content_is_empty {
+                    crate::theme::text_subtle(theme)
+                } else {
+                    crate::theme::text(theme)
+                }),
             }),
         ]
-        .spacing(7),
+        .spacing(8),
     )
     .width(Fill)
-    .padding(11)
+    .padding(12)
     .style(info_surface)
     .into()
 }
 
 fn tag_chip<'a>(label: &'a str, color: Color) -> Element<'a, ResourceManageMessage> {
-    container(text(label).size(8).font(fonts::MEDIUM).color(color))
+    container(text(label).size(12).font(crate::core::typography::medium()).color(color))
         .padding([3, 7])
         .style(move |_theme| accent_surface(color))
         .into()
+}
+
+fn muted_tag_chip(label: &str) -> Element<'_, ResourceManageMessage> {
+    container(
+        text(label)
+            .size(12)
+            .font(crate::core::typography::medium())
+            .style(crate::theme::muted_text_style),
+    )
+    .padding([3, 7])
+    .style(|theme| accent_surface(crate::theme::text_muted(theme)))
+    .into()
 }
 
 fn inline_empty(message: &str) -> Element<'_, ResourceManageMessage> {
@@ -2275,8 +2315,8 @@ fn inline_empty(message: &str) -> Element<'_, ResourceManageMessage> {
         row![
             crate::theme::subtle_icon(Icon::Inbox, 15),
             text(message)
-                .size(9)
-                .font(fonts::REGULAR)
+                .size(12)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(7)
@@ -2302,12 +2342,12 @@ fn empty_page(
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
             text(title)
-                .size(13)
-                .font(fonts::MEDIUM)
+                .size(15)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
             text(description)
-                .size(10)
-                .font(fonts::REGULAR)
+                .size(12)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(9)
@@ -2405,12 +2445,12 @@ fn count_surface(_theme: &Theme) -> container::Style {
     accent_surface(BLUE_600)
 }
 
-fn tab_count_surface(active: bool) -> container::Style {
-    if active {
-        accent_surface(BLUE_600)
+fn tab_count_surface(theme: &Theme, active: bool) -> container::Style {
+    accent_surface(if active {
+        theme.palette().primary
     } else {
-        accent_surface(INK_SUBTLE)
-    }
+        crate::theme::text_muted(theme)
+    })
 }
 
 fn tab_button_style(theme: &Theme, status: button::Status) -> button::Style {
@@ -2473,8 +2513,12 @@ fn list_item_style(theme: &Theme, selected: bool, status: button::Status) -> but
     }
 }
 
-fn item_icon_surface(selected: bool) -> container::Style {
-    accent_surface(if selected { BLUE_600 } else { INK_SUBTLE })
+fn item_icon_surface(theme: &Theme, selected: bool) -> container::Style {
+    accent_surface(if selected {
+        theme.palette().primary
+    } else {
+        crate::theme::text_muted(theme)
+    })
 }
 
 fn thumbnail_surface(theme: &Theme) -> container::Style {

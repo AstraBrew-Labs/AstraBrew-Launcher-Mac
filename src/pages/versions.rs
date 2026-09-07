@@ -13,7 +13,7 @@ use lucide_icons::Icon;
 use crate::lang::text;
 use crate::theme::button_style;
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS, WHITE, fonts, icons,
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS, WHITE, icons,
 };
 
 /// 版本页当前展示的实例类型。
@@ -874,7 +874,7 @@ fn tab_button(
     let color = if active { BLUE_600 } else { INK_MUTED };
     button(
         column![
-            container(text(label).size(13).font(fonts::MEDIUM).color(color))
+            container(text(label).size(13).font(crate::core::typography::medium()).color(color))
                 .height(32)
                 .align_y(Alignment::Center),
             container(space::vertical())
@@ -897,7 +897,7 @@ fn notice_badge(notice: &str) -> Element<'_, VersionMessage> {
             icons::icon(Icon::Info, 13, BLUE_600),
             text(notice)
                 .size(10)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(6)
@@ -965,7 +965,7 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 crate::theme::subtle_icon(Icon::FolderSearch, 36),
                 text("尚未发现本地实例")
                     .size(13)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
                 button(text("开始扫描"))
                     .on_press(VersionMessage::ScanLocal)
@@ -1014,7 +1014,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                     15,
                     if current { INK_SUBTLE } else { INK_MUTED }
                 ),
-                text(label).size(12).font(fonts::MEDIUM),
+                text(label).size(12).font(crate::core::typography::medium()),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -1045,7 +1045,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
         button(
             row![
                 icons::icon(Icon::Download, 15, WHITE),
-                text("安装依赖").size(12).font(fonts::MEDIUM).color(WHITE),
+                text("安装依赖").size(12).font(crate::core::typography::medium()).color(WHITE),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -1072,7 +1072,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
             icons::icon(Icon::Trash2, 15, DANGER),
             text("从列表中移除")
                 .size(12)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .color(DANGER),
         ]
         .spacing(7)
@@ -1100,7 +1100,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                         format!("v{}", item.version)
                     })
                     .size(15)
-                    .font(fonts::MEDIUM),
+                    .font(crate::core::typography::medium()),
                     current_badge(current),
                 ]
                 .spacing(8)
@@ -1109,7 +1109,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                     crate::theme::subtle_icon(Icon::MapPin, 12),
                     text(&item.path)
                         .size(10)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                 ]
                 .spacing(5)
@@ -1163,7 +1163,7 @@ fn online_panel(state: &VersionState) -> Element<'_, VersionMessage> {
 
 fn branch_button(branch: TavernBranch, current: TavernBranch) -> Element<'static, VersionMessage> {
     let active = branch == current;
-    button(text(branch.label()).size(11).font(fonts::MEDIUM))
+    button(text(branch.label()).size(11).font(crate::core::typography::medium()))
         .on_press(VersionMessage::SelectBranch(branch))
         .padding([6, 10])
         .style(move |_theme, status| branch_button_style(active, status))
@@ -1201,11 +1201,11 @@ fn online_loading_panel(state: &VersionState) -> Element<'_, VersionMessage> {
             crate::theme::subtle_icon(Icon::LoaderCircle, 34),
             text(format!("正在获取酒馆版本{dots}"))
                 .size(14)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             text("正在读取镜像与直连数据，操作区域将在完成后显示。")
                 .size(11)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(10)
@@ -1224,7 +1224,7 @@ fn online_error_panel(state: &VersionState) -> Element<'_, VersionMessage> {
             crate::theme::subtle_icon(Icon::CloudOff, 34),
             text("在线版本获取失败")
                 .size(14)
-                .font(fonts::MEDIUM)
+                .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             state
                 .notice
@@ -1232,7 +1232,7 @@ fn online_error_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .map(text)
                 .unwrap_or_else(|| text("没有可用的缓存版本。"))
                 .size(11)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             button("重新获取")
                 .on_press(VersionMessage::RefreshOnline)
@@ -1260,7 +1260,7 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let picker_label = selected.unwrap_or("选择版本");
     let picker = button(
         row![
-            text(picker_label).size(13).font(fonts::REGULAR),
+            text(picker_label).size(13).font(crate::core::typography::regular()),
             space::horizontal(),
             icons::icon(Icon::ChevronDown, 15, INK_MUTED),
         ]
@@ -1273,7 +1273,7 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let action = selected_release
         .map(|release| online_action_button(state, release))
         .unwrap_or_else(|| {
-            button(text("暂无可用版本").size(13).font(fonts::MEDIUM))
+            button(text("暂无可用版本").size(13).font(crate::core::typography::medium()))
                 .width(Fill)
                 .padding([12, 16])
                 .style(button_style(ButtonVariant::Secondary))
@@ -1282,12 +1282,12 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let action = container(action).width(Fill).max_width(430);
     let status = selected_release
         .map(online_release_status)
-        .unwrap_or_else(|| text("请选择一个版本").size(11).font(fonts::REGULAR).into());
+        .unwrap_or_else(|| text("请选择一个版本").size(11).font(crate::core::typography::regular()).into());
     let stale_hint: Element<'_, VersionMessage> =
         if state.online_status == OnlineVersionsStatus::StaleCache {
             text("当前显示的是旧缓存版本。")
                 .size(10)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .color(Color::from_rgb8(190, 120, 20))
                 .into()
         } else {
@@ -1300,10 +1300,10 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .width(150)
                 .height(150)
                 .content_fit(ContentFit::Contain),
-            text("SillyTavern").size(20).font(fonts::MEDIUM),
+            text("SillyTavern").size(20).font(crate::core::typography::medium()),
             text("选择需要安装或使用的酒馆版本")
                 .size(11)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             container(picker).width(Fill).max_width(430),
             status,
@@ -1336,7 +1336,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         button(
             row![
                 icons::icon(Icon::CircleCheck, 16, SUCCESS),
-                text("当前版本").size(13).font(fonts::MEDIUM)
+                text("当前版本").size(13).font(crate::core::typography::medium())
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1351,7 +1351,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 icons::icon(Icon::Power, 16, WHITE),
                 text("切换到此版本")
                     .size(13)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .color(WHITE)
             ]
             .spacing(8)
@@ -1366,7 +1366,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         button(
             row![
                 icons::icon(Icon::Download, 16, WHITE),
-                text("安装").size(13).font(fonts::MEDIUM).color(WHITE)
+                text("安装").size(13).font(crate::core::typography::medium()).color(WHITE)
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1383,11 +1383,11 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .width(150)
                 .height(150)
                 .content_fit(ContentFit::Contain),
-            text("SillyTavern staging").size(20).font(fonts::MEDIUM),
-            text(version).size(13).font(fonts::MEDIUM).color(BLUE_600),
+            text("SillyTavern staging").size(20).font(crate::core::typography::medium()),
+            text(version).size(13).font(crate::core::typography::medium()).color(BLUE_600),
             text(detail)
                 .size(11)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             container(action).width(Fill).max_width(430),
         ]
@@ -1409,17 +1409,17 @@ fn short_sha(sha: &str) -> &str {
 fn staging_confirm_modal() -> Element<'static, VersionMessage> {
     let panel = container(
         column![
-            text("切换到开发版？").size(18).font(fonts::MEDIUM),
+            text("切换到开发版？").size(18).font(crate::core::typography::medium()),
             text("开发版包含最新功能，但请注意它可能随时出现问题。")
                 .size(12)
-                .font(fonts::REGULAR)
+                .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             row![
-                button(text("取消").size(12).font(fonts::MEDIUM))
+                button(text("取消").size(12).font(crate::core::typography::medium()))
                     .on_press(VersionMessage::CancelStagingRisk)
                     .padding([8, 16])
                     .style(button_style(ButtonVariant::Secondary)),
-                button(text("确认切换").size(12).font(fonts::MEDIUM).color(WHITE))
+                button(text("确认切换").size(12).font(crate::core::typography::medium()).color(WHITE))
                     .on_press(VersionMessage::ConfirmStagingRisk)
                     .padding([8, 16])
                     .style(button_style(ButtonVariant::Primary)),
@@ -1466,24 +1466,24 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
                         row![
                             text(format!("v{}", release.version))
                                 .size(13)
-                                .font(fonts::MEDIUM),
-                            text(status).size(10).font(fonts::REGULAR).color(SUCCESS),
+                                .font(crate::core::typography::medium()),
+                            text(status).size(10).font(crate::core::typography::regular()).color(SUCCESS),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
                         text(format!("发布于 {}", release.published_at))
                             .size(10)
-                            .font(fonts::REGULAR)
+                            .font(crate::core::typography::regular())
                             .style(crate::theme::muted_text_style),
                         if release.mirror_available {
                             text("镜像已同步")
                                 .size(10)
-                                .font(fonts::REGULAR)
+                                .font(crate::core::typography::regular())
                                 .color(SUCCESS)
                         } else {
                             text("镜像未同步，将使用直连")
                                 .size(10)
-                                .font(fonts::REGULAR)
+                                .font(crate::core::typography::regular())
                                 .color(Color::from_rgb8(190, 120, 20))
                         },
                     ]
@@ -1510,7 +1510,7 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
     let panel = container(
         column![
             row![
-                text("选择酒馆版本").size(18).font(fonts::MEDIUM),
+                text("选择酒馆版本").size(18).font(crate::core::typography::medium()),
                 space::horizontal(),
                 button(icons::icon(Icon::X, 16, INK_MUTED))
                     .on_press(VersionMessage::CloseVersionSelector)
@@ -1519,11 +1519,15 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
             ]
             .align_y(Alignment::Center),
             rule::horizontal(1.0).style(crate::theme::separator_style),
-            scrollable(rows).height(360),
+            scrollable(rows).height(if crate::core::typography::current_ui_scale() >= 1.35 {
+                250
+            } else {
+                360
+            }),
         ]
         .spacing(14),
     )
-    .width(560)
+    .width(Fill).max_width(560)
     .padding(20)
     .style(install_modal_style);
     stack![
@@ -1573,7 +1577,7 @@ fn release_log_modal(state: &VersionState) -> Element<'_, VersionMessage> {
     let body: Element<'_, VersionMessage> = if state.markdown_items.is_empty() {
         text("该版本没有更新日志。")
             .size(12)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .into()
     } else {
         markdown::view(&state.markdown_items, Theme::Dark)
@@ -1586,10 +1590,10 @@ fn release_log_modal(state: &VersionState) -> Element<'_, VersionMessage> {
                 column![
                     text(format!("SillyTavern v{title}"))
                         .size(18)
-                        .font(fonts::MEDIUM),
+                        .font(crate::core::typography::medium()),
                     text("版本更新日志")
                         .size(11)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                 ]
                 .spacing(4),
@@ -1601,11 +1605,17 @@ fn release_log_modal(state: &VersionState) -> Element<'_, VersionMessage> {
             ]
             .align_y(Alignment::Center),
             rule::horizontal(1.0).style(crate::theme::separator_style),
-            scrollable(container(body).width(Fill).padding(8)).height(420),
+            scrollable(container(body).width(Fill).padding(8)).height(
+                if crate::core::typography::current_ui_scale() >= 1.35 {
+                    270
+                } else {
+                    420
+                },
+            ),
         ]
         .spacing(14),
     )
-    .width(700)
+    .width(Fill).max_width(700)
     .padding(20)
     .style(install_modal_style);
     stack![
@@ -1637,7 +1647,7 @@ fn online_action_button<'a>(
         return button(
             row![
                 icons::icon(Icon::CircleCheck, 16, SUCCESS),
-                text("当前版本").size(13).font(fonts::MEDIUM),
+                text("当前版本").size(13).font(crate::core::typography::medium()),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1654,7 +1664,7 @@ fn online_action_button<'a>(
                 icons::icon(Icon::Power, 16, WHITE),
                 text("切换到此版本")
                     .size(13)
-                    .font(fonts::MEDIUM)
+                    .font(crate::core::typography::medium())
                     .color(WHITE),
             ]
             .spacing(8)
@@ -1669,7 +1679,7 @@ fn online_action_button<'a>(
         button(
             row![
                 icons::icon(Icon::Download, 16, WHITE),
-                text("安装").size(13).font(fonts::MEDIUM).color(WHITE),
+                text("安装").size(13).font(crate::core::typography::medium()).color(WHITE),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1686,18 +1696,18 @@ fn online_release_status(release: &OnlineRelease) -> Element<'static, VersionMes
     let mirror = if release.mirror_available {
         text("镜像已同步")
             .size(10)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .color(SUCCESS)
     } else {
         text("镜像未同步，将使用直连")
             .size(10)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .color(Color::from_rgb8(190, 120, 20))
     };
     row![
         text(format!("发布于 {}", release.published_at))
             .size(10)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
         mirror,
     ]
@@ -1741,7 +1751,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     let mut footer = row![
         text(status)
             .size(11)
-            .font(fonts::MEDIUM)
+            .font(crate::core::typography::medium())
             .color(status_color),
         space::horizontal(),
     ]
@@ -1750,7 +1760,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     .width(Fill);
     if task.can_close {
         footer = footer.push(
-            button(text("关闭").size(12).font(fonts::MEDIUM))
+            button(text("关闭").size(12).font(crate::core::typography::medium()))
                 .on_press(VersionMessage::CloseInstallModal)
                 .height(34)
                 .padding([7, 14])
@@ -1761,7 +1771,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     let error_detail: Element<'_, VersionMessage> = match task.error.as_deref() {
         Some(error) => text(error)
             .size(11)
-            .font(fonts::REGULAR)
+            .font(crate::core::typography::regular())
             .color(DANGER)
             .into(),
         None => text("").size(1).into(),
@@ -1771,10 +1781,10 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
         container(
             column![
                 column![
-                    text("酒馆安装").size(18).font(fonts::MEDIUM),
+                    text("酒馆安装").size(18).font(crate::core::typography::medium()),
                     text(format!("正在处理 SillyTavern v{version}"))
                         .size(12)
-                        .font(fonts::REGULAR)
+                        .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
                 ]
                 .spacing(4),
@@ -1784,7 +1794,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
                     container(
                         text(&task.logs)
                             .size(11)
-                            .font(fonts::REGULAR)
+                            .font(crate::core::typography::regular())
                             .style(crate::theme::text_style),
                     )
                     .width(Fill)
@@ -1798,7 +1808,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
             ]
             .spacing(16),
         )
-        .width(620)
+        .width(Fill).max_width(620)
         .padding(20)
         .style(install_modal_style),
     )
@@ -1832,7 +1842,7 @@ fn install_step(
     container(
         column![
             icons::icon(icon, 20, color),
-            text(label).size(11).font(fonts::MEDIUM).color(color)
+            text(label).size(11).font(crate::core::typography::medium()).color(color)
         ]
         .spacing(5)
         .align_x(Alignment::Center),
@@ -1866,7 +1876,7 @@ fn panel_header<'a>(
 ) -> Element<'a, VersionMessage> {
     let mut title_row = row![
         crate::theme::muted_icon(icon, 19),
-        text(title).size(15).font(fonts::MEDIUM),
+        text(title).size(15).font(crate::core::typography::medium()),
     ]
     .spacing(8)
     .align_y(Alignment::Center);
@@ -1875,7 +1885,7 @@ fn panel_header<'a>(
             container(
                 text(meta)
                     .size(9)
-                    .font(fonts::REGULAR)
+                    .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
             )
             .padding([5, 9])
@@ -1924,7 +1934,7 @@ fn icon_button_enabled(
 
     tooltip(
         action,
-        container(text(label).size(10).font(fonts::REGULAR).color(WHITE))
+        container(text(label).size(10).font(crate::core::typography::regular()).color(WHITE))
             .padding([6, 9])
             .style(tooltip_surface),
         tooltip::Position::Bottom,
@@ -1946,7 +1956,7 @@ fn optional_badge(
     if !show {
         return space::horizontal().width(0).into();
     }
-    container(text(label).size(8).font(fonts::MEDIUM).color(color))
+    container(text(label).size(8).font(crate::core::typography::medium()).color(color))
         .padding([4, 7])
         .style(move |_theme| badge_surface(color))
         .into()

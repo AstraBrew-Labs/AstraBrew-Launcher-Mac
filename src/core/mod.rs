@@ -7,3 +7,9 @@ pub(crate) mod settings;
 pub(crate) mod local_instances;
 
 pub(crate) mod tavern_config;
+pub(crate) mod typography;
+
+#[cfg(target_os = "macos")]
+pub(crate) mod desktop_webview;
+pub(crate) mod pm2;
+pub(crate) mod tavern_process;
