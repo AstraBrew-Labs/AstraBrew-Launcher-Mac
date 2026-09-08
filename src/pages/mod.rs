@@ -2,17 +2,17 @@
 //!
 //! 设置页和酒馆配置页已经接入真实视图，其余页面暂时提供居中的占位内容。
 
-use iced::widget::{button, column, container, image, pick_list, row, scrollable, space};
-use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Theme};
+use iced::widget::{button, column, container, image, mouse_area, row, scrollable, space, stack};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Padding, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, SUCCESS, ToggleButtonGroupItem, WHITE, icons, pick_list_handle,
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, ToggleButtonGroupItem, WHITE, icons,
 };
 
 use crate::app::Message;
 use crate::lang::text;
-use crate::theme::{button_style, pick_list_menu_style, pick_list_style};
+use crate::theme::button_style;
 pub(crate) mod console;
 pub(crate) mod extensions;
 pub(crate) mod resource_manage;
@@ -24,12 +24,22 @@ use self::console::{ConsoleState, ConsoleStatus, console_view};
 use self::extensions::{ExtensionsState, extensions_view};
 use self::resource_manage::{ResourceManageState, resource_manage_view};
 use self::settings::{
-    QuickStartMode, ServerServiceMode, SettingsState, TavernVersion, settings_view,
+    QuickStartMode, ServerServiceMode, SettingsState, settings_view,
 };
 use self::tavern::{BrowserType, TavernState, tavern_view};
-use self::versions::{VersionState, versions_view};
+use self::versions::{DependencyStatus, VersionSource, VersionState, versions_view};
 
 const HOME_HERO_HEIGHT: f32 = 240.0;
+
+/// 主页版本快捷菜单中的一个可切换实例。
+///
+/// 这里保存完整路径而不是只保存版本号，因为本地可以同时存在多个相同版本的实例。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HomeTavernVersion {
+    pub version: String,
+    pub source: VersionSource,
+    pub path: String,
+}
 
 /// 主界面导航页面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,12 +96,19 @@ pub fn page_view<'a>(
     settings: &'a SettingsState,
     tavern: &'a TavernState,
     versions: &'a VersionState,
+    home_version_selector_open: bool,
     extensions: &'a ExtensionsState,
     resources: &'a ResourceManageState,
     console: &'a ConsoleState,
 ) -> Element<'a, Message> {
     match page {
-        Page::Home => home_view(settings, tavern, console),
+        Page::Home => home_view(
+            settings,
+            tavern,
+            versions,
+            console,
+            home_version_selector_open,
+        ),
         Page::Settings => settings_view(settings, console.status.is_transitioning() || console.is_running()),
         Page::TavernConfig => tavern_view(tavern).map(Message::Tavern),
         Page::Version => versions_view(versions).map(Message::Version),
@@ -105,7 +122,9 @@ pub fn page_view<'a>(
 fn home_view<'a>(
     state: &'a SettingsState,
     tavern: &'a TavernState,
+    versions: &'a VersionState,
     console: &'a ConsoleState,
+    home_version_selector_open: bool,
 ) -> Element<'a, Message> {
     let mode_controls_locked = console.status.is_transitioning() || console.is_running();
     let (launch_label, launch_icon, launch_color) = match console.status {
@@ -138,15 +157,15 @@ fn home_view<'a>(
                 ]
                 .spacing(4),
                 space::horizontal(),
-                status_badge("环境正常"),
+                environment_status_badge(state),
             ]
             .align_y(Alignment::Center),
             container(
                 row![
-                    info_item(Icon::FlaskConical, "Homebrew", "4.5.1"),
-                    info_item(Icon::GitBranch, "Git", "2.49.0"),
-                    info_item(Icon::Hexagon, "Node.js", "22.14.0"),
-                    info_item(Icon::Beer, "酒馆版本", state.tavern_version.label()),
+                    info_item_owned(Icon::FlaskConical, "Homebrew", environment_version(state.environment.homebrew.as_deref())),
+                    info_item_owned(Icon::GitBranch, "Git", environment_version(state.environment.git.as_deref())),
+                    info_item_owned(Icon::Hexagon, "Node.js", environment_version(state.environment.nodejs.as_deref())),
+                    current_tavern_info_item(versions),
                     info_item(Icon::Rocket, "启动模式", current_quick_mode(state).label()),
                 ]
                 .spacing(10),
@@ -160,25 +179,11 @@ fn home_view<'a>(
         20,
     );
 
-    let version_select = column![
-        text("酒馆版本")
-            .size(11)
-            .font(crate::core::typography::medium())
-            .style(crate::theme::muted_text_style),
-        pick_list(
-            TavernVersion::ALL,
-            Some(state.tavern_version),
-            Message::HomeTavernVersionSelected,
-        )
-        .width(170)
-        .padding([8, 11])
-        .text_size(12)
-        .font(crate::core::typography::regular())
-        .handle(pick_list_handle())
-        .style(pick_list_style)
-        .menu_style(pick_list_menu_style),
-    ]
-    .spacing(6);
+    let version_select = home_version_selector(
+        versions,
+        home_version_selector_open,
+        mode_controls_locked,
+    );
 
     let selected_mode = current_quick_mode(state);
     let mode_items = [
@@ -316,7 +321,7 @@ fn home_view<'a>(
     };
     let launch_panel = crate::theme::card(launch_content, Fill, 18);
 
-    container(
+    let home_content = container(
         column![
             scrollable(
                 column![
@@ -345,8 +350,33 @@ fn home_view<'a>(
     .width(Fill)
     .height(Fill)
     .padding([26, 30])
-    .style(crate::theme::canvas_style)
-    .into()
+    .style(crate::theme::canvas_style);
+
+    if home_version_selector_open {
+        // 根 Stack 的第一层决定主页尺寸；菜单放在第二层并向上浮动，
+        // 不会把启动面板或上方内容向外推开。
+        stack![
+            home_content,
+            // 全屏透明点击层负责消费菜单外的点击，避免事件穿透到主页控件。
+            mouse_area(container(space::horizontal()).width(Fill).height(Fill))
+                .on_press(Message::HomeTavernVersionSelectorClosed),
+            container(home_version_dropdown(versions, mode_controls_locked))
+                .width(Fill)
+                .height(Fill)
+                .padding(Padding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 54.0,
+                    left: 48.0,
+                })
+                .align_x(Alignment::Start)
+                .align_y(Alignment::End),
+        ]
+        .clip(false)
+        .into()
+    } else {
+        home_content.into()
+    }
 }
 
 fn current_quick_mode(state: &SettingsState) -> QuickStartMode {
@@ -485,6 +515,313 @@ fn browser_type_from_index(index: usize) -> BrowserType {
     }
 }
 
+/// 主页版本快捷切换按钮；下拉内容由外层主页 Stack 以 overlay 方式承载。
+fn home_version_selector<'a>(
+    versions: &'a VersionState,
+    open: bool,
+    locked: bool,
+) -> Element<'a, Message> {
+    let selected_label = current_tavern_label(versions);
+    let selected_color = versions
+        .current_source
+        .map(VersionSource::color)
+        .unwrap_or_else(|| crate::theme::text_muted(&crate::theme::light_theme()));
+    let trigger = button(
+        row![
+            icons::icon(Icon::Beer, 15, selected_color),
+            text(selected_label)
+                .size(12)
+                .font(crate::core::typography::medium())
+                .style(move |_theme| iced::widget::text::Style {
+                    color: Some(selected_color),
+                }),
+            space::horizontal(),
+            icons::icon(
+                if open { Icon::ChevronUp } else { Icon::ChevronDown },
+                14,
+                INK_MUTED,
+            ),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(230)
+    .padding([8, 11])
+    .style(move |theme, status| {
+        let hovered = matches!(
+            status,
+            iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+        );
+        iced::widget::button::Style {
+            background: Some(Background::Color(if hovered {
+                crate::theme::surface_alt(theme)
+            } else {
+                crate::theme::surface(theme)
+            })),
+            border: Border {
+                radius: 8.0.into(),
+                color: source_selected_border(theme, selected_color),
+                width: 1.0,
+            },
+            text_color: crate::theme::text(theme),
+            ..iced::widget::button::Style::default()
+        }
+    });
+    let trigger = if locked {
+        trigger
+    } else {
+        trigger.on_press(Message::HomeTavernVersionSelectorToggled)
+    };
+    column![
+        text("酒馆版本")
+            .size(11)
+            .font(crate::core::typography::medium())
+            .style(crate::theme::muted_text_style),
+        trigger,
+    ]
+    .spacing(6)
+    .into()
+}
+
+/// 主页版本菜单，作为主页 Stack 的上层内容显示，不参与主页布局计算。
+fn home_version_dropdown<'a>(
+    versions: &'a VersionState,
+    locked: bool,
+) -> Element<'a, Message> {
+    let version_items = home_version_items(versions);
+    let mut menu = column![].spacing(2).width(230);
+
+    for item in version_items.iter().cloned() {
+        let selected = versions.current_source == Some(item.source)
+            && versions.current_path.as_deref() == Some(item.path.as_str())
+            && versions.current_version.as_deref() == Some(item.version.as_str());
+        let source_color = item.source.color();
+        let label = format!(
+            "{} - {}",
+            item.version,
+            crate::lang::display_label(item.source.label())
+        );
+        let item_button = button(
+            row![
+                container(space::horizontal())
+                    .width(4)
+                    .height(22)
+                    .style(move |_theme| iced::widget::container::Style {
+                        background: Some(Background::Color(source_color)),
+                        ..iced::widget::container::Style::default()
+                    }),
+                text(label)
+                    .size(12)
+                    .font(crate::core::typography::medium())
+                    .style(move |_theme| iced::widget::text::Style {
+                        color: Some(source_color),
+                    }),
+                space::horizontal(),
+                if selected {
+                    icons::icon(Icon::Check, 14, source_color)
+                } else {
+                    icons::icon(Icon::Circle, 14, INK_MUTED)
+                },
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .width(Fill)
+        .padding([8, 10])
+        .style(move |theme, status| {
+            let hovered = matches!(
+                status,
+                iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+            );
+            iced::widget::button::Style {
+                background: (selected || hovered).then_some(Background::Color(if crate::theme::is_dark(theme) {
+                    Color::from_rgba(source_color.r, source_color.g, source_color.b, 0.16)
+                } else {
+                    Color::from_rgba(source_color.r, source_color.g, source_color.b, 0.08)
+                })),
+                text_color: crate::theme::text(theme),
+                ..iced::widget::button::Style::default()
+            }
+        });
+        if !locked && !selected {
+            menu = menu.push(item_button.on_press(Message::HomeTavernVersionSelected(item)));
+        } else {
+            menu = menu.push(item_button);
+        }
+    }
+
+    if version_items.is_empty() {
+        menu = menu.push(
+            container(text("暂无可切换的酒馆实例").size(12).style(crate::theme::muted_text_style))
+                .padding([10, 12]),
+        );
+    }
+
+    container(scrollable(menu).height(Length::Fixed(220.0)))
+        .padding([4, 0])
+        .style(home_version_menu_style)
+        .into()
+}
+
+/// 主页快捷菜单按照本地列表、在线实例的顺序提供真实可用项。
+fn home_version_items(versions: &VersionState) -> Vec<HomeTavernVersion> {
+    let mut items = versions
+        .local_instances
+        .iter()
+        .filter(|item| item.dependencies == DependencyStatus::Ready)
+        .map(|item| HomeTavernVersion {
+            version: item.version.clone(),
+            source: VersionSource::Local,
+            path: item.path.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    // 在线快捷切换只展示已经完成安装的版本，未安装版本必须通过版本管理页安装，
+    // 避免主页菜单出现点击后才开始下载的“伪快捷切换”选项。
+    let online_path = versions
+        .online_instance_path
+        .clone()
+        .unwrap_or_else(|| crate::core::network::sillytavern_install_dir().to_string_lossy().into_owned());
+    for release in versions.online_releases.iter().filter(|release| release.installed) {
+        items.push(HomeTavernVersion {
+            version: release.version.clone(),
+            source: VersionSource::Online,
+            path: online_path.clone(),
+        });
+    }
+    if versions.staging_installed {
+        items.push(HomeTavernVersion {
+            version: "staging".to_owned(),
+            source: VersionSource::Online,
+            path: online_path.clone(),
+        });
+    }
+
+    // 在线版本列表尚未返回时，使用启动时从 Git 仓库恢复的真实版本。
+    if !items.iter().any(|item| item.source == VersionSource::Online)
+        && versions.online_instance_exists
+        && versions.current_source == Some(VersionSource::Online)
+        && let Some(version) = versions.current_version.as_ref()
+    {
+        items.push(HomeTavernVersion {
+            version: version.clone(),
+            source: VersionSource::Online,
+            path: online_path,
+        });
+    }
+    items
+}
+
+fn current_tavern_label(versions: &VersionState) -> String {
+    match (&versions.current_version, versions.current_source) {
+        (Some(version), Some(source)) => format!(
+            "{} - {}",
+            version,
+            crate::lang::display_label(source.label())
+        ),
+        _ => "请选择酒馆版本".to_owned(),
+    }
+}
+
+fn current_tavern_info_item<'a>(versions: &'a VersionState) -> Element<'a, Message> {
+    let value = current_tavern_label(versions);
+    let color = versions
+        .current_source
+        .map(VersionSource::color)
+        .unwrap_or(BLUE_600);
+    container(
+        row![
+            container(icons::icon(Icon::Beer, 16, color))
+                .width(28)
+                .height(28)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(icon_surface),
+            column![
+                text("酒馆版本")
+                    .size(11)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+                text(value)
+                    .size(13)
+                    .font(crate::core::typography::medium())
+                    .style(move |_theme| iced::widget::text::Style { color: Some(color) }),
+            ]
+            .spacing(2),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .into()
+}
+
+fn info_item_owned<'a>(
+    icon: Icon,
+    label: &'static str,
+    value: String,
+) -> Element<'a, Message> {
+    container(
+        row![
+            container(icons::icon(icon, 16, BLUE_600))
+                .width(28)
+                .height(28)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(icon_surface),
+            column![
+                text(label)
+                    .size(11)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+                text(value).size(13).font(crate::core::typography::medium()),
+            ]
+            .spacing(2),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .into()
+}
+
+fn environment_version(value: Option<&str>) -> String {
+    value.map(str::to_owned).unwrap_or_else(|| "未检测到".to_owned())
+}
+
+fn environment_status_badge(state: &SettingsState) -> Element<'static, Message> {
+    let ready = state.environment.git.is_some() && state.environment.nodejs.is_some();
+    if ready {
+        status_badge("环境正常")
+    } else {
+        status_badge_with_color(
+            "环境不完整",
+            Color::from_rgb8(245, 165, 36),
+            Icon::TriangleAlert,
+        )
+    }
+}
+
+fn source_selected_border(theme: &Theme, color: Color) -> Color {
+    if color == crate::theme::text_muted(theme) {
+        crate::theme::line(theme)
+    } else {
+        Color::from_rgba(color.r, color.g, color.b, 0.45)
+    }
+}
+
+fn home_version_menu_style(theme: &Theme) -> iced::widget::container::Style {
+    iced::widget::container::Style {
+        background: Some(Background::Color(crate::theme::surface(theme))),
+        border: Border {
+            radius: 8.0.into(),
+            color: crate::theme::line(theme),
+            width: 1.0,
+        },
+        ..iced::widget::container::Style::default()
+    }
+}
+
 fn info_item(icon: Icon, label: &'static str, value: &'static str) -> Element<'static, Message> {
     container(
         row![
@@ -511,16 +848,27 @@ fn info_item(icon: Icon, label: &'static str, value: &'static str) -> Element<'s
 }
 
 fn status_badge(label: &'static str) -> Element<'static, Message> {
+    status_badge_with_color(label, SUCCESS, Icon::CircleCheck)
+}
+
+fn status_badge_with_color(
+    label: &'static str,
+    color: Color,
+    icon: Icon,
+) -> Element<'static, Message> {
     container(
         row![
-            icons::icon(Icon::CircleCheck, 14, SUCCESS),
-            text(label).size(11).font(crate::core::typography::medium()).color(SUCCESS),
+            icons::icon(icon, 14, color),
+            text(label)
+                .size(11)
+                .font(crate::core::typography::medium())
+                .color(color),
         ]
         .spacing(5)
         .align_y(Alignment::Center),
     )
     .padding([6, 10])
-    .style(status_surface)
+    .style(move |theme| status_surface_with_color(theme, color))
     .into()
 }
 
@@ -564,17 +912,13 @@ fn icon_surface(theme: &Theme) -> iced::widget::container::Style {
     }
 }
 
-fn status_surface(theme: &Theme) -> iced::widget::container::Style {
+fn status_surface_with_color(theme: &Theme, color: Color) -> iced::widget::container::Style {
     iced::widget::container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            theme.palette().success.r,
-            theme.palette().success.g,
-            theme.palette().success.b,
-            if crate::theme::is_dark(theme) {
-                0.18
-            } else {
-                0.12
-            },
+            color.r,
+            color.g,
+            color.b,
+            if crate::theme::is_dark(theme) { 0.18 } else { 0.12 },
         ))),
         border: Border {
             radius: 20.0.into(),

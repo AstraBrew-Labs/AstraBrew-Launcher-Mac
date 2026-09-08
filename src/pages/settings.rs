@@ -83,30 +83,6 @@ impl QuickStartMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TavernVersion {
-    #[default]
-    V1_15_0,
-    V1_14_8,
-    V1_13_5,
-}
-impl TavernVersion {
-    pub const ALL: [Self; 3] = [Self::V1_15_0, Self::V1_14_8, Self::V1_13_5];
-
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::V1_15_0 => "1.15.0",
-            Self::V1_14_8 => "1.14.8",
-            Self::V1_13_5 => "1.13.5",
-        }
-    }
-}
-impl fmt::Display for TavernVersion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ServerServiceMode {
     #[default]
     Lan,
@@ -365,7 +341,6 @@ pub struct SettingsState {
     pub auto_start: bool,
     pub cpu_cores: CpuCores,
     pub start_mode: StartMode,
-    pub tavern_version: TavernVersion,
     pub auto_stop_tavern_on_window_close: bool,
     pub tavern_export_path: String,
     pub server_mode_enabled: bool,
@@ -411,7 +386,6 @@ impl Default for SettingsState {
             auto_start: false,
             cpu_cores: CpuCores::Auto,
             start_mode: StartMode::Normal,
-            tavern_version: TavernVersion::default(),
             auto_stop_tavern_on_window_close: true,
             tavern_export_path: "~/Downloads".into(),
             server_mode_enabled: false,

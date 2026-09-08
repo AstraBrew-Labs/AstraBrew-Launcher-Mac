@@ -759,6 +759,7 @@ mod tests {
             window_position: None,
             system_theme: iced::theme::Mode::Light,
             window_ready: false,
+            home_version_selector_open: false,
         }
     }
     fn instance(path: &str, dependencies: DependencyStatus) -> LocalInstance {

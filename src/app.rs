@@ -42,12 +42,13 @@ use crate::pages::settings::{
     CpuCores, DisplayLanguage, DownloadChannelTestState, EnvironmentDependency,
     EnvironmentTaskState, GithubLiveItem, GithubLiveItemStatus, GithubTestState, NpmRegistry,
     ProxyMode, QuickStartMode, ServerServiceMode, SettingsAction, SettingsState, StartMode,
-    SystemProxyStatus, TavernDataMode, TavernVersion, ThemeMode,
+    SystemProxyStatus, TavernDataMode, ThemeMode,
 };
 use crate::pages::tavern::{BrowserType, TavernMessage, TavernState};
 use crate::pages::versions::{TavernBranch, VersionMessage, VersionSource, VersionState};
 use crate::theme::button_style;
 use crate::{pages, sidebar};
+use crate::pages::HomeTavernVersion;
 
 mod local_instances;
 mod tavern_config;
@@ -169,7 +170,9 @@ pub(crate) enum Message {
     /// 请求一键启动酒馆
     LaunchTavern,
     /// 主页快捷切换酒馆版本
-    HomeTavernVersionSelected(TavernVersion),
+    HomeTavernVersionSelectorToggled,
+    HomeTavernVersionSelectorClosed,
+    HomeTavernVersionSelected(HomeTavernVersion),
     /// 修改酒馆启动模式；主页与设置页共用此消息，主页只提供快捷入口。
     SettingsLaunchModeSelected(QuickStartMode),
     /// 主页普通模式快捷切换浏览器
@@ -374,6 +377,8 @@ pub struct Launcher {
     system_theme: theme::Mode,
     /// 窗口完成首次固定尺寸校准后才启用用户界面缩放。
     window_ready: bool,
+    /// 主页版本快捷切换菜单是否展开。
+    home_version_selector_open: bool,
 }
 
 impl Launcher {
@@ -497,6 +502,7 @@ impl Launcher {
             window_position: preferences.window_position,
             system_theme: theme::Mode::Light,
             window_ready: false,
+            home_version_selector_open: false,
         };
         if launcher.settings.server_mode_enabled {
             launcher.console.network_mode = Some(match launcher.settings.server_service_mode {
@@ -663,6 +669,8 @@ impl Launcher {
                 self.screen = Screen::Main;
             }
             Message::Navigate(page) => {
+                // 离开主页或点击侧边栏时收起快捷版本菜单。
+                self.home_version_selector_open = false;
                 // 切换主界面当前页面
                 self.page = page;
                 if page == Page::TavernConfig {
@@ -689,6 +697,7 @@ impl Launcher {
                 }
             }
             Message::LaunchTavern => {
+                self.home_version_selector_open = false;
                 self.page = Page::Console;
                 // 先消费后台恢复事件，避免把已经由 PM2 运行的服务当作未启动。
                 let _ = self.console.update(ConsoleMessage::Poll);
@@ -698,8 +707,31 @@ impl Launcher {
                     self.request_tavern_start();
                 }
             }
+            Message::HomeTavernVersionSelectorToggled => {
+                // 酒馆运行或切换过程中锁定快捷菜单，避免启动参数与当前实例不一致。
+                if !self.launch_mode_controls_locked() {
+                    self.home_version_selector_open = !self.home_version_selector_open;
+                }
+            }
+            Message::HomeTavernVersionSelectorClosed => {
+                // 点击菜单以外的区域时关闭下拉菜单，但不改变当前版本。
+                self.home_version_selector_open = false;
+            }
             Message::HomeTavernVersionSelected(version) => {
-                self.settings.tavern_version = version;
+                self.home_version_selector_open = false;
+                if self.launch_mode_controls_locked() {
+                    return Task::none();
+                }
+                // 主页快捷入口复用版本页的真实切换流程，确保依赖检查、在线实例
+                // 校验和错误提示与版本管理页面完全一致。
+                match version.source {
+                    VersionSource::Local => {
+                        self.handle_version_message(VersionMessage::SwitchLocal(version.path));
+                    }
+                    VersionSource::Online => {
+                        self.handle_version_message(VersionMessage::SwitchOnline(version.version));
+                    }
+                }
             }
             Message::SettingsLaunchModeSelected(mode) => {
                 let _ = self.console.update(ConsoleMessage::Poll);
@@ -2697,6 +2729,7 @@ impl Launcher {
                 &self.settings,
                 &self.tavern,
                 &self.versions,
+                self.home_version_selector_open,
                 &self.extensions,
                 &self.resources,
                 &self.console,
