@@ -21,6 +21,8 @@ qrcode = { version = "0.14", default-features = false }
 yaml-edit = "=0.3.1"
 reqwest = { version = "0.12", default-features = true, features = ["blocking", "socks"] }
 rfd = "0.15"
+# 安全校验并解压离线扩展 ZIP 包。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # 枚举并读取 macOS 已安装字体，供界面动态切换。
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 

@@ -735,6 +735,8 @@ mod tests {
             version_catalog_receiver: None,
             version_install_receiver: None,
             version_install_cancel: None,
+            extension_task_receiver: None,
+            extension_task_cancel: None,
             tavern: Default::default(),
             versions: VersionState::default(),
             extensions: Default::default(),

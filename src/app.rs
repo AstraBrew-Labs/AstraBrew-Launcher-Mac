@@ -21,6 +21,9 @@ use astra_ui::{
     ProgressBar, ProgressBarColor, SUCCESS, WHITE, tag_style,
 };
 
+use crate::core::extensions::{
+    ExtensionEvent, GitInstallRequest, GithubProxyConfig, OfflineInstallRequest, OperationSuccess,
+};
 use crate::core::local_instances::DependencyStatus;
 use crate::core::network::{
     DownloadChannel, DownloadChannelTestEvent, GithubTestEvent, SillyTavernCatalog,
@@ -34,7 +37,7 @@ use crate::core::tavern_process::{
 use crate::lang::{effective_language, t, text};
 use crate::pages::Page;
 use crate::pages::console::{ConsoleAction, ConsoleMessage, ConsoleState, ConsoleStatus, NetworkMode};
-use crate::pages::extensions::{ExtensionsMessage, ExtensionsState};
+use crate::pages::extensions::{ExtensionAction, ExtensionsMessage, ExtensionsState};
 use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
 #[cfg(not(test))]
 use crate::pages::settings::EnvironmentVersions;
@@ -274,6 +277,8 @@ pub(crate) enum Message {
     VersionCatalogTick,
     /// 驱动在线酒馆安装后台任务和完成倒计时。
     VersionInstallTick,
+    /// 驱动扩展扫描、安装和文件操作后台事件。
+    ExtensionTick,
     /// 独立于弹窗可见性的本地任务轮询。
     LocalInstancesTick,
     /// 配置文本去抖、外部文件轮询及保存回执。
@@ -336,6 +341,10 @@ pub struct Launcher {
     version_install_receiver: Option<Receiver<SillyTavernInstallEvent>>,
     /// 在线酒馆安装取消信号。
     version_install_cancel: Option<Arc<AtomicBool>>,
+    /// 扩展管理后台事件通道。
+    extension_task_receiver: Option<Receiver<ExtensionEvent>>,
+    /// 扩展安装任务取消标记。
+    extension_task_cancel: Option<Arc<AtomicBool>>,
     /// 酒馆配置页面的本地界面状态
     tavern: TavernState,
     /// 版本管理页面的本地界面状态
@@ -478,6 +487,8 @@ impl Launcher {
             version_catalog_receiver: None,
             version_install_receiver: None,
             version_install_cancel: None,
+            extension_task_receiver: None,
+            extension_task_cancel: None,
             tavern: TavernState::default(),
             versions,
             extensions: ExtensionsState::default(),
@@ -608,6 +619,15 @@ impl Launcher {
                 Subscription::none()
             };
 
+        let extension_timer = if self.extension_task_receiver.is_some()
+            || self.extensions.auto_detect_pending()
+            || self.extensions.auto_close_pending()
+        {
+            time::every(Duration::from_millis(100)).map(|_| Message::ExtensionTick)
+        } else {
+            Subscription::none()
+        };
+
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
         let local_timer = if self.local_needs_tick() {
@@ -637,6 +657,7 @@ impl Launcher {
             download_channel_timer,
             version_catalog_timer,
             version_install_timer,
+            extension_timer,
             window_events,
             system_theme,
         ])
@@ -675,6 +696,10 @@ impl Launcher {
                 self.page = page;
                 if page == Page::TavernConfig {
                     self.request_config_refresh();
+                }
+                if page == Page::Extensions {
+                    self.sync_extension_target();
+                    self.start_extension_scan();
                 }
                 if page == Page::Resources {
                     self.resources.configure(&self.settings, &self.versions);
@@ -1047,6 +1072,11 @@ impl Launcher {
                 }
                 self.version_install_receiver = None;
                 self.version_install_cancel = None;
+                if let Some(cancel) = &self.extension_task_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.extension_task_receiver = None;
+                self.extension_task_cancel = None;
                 self.window_position = None;
                 self.persist_preferences();
             }
@@ -1059,7 +1089,12 @@ impl Launcher {
             Message::Version(message) => self.handle_version_message(message),
             Message::VersionCatalogTick => self.poll_version_catalog(),
             Message::VersionInstallTick => self.poll_version_install(),
-            Message::Extensions(message) => self.extensions.update(message),
+            Message::Extensions(message) => return self.handle_extension_message(message),
+            Message::ExtensionTick => {
+                self.poll_extension_task();
+                self.poll_extension_auto_detect();
+                self.poll_extension_auto_close();
+            }
             Message::Resources(message) => {
                 self.resources.configure(&self.settings, &self.versions);
                 self.resources.update(message);
@@ -1132,8 +1167,11 @@ impl Launcher {
                 if self.defer_config_close(id) {
                     return Task::none();
                 }
-                // 酒馆安装期间弹窗不可关闭，也不允许通过窗口关闭绕过安装流程。
-                if self.versions.install_task.running || self.versions.local.install.running {
+                // 酒馆或扩展安装期间弹窗不可关闭，也不允许通过窗口关闭绕过安装流程。
+                if self.versions.install_task.running
+                    || self.versions.local.install.running
+                    || self.extensions.install.running
+                {
                     return Task::none();
                 }
                 if self.local_has_pending_save() {
@@ -1154,6 +1192,11 @@ impl Launcher {
                 if self.settings.remember_window_position {
                     self.persist_preferences();
                 }
+                if let Some(cancel) = &self.extension_task_cancel {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                self.extension_task_receiver = None;
+                self.extension_task_cancel = None;
                 self.stop_scan_for_exit();
                 return window::close(id);
             }
@@ -2523,6 +2566,300 @@ impl Launcher {
             self.settings.environment_task.show = false;
             self.settings.environment_task.done_at = None;
             self.settings.environment_task.started_at = None;
+        }
+    }
+
+    /// 将扩展页上下文同步到当前选中的酒馆实例。
+    fn sync_extension_target(&mut self) {
+        self.extensions.bind_target(
+            self.versions.current_path.as_deref(),
+            self.versions.current_version.as_deref(),
+            self.versions.current_source,
+        );
+    }
+
+    /// 处理扩展页意图，所有耗时操作都转入后台线程。
+    fn handle_extension_message(&mut self, message: ExtensionsMessage) -> Task<Message> {
+        let action = self.extensions.update(message);
+        match action {
+            ExtensionAction::None => Task::none(),
+            ExtensionAction::NavigateVersion => {
+                self.page = Page::Version;
+                self.start_version_catalog_load(false);
+                Task::none()
+            }
+            ExtensionAction::PickOfflineFiles => Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .add_filter("ZIP", &["zip"])
+                        .pick_files()
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|file| file.path().to_path_buf())
+                        .collect::<Vec<_>>()
+                },
+                |paths| Message::Extensions(ExtensionsMessage::OfflineFilesChosen(paths)),
+            ),
+            ExtensionAction::OpenPath(path) => {
+                if let Err(error) = std::process::Command::new("open").arg(&path).spawn() {
+                    self.extensions.set_action_error(crate::core::extensions::ExtensionError::new(
+                        "extensions.error.open_failed",
+                        error.to_string(),
+                    ));
+                }
+                Task::none()
+            }
+            ExtensionAction::OpenUrl(url) => {
+                if let Err(error) = std::process::Command::new("open").arg(&url).spawn() {
+                    self.extensions.set_action_error(crate::core::extensions::ExtensionError::new(
+                        "extensions.error.open_failed",
+                        error.to_string(),
+                    ));
+                }
+                Task::none()
+            }
+            ExtensionAction::Refresh => {
+                self.start_extension_scan();
+                Task::none()
+            }
+            ExtensionAction::CancelTask => {
+                self.cancel_extension_task();
+                Task::none()
+            }
+            ExtensionAction::FetchBranches { repository_url } => {
+                let proxy = self.extension_proxy_config();
+                self.launch_extension_worker(move |sender, cancel| {
+                    let result = crate::core::extensions::fetch_git_branches(
+                        &repository_url,
+                        &proxy,
+                        &cancel,
+                    );
+                    let _ = sender.send(ExtensionEvent::BranchesFinished(result));
+                });
+                Task::none()
+            }
+            ExtensionAction::InspectOffline(paths) => {
+                self.launch_extension_worker(move |sender, _cancel| {
+                    let packages = crate::core::extensions::inspect_offline_packages(paths);
+                    let _ = sender.send(ExtensionEvent::OfflineInspected(packages));
+                });
+                Task::none()
+            }
+            ExtensionAction::InstallGit {
+                repository_url,
+                branch,
+                overwrite,
+            } => {
+                if self.extension_mutation_blocked() {
+                    self.extensions.set_blocked_notice();
+                    self.extensions.set_action_error(crate::core::extensions::ExtensionError::new(
+                        "extensions.notice.stop_required",
+                        "",
+                    ));
+                    return Task::none();
+                }
+                let Some(instance_path) = self.extensions.target_path.clone() else {
+                    return Task::none();
+                };
+                let request = GitInstallRequest {
+                    instance_path,
+                    repository_url,
+                    branch,
+                    overwrite,
+                    proxy: self.extension_proxy_config(),
+                };
+                self.launch_extension_worker(move |sender, cancel| {
+                    let result = crate::core::extensions::install_git_extension(
+                        request,
+                        &sender,
+                        &cancel,
+                    );
+                    let _ = sender.send(ExtensionEvent::OperationFinished(result));
+                });
+                Task::none()
+            }
+            ExtensionAction::InstallOffline { packages, overwrite } => {
+                if self.extension_mutation_blocked() {
+                    self.extensions.set_action_error(crate::core::extensions::ExtensionError::new(
+                        "extensions.notice.stop_required",
+                        "",
+                    ));
+                    return Task::none();
+                }
+                let Some(instance_path) = self.extensions.target_path.clone() else {
+                    return Task::none();
+                };
+                let request = OfflineInstallRequest {
+                    instance_path,
+                    packages,
+                    overwrite,
+                };
+                self.launch_extension_worker(move |sender, cancel| {
+                    let result = crate::core::extensions::install_offline_packages(
+                        request,
+                        &sender,
+                        &cancel,
+                    );
+                    let _ = sender.send(ExtensionEvent::OperationFinished(result));
+                });
+                Task::none()
+            }
+            ExtensionAction::SetEnabled { path, name, enabled } => {
+                self.start_simple_extension_mutation(move |instance_path| {
+                    crate::core::extensions::set_extension_enabled(
+                        &instance_path,
+                        &path,
+                        &name,
+                        enabled,
+                    )
+                });
+                Task::none()
+            }
+            ExtensionAction::Delete { path, name } => {
+                self.start_simple_extension_mutation(move |instance_path| {
+                    crate::core::extensions::delete_extension(&instance_path, &path, &name)
+                });
+                Task::none()
+            }
+            ExtensionAction::RepairGit {
+                path,
+                name,
+                remote_url,
+            } => {
+                self.start_simple_extension_mutation(move |instance_path| {
+                    crate::core::extensions::repair_extension_git(
+                        &instance_path,
+                        &path,
+                        &name,
+                        &remote_url,
+                    )
+                });
+                Task::none()
+            }
+        }
+    }
+
+    fn extension_proxy_config(&self) -> GithubProxyConfig {
+        GithubProxyConfig {
+            enabled: self.settings.github_proxy_enabled,
+            base_url: self.settings.github_proxy_url.clone(),
+        }
+    }
+
+    fn extension_mutation_blocked(&self) -> bool {
+        self.console.is_running() || self.console.status.is_transitioning()
+    }
+
+    fn start_simple_extension_mutation<F>(&mut self, operation: F)
+    where
+        F: FnOnce(PathBuf) -> Result<OperationSuccess, crate::core::extensions::ExtensionError>
+            + Send
+            + 'static,
+    {
+        if self.extension_mutation_blocked() {
+            self.extensions.set_blocked_notice();
+            return;
+        }
+        let Some(instance_path) = self.extensions.target_path.clone() else {
+            return;
+        };
+        self.extensions.begin_mutation();
+        self.launch_extension_worker(move |sender, _cancel| {
+            let result = operation(instance_path);
+            let _ = sender.send(ExtensionEvent::OperationFinished(result));
+        });
+    }
+
+    fn start_extension_scan(&mut self) {
+        if self.extension_task_receiver.is_some() {
+            return;
+        }
+        let Some(instance_path) = self.extensions.target_path.clone() else {
+            return;
+        };
+        self.extensions.begin_scan();
+        self.launch_extension_worker(move |sender, _cancel| {
+            let result = crate::core::extensions::scan_extensions(&instance_path);
+            let _ = sender.send(ExtensionEvent::ScanFinished(result));
+        });
+    }
+
+    /// 取消并丢弃扩展后台任务，避免检测网络时弹窗无法关闭。
+    fn cancel_extension_task(&mut self) {
+        if let Some(cancel) = &self.extension_task_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+        self.extension_task_receiver = None;
+        self.extension_task_cancel = None;
+    }
+
+    fn launch_extension_worker<F>(&mut self, worker: F)
+    where
+        F: FnOnce(std::sync::mpsc::Sender<ExtensionEvent>, Arc<AtomicBool>) + Send + 'static,
+    {
+        if self.extension_task_receiver.is_some() {
+            return;
+        }
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.extension_task_receiver = Some(receiver);
+        self.extension_task_cancel = Some(cancel.clone());
+        std::thread::spawn(move || worker(sender, cancel));
+    }
+
+    /// 处理扩展页输入停止三秒后的自动 Git 仓库检测。
+    fn poll_extension_auto_detect(&mut self) {
+        let Some(url) = self.extensions.take_auto_detect_url() else {
+            return;
+        };
+        let _ = self.handle_extension_message(ExtensionsMessage::AutoDetectBranches(url));
+    }
+
+    /// 安装成功后三秒自动关闭安装弹窗。
+    fn poll_extension_auto_close(&mut self) {
+        if self.extensions.take_auto_close() {
+            let _ = self.handle_extension_message(ExtensionsMessage::CloseInstall);
+        }
+    }
+
+    fn poll_extension_task(&mut self) {
+        let Some(receiver) = self.extension_task_receiver.take() else {
+            return;
+        };
+        let mut terminal = false;
+        let mut received_terminal_event = false;
+        let mut refresh = false;
+        loop {
+            match receiver.try_recv() {
+                Ok(event) => {
+                    received_terminal_event |= event.is_terminal();
+                    terminal |= event.is_terminal();
+                    refresh |= self.extensions.apply_event(event);
+                    if terminal {
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    terminal = true;
+                    break;
+                }
+            }
+        }
+        if terminal {
+            self.extension_task_cancel = None;
+            if !received_terminal_event {
+                self.extensions.set_action_error(crate::core::extensions::ExtensionError::new(
+                    "extensions.error.task_disconnected",
+                    "",
+                ));
+            }
+            if refresh {
+                self.start_extension_scan();
+            }
+        } else {
+            self.extension_task_receiver = Some(receiver);
         }
     }
 

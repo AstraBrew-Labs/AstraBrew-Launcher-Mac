@@ -112,7 +112,7 @@ pub fn page_view<'a>(
         Page::Settings => settings_view(settings, console.status.is_transitioning() || console.is_running()),
         Page::TavernConfig => tavern_view(tavern).map(Message::Tavern),
         Page::Version => versions_view(versions).map(Message::Version),
-        Page::Extensions => extensions_view(extensions, versions).map(Message::Extensions),
+        Page::Extensions => extensions_view(extensions).map(Message::Extensions),
         Page::Resources => resource_manage_view(resources).map(Message::Resources),
         Page::Console => console_view(console),
     }
