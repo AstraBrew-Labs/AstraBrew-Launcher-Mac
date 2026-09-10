@@ -197,6 +197,7 @@ version = "0.2.0"
 dependencies = [
  "base64",
  "block2 0.6.2",
+ "flate2",
  "fontdb",
  "iced",
  "iced-astraui",
@@ -216,6 +217,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tokio",
  "yaml-edit",
  "zip",
 ]

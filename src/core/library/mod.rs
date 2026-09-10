@@ -3,6 +3,7 @@
 //! 页面层只传入资源类型、源文件和目标目录；本模块保证校验与写入使用同一份字节，
 //! 并通过同目录临时文件和原子重命名避免留下半成品。
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Write};
@@ -12,6 +13,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE};
 use serde_json::{Map, Value};
+
+pub(crate) mod edit;
 
 const CHARACTER_MAX_BYTES: usize = 64 * 1024 * 1024;
 const JSON_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -157,10 +160,12 @@ pub(crate) struct CharacterCardData {
 /// 统一后的预设提示词。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct PresetPrompt {
+    pub identifier: String,
     pub name: String,
     pub role: String,
     pub content: String,
     pub enabled: bool,
+    pub partial: bool,
     pub marker: bool,
 }
 
@@ -193,6 +198,10 @@ pub(crate) struct ValidatedResource {
     pub display_name: String,
     pub data: ResourceData,
     bytes: Vec<u8>,
+    // 工作台复用校验阶段已经解析好的 JSON，避免大型资源再次解析。
+    editor_root: Option<Map<String, Value>>,
+    // JSON 导入会去除 BOM；工作台仍需保留原始字节用于外部修改检测和备份。
+    source_bytes: Option<Vec<u8>>,
 }
 
 /// 批量导入中的单文件结果。
@@ -609,6 +618,8 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
         display_name: name,
         data: ResourceData::CharacterCard(card),
         bytes,
+        editor_root: None,
+        source_bytes: None,
     })
 }
 
@@ -659,6 +670,8 @@ fn validate_world_book(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validati
         display_name,
         data: ResourceData::WorldBook(world),
         bytes: normalized,
+        editor_root: Some(root),
+        source_bytes: Some(bytes),
     })
 }
 
@@ -738,12 +751,7 @@ fn validate_world_entry(
     };
     validate_optional_strings(object, &["content", "comment", "name"], path, issues);
     validate_string_array_alias(object, &["keys", "key"], path, issues);
-    validate_string_array(
-        object,
-        "secondary_keys",
-        &join_path(path, "secondary_keys"),
-        issues,
-    );
+    validate_string_array_alias(object, &["secondary_keys", "keysecondary"], path, issues);
     validate_optional_bool(object, "enabled", path, issues);
     validate_optional_bool(object, "disable", path, issues);
     validate_number(object, "order", path, issues);
@@ -760,6 +768,7 @@ fn validate_world_entry(
             .unwrap_or_default(),
         secondary_keys: object
             .get("secondary_keys")
+            .or_else(|| object.get("keysecondary"))
             .map(string_array_value)
             .unwrap_or_default(),
         content: pick_string(object, &["content"]),
@@ -800,7 +809,7 @@ fn validate_preset(
     validate_number_or_string(&root, "names_behavior", "", &mut issues);
     validate_optional_strings(&root, &["send_if_empty"], "", &mut issues);
 
-    let prompts = match root.get("prompts") {
+    let mut prompts = match root.get("prompts") {
         Some(Value::Array(items)) => {
             if items.is_empty() {
                 issues.push(ValidationIssue::new(
@@ -822,6 +831,7 @@ fn validate_preset(
         }
         None => Vec::new(),
     };
+    apply_prompt_order_states(&root, &mut prompts);
 
     let mut has_spreset = false;
     let mut requires_tavern_helper = false;
@@ -893,6 +903,8 @@ fn validate_preset(
             requires_tavern_helper,
         }),
         bytes: normalized,
+        editor_root: Some(root),
+        source_bytes: Some(bytes),
     })
 }
 
@@ -950,6 +962,7 @@ fn validate_preset_prompt(
         }
     }
     Some(PresetPrompt {
+        identifier: pick_string(object, &["identifier", "name"]),
         name: pick_string(object, &["name", "identifier"]),
         role: pick_string(object, &["role"]),
         content: pick_string(object, &["content"]),
@@ -957,8 +970,40 @@ fn validate_preset_prompt(
             .get("enabled")
             .and_then(Value::as_bool)
             .unwrap_or(true),
+        partial: false,
         marker,
     })
+}
+
+/// SillyTavern 的正式启用状态通常位于 prompt_order，而不是 prompts 本身。
+fn apply_prompt_order_states(root: &Map<String, Value>, prompts: &mut [PresetPrompt]) {
+    let mut states: HashMap<&str, Vec<bool>> = HashMap::new();
+    if let Some(templates) = root.get("prompt_order").and_then(Value::as_array) {
+        for template in templates {
+            let Some(order) = template.get("order").and_then(Value::as_array) else {
+                continue;
+            };
+            for item in order {
+                let Some(identifier) = item.get("identifier").and_then(Value::as_str) else {
+                    continue;
+                };
+                states.entry(identifier).or_default().push(
+                    item.get("enabled")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
+                );
+            }
+        }
+    }
+    for prompt in prompts {
+        let Some(values) = states.get(prompt.identifier.as_str()) else {
+            continue;
+        };
+        if let Some(enabled) = values.first().copied() {
+            prompt.enabled = enabled;
+            prompt.partial = values.iter().any(|value| *value != enabled);
+        }
+    }
 }
 
 fn parse_json_object(bytes: &[u8]) -> Result<Map<String, Value>, Vec<ValidationIssue>> {

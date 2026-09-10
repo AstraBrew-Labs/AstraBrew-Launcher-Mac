@@ -27,6 +27,9 @@ use crate::core::library::{
 use crate::lang::{current_language, t, text};
 use crate::theme::button_style;
 
+pub(crate) mod workbench;
+use workbench::{WorkbenchEvent, WorkbenchKind, WorkbenchMessage, WorkbenchState, WorldBookOption};
+
 const LIST_WIDTH: f32 = 390.0;
 const CHARACTER_THUMB_WIDTH: f32 = 52.0;
 const CHARACTER_THUMB_HEIGHT: f32 = 70.0;
@@ -206,9 +209,11 @@ pub enum ResourceManageMessage {
     CancelDelete,
     /// 消费删除确认弹窗内部及遮罩点击，防止事件穿透到底层页面。
     DeleteModalInteract,
+    OpenWorkbench,
+    Workbench(WorkbenchMessage),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ResourceManageState {
     pub tab: ResourceTab,
     pub search: String,
@@ -236,6 +241,8 @@ pub struct ResourceManageState {
     import_failures: Vec<ResourceImportItem>,
     import_failure_kind: Option<ResourceKind>,
     import_failures_visible: bool,
+    pub(crate) workbench: WorkbenchState,
+    selection_restore_path: Option<PathBuf>,
 }
 
 impl Default for ResourceManageState {
@@ -267,6 +274,8 @@ impl Default for ResourceManageState {
             import_failures: Vec::new(),
             import_failure_kind: None,
             import_failures_visible: false,
+            workbench: WorkbenchState::default(),
+            selection_restore_path: None,
         }
     }
 }
@@ -371,7 +380,16 @@ impl ResourceManageState {
             ResourceManageMessage::SelectPreset(index) => self.select_preset(index),
             ResourceManageMessage::PresetsLoaded(request_id, result) => {
                 self.apply_presets_loaded(request_id, result);
-                Task::none()
+                if let Some(index) = self.selected_preset
+                    && self
+                        .presets
+                        .get(index)
+                        .is_some_and(|preset| !preset.prompts_loaded)
+                {
+                    self.select_preset(index)
+                } else {
+                    Task::none()
+                }
             }
             ResourceManageMessage::PresetDetailLoaded(request_id, index, result) => {
                 self.apply_preset_detail_loaded(request_id, index, result);
@@ -405,12 +423,55 @@ impl ResourceManageState {
                 Task::none()
             }
             ResourceManageMessage::DeleteModalInteract => Task::none(),
+            ResourceManageMessage::OpenWorkbench => self.open_selected_workbench(),
+            ResourceManageMessage::Workbench(message) => {
+                let edited_path = self.workbench.path().map(Path::to_path_buf);
+                let (task, event) = self.workbench.update(message);
+                if event == WorkbenchEvent::Closed {
+                    self.selection_restore_path = edited_path;
+                    self.refresh_all();
+                    self.restore_selection_path();
+                }
+                task.map(ResourceManageMessage::Workbench)
+            }
         };
 
         // 顶部标签始终展示预设数量；即使当前停留在其他资源页，也要保证预设扫描已启动。
         // 资源目录在异步切换时，过期扫描结果会被丢弃，此处会自动为新目录补发扫描任务。
         let load_task = self.start_presets_loading();
         Task::batch([task, load_task])
+    }
+
+    fn open_selected_workbench(&mut self) -> Task<ResourceManageMessage> {
+        let target = match self.tab {
+            ResourceTab::Characters => self
+                .selected_character
+                .and_then(|index| self.characters.get(index))
+                .map(|item| (item.filepath.clone(), WorkbenchKind::Character)),
+            ResourceTab::WorldBooks => self
+                .selected_world_book
+                .and_then(|index| self.world_books.get(index))
+                .map(|item| (item.filepath.clone(), WorkbenchKind::WorldBook)),
+            ResourceTab::Presets => self
+                .selected_preset
+                .and_then(|index| self.presets.get(index))
+                .map(|item| (item.filepath.clone(), WorkbenchKind::Preset)),
+            ResourceTab::Chats => None,
+        };
+        let Some((path, kind)) = target else {
+            return Task::none();
+        };
+        let options = self
+            .world_books
+            .iter()
+            .map(|item| WorldBookOption {
+                name: item.name.clone(),
+                path: item.filepath.clone(),
+            })
+            .collect();
+        self.workbench
+            .open(path, kind, options)
+            .map(ResourceManageMessage::Workbench)
     }
 
     pub fn refresh_all(&mut self) {
@@ -426,6 +487,7 @@ impl ResourceManageState {
         self.preset_detail_loading = false;
         self.preset_detail_error = None;
         self.repair_selections();
+        self.restore_selection_path();
     }
 
     /// 启动预设列表后台加载，只读取列表所需的轻量元数据。
@@ -503,6 +565,39 @@ impl ResourceManageState {
             }
         }
         self.repair_selections();
+        self.restore_selection_path();
+    }
+
+    /// 文件保存后列表会按修改时间重排，必须按路径恢复选择而不能沿用旧索引。
+    fn restore_selection_path(&mut self) {
+        let Some(path) = self.selection_restore_path.as_ref() else {
+            return;
+        };
+        let restored = match self.tab {
+            ResourceTab::Characters => self
+                .characters
+                .iter()
+                .position(|item| item.filepath == *path)
+                .map(|index| self.selected_character = Some(index))
+                .is_some(),
+            ResourceTab::WorldBooks => self
+                .world_books
+                .iter()
+                .position(|item| item.filepath == *path)
+                .map(|index| self.selected_world_book = Some(index))
+                .is_some(),
+            ResourceTab::Presets if self.presets_loaded => self
+                .presets
+                .iter()
+                .position(|item| item.filepath == *path)
+                .map(|index| self.selected_preset = Some(index))
+                .is_some(),
+            ResourceTab::Presets => false,
+            ResourceTab::Chats => true,
+        };
+        if restored {
+            self.selection_restore_path = None;
+        }
     }
 
     /// 应用当前预设的异步详情内容，并确保切换预设后不会串入旧结果。
@@ -553,6 +648,7 @@ impl ResourceManageState {
         self.import_failures.clear();
         self.import_failure_kind = None;
         self.import_failures_visible = false;
+        self.selection_restore_path = None;
     }
 
     fn repair_selections(&mut self) {
@@ -1177,6 +1273,29 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         .into()
     };
 
+    let workbench_button: Element<'_, ResourceManageMessage> = if match state.tab {
+        ResourceTab::Characters => state.selected_character.is_some(),
+        ResourceTab::WorldBooks => state.selected_world_book.is_some(),
+        ResourceTab::Presets => state.selected_preset.is_some(),
+        ResourceTab::Chats => false,
+    } {
+        button(
+            row![
+                icons::icon(Icon::SquarePen, 14, BLUE_600),
+                text(t("workbench.open", current_language())).size(12),
+            ]
+            .spacing(6)
+            .align_y(Alignment::Center),
+        )
+        .on_press(ResourceManageMessage::OpenWorkbench)
+        .height(34)
+        .padding([7, 10])
+        .style(button_style(ButtonVariant::Secondary))
+        .into()
+    } else {
+        space::horizontal().width(Length::Shrink).into()
+    };
+
     let toolbar = row![
         container(
             row![
@@ -1208,6 +1327,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         .style(count_surface),
         failure_button,
         space::horizontal(),
+        workbench_button,
         tooltip(
             button(crate::theme::muted_icon(Icon::FolderOpen, 15))
                 .on_press(ResourceManageMessage::OpenDirectory)
@@ -2772,7 +2892,9 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
     } else {
         &prompt.role
     };
-    let role_chip = if prompt.enabled {
+    let role_chip = if prompt.partial {
+        tag_chip(t("workbench.preset.partial", current_language()), BLUE_600)
+    } else if prompt.enabled {
         tag_chip(role, SUCCESS)
     } else {
         muted_tag_chip(role)

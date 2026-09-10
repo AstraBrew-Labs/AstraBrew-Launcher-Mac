@@ -3051,6 +3051,14 @@ impl Launcher {
             page =
                 iced::widget::stack![page, crate::pages::settings::nodejs_required_modal()].into();
         }
+        if self.resources.workbench.is_open() {
+            page = iced::widget::stack![
+                page,
+                crate::pages::resource_manage::workbench::view(&self.resources.workbench)
+                    .map(|message| Message::Resources(ResourceManageMessage::Workbench(message)))
+            ]
+            .into();
+        }
         if !self.global_notices.is_empty() {
             let language = effective_language(self.settings.language);
             let notices = self.global_notices.iter().fold(
