@@ -8,7 +8,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::UNIX_EPOCH;
 
-use iced::widget::{button, column, container, image, row, scrollable, space, text_input, tooltip};
+use iced::widget::{
+    button, column, container, image, mouse_area, row, scrollable, space, stack, text_input,
+    tooltip,
+};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
 
@@ -20,7 +23,7 @@ use astra_ui::{
 use super::settings::{SettingsState, TavernDataMode};
 use super::versions::VersionState;
 use super::notice::TransientNotice;
-use crate::lang::text;
+use crate::lang::{current_language, t, text};
 use crate::theme::button_style;
 
 const LIST_WIDTH: f32 = 390.0;
@@ -176,7 +179,10 @@ pub struct PresetInfo {
     pub prompt_count: usize,
     pub enabled_prompt_count: usize,
     pub prompts: Vec<PresetPrompt>,
+    /// 预设的扩展格式是否为旧版 SPreset。
     pub has_spreset: bool,
+    /// 预设是否声明或隐式依赖酒馆助手。
+    pub requires_tavern_helper: bool,
     pub file_size: u64,
     pub modified_secs: u64,
     prompts_loaded: bool,
@@ -206,6 +212,8 @@ pub enum ResourceManageMessage {
     RequestDelete,
     ConfirmDelete,
     CancelDelete,
+    /// 消费删除确认弹窗内部及遮罩点击，防止事件穿透到底层页面。
+    DeleteModalInteract,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +390,7 @@ impl ResourceManageState {
                 self.pending_delete = None;
                 Task::none()
             }
+            ResourceManageMessage::DeleteModalInteract => Task::none(),
         };
 
         let load_task = if self.tab == ResourceTab::Presets {
@@ -884,6 +893,8 @@ fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, Stri
             });
 
             let name = file_stem(&path);
+            // 分离扩展格式与酒馆助手依赖状态，避免将依赖关系误显示为格式。
+            let (has_spreset, requires_tavern_helper) = preset_extension_info(&value);
             Some(PresetInfo {
                 filename: file_name(&path),
                 filepath: path,
@@ -905,8 +916,8 @@ fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, Stri
                 prompt_count,
                 enabled_prompt_count,
                 prompts: Vec::new(),
-                // 兼容旧版 SPreset 与新版 Tavern Helper 扩展字段。
-                has_spreset: has_tavern_helper_extension(&value),
+                has_spreset,
+                requires_tavern_helper,
                 file_size: metadata.len(),
                 modified_secs: modified_secs(&metadata),
                 prompts_loaded: false,
@@ -947,19 +958,28 @@ fn parse_preset_prompt(prompt: &serde_json::Value) -> PresetPrompt {
     }
 }
 
-/// 检测旧版 SPreset 和新版 tavern_helper 两种扩展标记。
-fn has_tavern_helper_extension(value: &serde_json::Value) -> bool {
-    value
-        .get("extensions")
-        .and_then(|value| value.as_object())
-        .is_some_and(|extensions| {
-            extensions.keys().any(|key| {
-                matches!(
-                    key.to_ascii_lowercase().as_str(),
-                    "spreset" | "tavern_helper" | "tavernhelper" | "tavern helper"
-                )
-            })
-        })
+/// 分别识别预设格式与酒馆助手依赖，兼容旧版和新版预设字段。
+fn preset_extension_info(value: &serde_json::Value) -> (bool, bool) {
+    let mut has_spreset = false;
+    let mut requires_tavern_helper = false;
+
+    if let Some(extensions) = value.get("extensions").and_then(|value| value.as_object()) {
+        for key in extensions.keys() {
+            match key.to_ascii_lowercase().as_str() {
+                "spreset" => {
+                    has_spreset = true;
+                    // 旧版 SPreset 本身就是酒馆助手预设格式。
+                    requires_tavern_helper = true;
+                }
+                "tavern_helper" | "tavernhelper" | "tavern helper" => {
+                    requires_tavern_helper = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (has_spreset, requires_tavern_helper)
 }
 
 #[derive(Default)]
@@ -1400,33 +1420,6 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     .spacing(8)
     .align_y(Alignment::Center);
 
-    let feedback = if let Some(pending) = &state.pending_delete {
-        container(
-            row![
-                icons::icon(Icon::TriangleAlert, 15, DANGER),
-                text(format!("确定删除“{}”吗？此操作无法撤销。", pending.label))
-                    .size(13)
-                    .font(crate::core::typography::regular())
-                    .style(crate::theme::text_style),
-                space::horizontal(),
-                button(text("取消").size(12).font(crate::core::typography::medium()))
-                    .on_press(ResourceManageMessage::CancelDelete)
-                    .padding([6, 10])
-                    .style(button_style(ButtonVariant::Outline)),
-                button(text("确认删除").size(12).font(crate::core::typography::medium()))
-                    .on_press(ResourceManageMessage::ConfirmDelete)
-                    .padding([6, 10])
-                    .style(danger_button_style),
-            ]
-            .spacing(9)
-            .align_y(Alignment::Center),
-        )
-        .padding([8, 12])
-        .style(delete_notice_surface)
-    } else {
-        container(space::vertical()).height(0)
-    };
-
     let body = if state.data_root.is_none() {
         empty_page(
             Icon::FolderCog,
@@ -1440,9 +1433,9 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             .into()
     };
 
-    container(
+    let page = container(
         container(
-            column![header, tabs, toolbar, feedback, body]
+            column![header, tabs, toolbar, body]
                 .spacing(12)
                 .width(Fill)
                 .height(Fill),
@@ -1455,8 +1448,140 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     .height(Fill)
     .padding([22, 28])
     .align_x(Alignment::Center)
-    .style(crate::theme::canvas_style)
+    .style(crate::theme::canvas_style);
+
+    if let Some(pending) = &state.pending_delete {
+        stack![page, delete_confirmation_modal(pending)]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else {
+        page.into()
+    }
+}
+
+/// 构建资源删除二次确认弹窗，明确展示目标并阻止底层页面交互。
+fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceManageMessage> {
+    let header = row![
+        container(icons::icon(Icon::TriangleAlert, 18, DANGER))
+            .width(38)
+            .height(38)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(delete_modal_icon_surface),
+        column![
+            text(tr("resources.confirm.delete.title"))
+                .size(18)
+                .font(crate::core::typography::medium())
+                .style(crate::theme::text_style),
+            text(tr("resources.confirm.delete.description"))
+                .size(12)
+                .font(crate::core::typography::regular())
+                .style(crate::theme::muted_text_style),
+        ]
+        .spacing(3)
+        .width(Fill),
+        button(crate::theme::muted_icon(Icon::X, 17))
+            .on_press(ResourceManageMessage::CancelDelete)
+            .width(32)
+            .height(32)
+            .style(button_style(ButtonVariant::Ghost)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let target = container(
+        row![
+            icons::icon(Icon::File, 15, DANGER),
+            text(&pending.label)
+                .size(13)
+                .font(crate::core::typography::medium())
+                .style(crate::theme::text_style),
+        ]
+        .spacing(8)
+        .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding([10, 12])
+    .style(delete_target_surface);
+
+    let footer = row![
+        space::horizontal(),
+        button(
+            text(tr("resources.confirm.delete.cancel"))
+                .size(12)
+                .font(crate::core::typography::medium()),
+        )
+        .on_press(ResourceManageMessage::CancelDelete)
+        .height(36)
+        .padding([8, 16])
+        .style(button_style(ButtonVariant::Secondary)),
+        button(
+            text(tr("resources.confirm.delete.confirm"))
+                .size(12)
+                .font(crate::core::typography::medium())
+                .color(WHITE),
+        )
+        .on_press(ResourceManageMessage::ConfirmDelete)
+        .height(36)
+        .padding([8, 16])
+        .style(button_style(ButtonVariant::Destructive)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let panel = mouse_area(
+        container(
+            column![
+                header,
+                modal_separator(),
+                target,
+                text(tr("resources.confirm.delete.warning"))
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+                modal_separator(),
+                footer,
+            ]
+            .spacing(16),
+        )
+        .width(460)
+        .padding(20)
+        .style(delete_modal_surface),
+    )
+    .on_press(ResourceManageMessage::DeleteModalInteract);
+
+    stack![
+        button(space::Space::new())
+            .on_press(ResourceManageMessage::DeleteModalInteract)
+            .width(Fill)
+            .height(Fill)
+            .padding(0)
+            .style(delete_modal_backdrop_style),
+        container(panel)
+            .width(Fill)
+            .height(Fill)
+            .padding(24)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    ]
+    .width(Fill)
+    .height(Fill)
     .into()
+}
+
+/// 返回当前语言下的稳定键值文案。
+fn tr(key: &'static str) -> &'static str {
+    t(key, current_language())
+}
+
+/// 删除确认弹窗中的横向分隔线。
+fn modal_separator<'a>() -> Element<'a, ResourceManageMessage> {
+    container(space::vertical())
+        .width(Fill)
+        .height(1)
+        .style(modal_separator_surface)
+        .into()
 }
 
 fn resource_tab(
@@ -1733,7 +1858,7 @@ fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage
                 || item.model.to_lowercase().contains(&query)
         })
         .map(|(index, item)| {
-            let prompt_meta = if item.has_spreset {
+            let prompt_meta = if item.requires_tavern_helper {
                 format!(
                     "{} 段提示词 · {} · {}",
                     item.prompt_count,
@@ -2258,13 +2383,22 @@ fn preset_detail(
                 item.enabled_prompt_count.to_string(),
                 SUCCESS,
             ),
-            // 「是否依赖酒馆助手」独立成卡：扩展标记（SPreset / Tavern Helper）只决定
-            // 这一项布尔结论，不应被塞进含义模糊的「扩展格式」里。
+            // 将预设格式与运行依赖分开显示，避免用户把 SPreset 误认为依赖状态。
             metric_card(
                 Icon::PlugZap,
-                "依赖酒馆助手",
-                if item.has_spreset { "是" } else { "否" }.into(),
+                "扩展格式",
+                if item.has_spreset { "SPreset" } else { "标准" }.into(),
                 if item.has_spreset {
+                    TAVERN_HELPER_ACCENT
+                } else {
+                    INK_MUTED
+                },
+            ),
+            metric_card(
+                Icon::Puzzle,
+                "依赖酒馆助手",
+                if item.requires_tavern_helper { "是" } else { "否" }.into(),
+                if item.requires_tavern_helper {
                     TAVERN_HELPER_ACCENT
                 } else {
                     INK_MUTED
@@ -2949,17 +3083,64 @@ fn chat_surface(accent: Color) -> container::Style {
     }
 }
 
-fn delete_notice_surface(_theme: &Theme) -> container::Style {
+fn delete_modal_icon_surface(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
-            DANGER.r, DANGER.g, DANGER.b, 0.07,
+            DANGER.r, DANGER.g, DANGER.b, 0.10,
         ))),
         border: Border {
-            color: Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.22),
-            width: 1.0,
-            radius: 7.0.into(),
+            radius: 8.0.into(),
+            ..Border::default()
         },
         ..container::Style::default()
+    }
+}
+
+fn delete_target_surface(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(crate::theme::surface_alt(theme))),
+        border: Border {
+            color: Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.24),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        ..container::Style::default()
+    }
+}
+
+fn delete_modal_surface(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(crate::theme::surface(theme))),
+        border: Border {
+            color: crate::theme::line(theme),
+            width: 1.0,
+            radius: 8.0.into(),
+        },
+        shadow: iced::Shadow {
+            color: Color::from_rgba(
+                0.0,
+                0.0,
+                0.0,
+                if crate::theme::is_dark(theme) { 0.46 } else { 0.20 },
+            ),
+            offset: iced::Vector::new(0.0, 10.0),
+            blur_radius: 30.0,
+        },
+        ..container::Style::default()
+    }
+}
+
+fn modal_separator_surface(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(crate::theme::line(theme))),
+        ..container::Style::default()
+    }
+}
+
+fn delete_modal_backdrop_style(_theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.52))),
+        ..button::Style::default()
     }
 }
 
@@ -2972,23 +3153,6 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
             ..Border::default()
         },
         ..container::Style::default()
-    }
-}
-
-fn danger_button_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let background = if matches!(status, button::Status::Hovered) {
-        Color::from_rgb8(190, 36, 45)
-    } else {
-        DANGER
-    };
-    button::Style {
-        background: Some(Background::Color(background)),
-        text_color: WHITE,
-        border: Border {
-            radius: 6.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
     }
 }
 
