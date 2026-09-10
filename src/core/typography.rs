@@ -11,8 +11,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fontdb::Source;
-use iced::font::{Family, Stretch, Style, Weight};
 use iced::Font;
+use iced::font::{Family, Stretch, Style, Weight};
 
 /// settings.json 中表示内置默认字体的稳定值。
 pub(crate) const DEFAULT_FONT_KEY: &str = "default";
@@ -188,9 +188,7 @@ impl SystemFontCatalog {
 /// 判断字体族是否适合出现在用户选择器中。
 fn is_visible_family(family: &str) -> bool {
     let family = family.trim();
-    !family.is_empty()
-        && !family.starts_with('.')
-        && !family.eq_ignore_ascii_case("HarmonyOS Sans")
+    !family.is_empty() && !family.starts_with('.') && !family.eq_ignore_ascii_case("HarmonyOS Sans")
 }
 
 thread_local! {

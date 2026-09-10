@@ -103,9 +103,10 @@ impl Pm2Manager {
                 format!("PM2 状态格式无效：{error}；输出：{}", preview.trim())
             }
         })?;
-        let Some(value) = values.iter().find(|value| {
-            value.get("name").and_then(Value::as_str) == Some(PROCESS_NAME)
-        }) else {
+        let Some(value) = values
+            .iter()
+            .find(|value| value.get("name").and_then(Value::as_str) == Some(PROCESS_NAME))
+        else {
             return Ok(None);
         };
         let environment = value.get("pm2_env").and_then(Value::as_object);
@@ -222,8 +223,8 @@ fn parse_jlist_output(output: &[u8]) -> Result<Vec<Value>, serde_json::Error> {
         if character != '[' {
             continue;
         }
-        let mut stream = serde_json::Deserializer::from_str(&text[start..])
-            .into_iter::<Vec<Value>>();
+        let mut stream =
+            serde_json::Deserializer::from_str(&text[start..]).into_iter::<Vec<Value>>();
         match stream.next() {
             Some(Ok(values)) => return Ok(values),
             Some(Err(error)) => last_error = error,
@@ -266,10 +267,8 @@ mod tests {
     #[test]
     fn parses_clean_pm2_jlist() {
         assert!(parse_jlist_output(b"[]").unwrap().is_empty());
-        let values = parse_jlist_output(
-            br#"[{"name":"astrabrew-launcher-sillytavern","pid":42}]"#,
-        )
-        .unwrap();
+        let values =
+            parse_jlist_output(br#"[{"name":"astrabrew-launcher-sillytavern","pid":42}]"#).unwrap();
         assert_eq!(values.len(), 1);
     }
 

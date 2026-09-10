@@ -174,7 +174,11 @@ pub fn scan_extensions(instance_path: &Path) -> Result<Vec<ExtensionInfo>, Exten
     }
 
     let mut extensions = Vec::new();
-    scan_directory(&third_party_root(instance_path), ExtensionKind::ThirdParty, &mut extensions)?;
+    scan_directory(
+        &third_party_root(instance_path),
+        ExtensionKind::ThirdParty,
+        &mut extensions,
+    )?;
     scan_directory(&official_root, ExtensionKind::System, &mut extensions)?;
 
     extensions.retain(|extension| extension.id != "third-party");
@@ -195,9 +199,8 @@ fn scan_directory(
     if !directory.exists() {
         return Ok(());
     }
-    let entries = fs::read_dir(directory).map_err(|error| {
-        ExtensionError::new("extensions.error.scan_failed", error.to_string())
-    })?;
+    let entries = fs::read_dir(directory)
+        .map_err(|error| ExtensionError::new("extensions.error.scan_failed", error.to_string()))?;
     for entry in entries.flatten() {
         let file_name = entry.file_name();
         let file_name = file_name.to_string_lossy();
@@ -284,9 +287,8 @@ pub fn fetch_git_branches(
             Err(error) => last_error = Some(error),
         }
     }
-    Err(last_error.unwrap_or_else(|| {
-        ExtensionError::new("extensions.error.branch_fetch_failed", "")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| ExtensionError::new("extensions.error.branch_fetch_failed", "")))
 }
 
 /// 带超时的 Git 分支探测，避免网络异常时永久阻塞 UI 后台任务。
@@ -296,11 +298,19 @@ fn fetch_branches_once(
 ) -> Result<GitBranchCatalog, ExtensionError> {
     const DETECT_TIMEOUT: Duration = Duration::from_secs(15);
     let mut child = Command::new("git")
-        .args(["ls-remote", "--symref", repository_url, "HEAD", "refs/heads/*"])
+        .args([
+            "ls-remote",
+            "--symref",
+            repository_url,
+            "HEAD",
+            "refs/heads/*",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| ExtensionError::new("extensions.error.git_unavailable", error.to_string()))?;
+        .map_err(|error| {
+            ExtensionError::new("extensions.error.git_unavailable", error.to_string())
+        })?;
     let started = Instant::now();
     loop {
         if cancel.load(Ordering::Relaxed) {
@@ -371,8 +381,18 @@ fn parse_branch_output(
     }
     let selected = default_branch
         .filter(|branch| branches.contains(branch))
-        .or_else(|| branches.iter().find(|branch| branch.as_str() == "main").cloned())
-        .or_else(|| branches.iter().find(|branch| branch.as_str() == "master").cloned())
+        .or_else(|| {
+            branches
+                .iter()
+                .find(|branch| branch.as_str() == "main")
+                .cloned()
+        })
+        .or_else(|| {
+            branches
+                .iter()
+                .find(|branch| branch.as_str() == "master")
+                .cloned()
+        })
         .unwrap_or_else(|| branches[0].clone());
     Ok(GitBranchCatalog { branches, selected })
 }
@@ -413,7 +433,11 @@ pub fn inspect_offline_packages(paths: Vec<PathBuf>) -> Vec<OfflinePackageInspec
         .collect();
     for package in &mut packages {
         if let Some(identifier) = package.extension_id.as_ref()
-            && identifiers.iter().filter(|item| *item == identifier).count() > 1
+            && identifiers
+                .iter()
+                .filter(|item| *item == identifier)
+                .count()
+                > 1
         {
             package.valid = false;
             package.error = Some(ExtensionError::new(
@@ -433,7 +457,10 @@ pub fn install_git_extension(
 ) -> Result<OperationSuccess, ExtensionError> {
     validate_git_url(&request.repository_url)?;
     let extension_id = repository_name(&request.repository_url).ok_or_else(|| {
-        ExtensionError::new("extensions.error.invalid_repository", &request.repository_url)
+        ExtensionError::new(
+            "extensions.error.invalid_repository",
+            &request.repository_url,
+        )
     })?;
     let root = prepare_third_party_root(&request.instance_path)?;
     let target = root.join(&extension_id);
@@ -502,7 +529,9 @@ fn clone_repository(
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| ExtensionError::new("extensions.error.git_unavailable", error.to_string()))?;
+        .map_err(|error| {
+            ExtensionError::new("extensions.error.git_unavailable", error.to_string())
+        })?;
 
     if let Some(stderr) = child.stderr.take() {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
@@ -647,7 +676,9 @@ pub fn repair_extension_git(
         .args(["remote", "get-url", "origin"])
         .current_dir(extension_path)
         .output()
-        .map_err(|error| ExtensionError::new("extensions.error.git_unavailable", error.to_string()))?;
+        .map_err(|error| {
+            ExtensionError::new("extensions.error.git_unavailable", error.to_string())
+        })?;
     if existing.status.success() {
         let current = String::from_utf8_lossy(&existing.stdout).trim().to_owned();
         if normalize_repository_url(&current) != normalize_repository_url(remote_url) {
@@ -667,7 +698,9 @@ fn run_git(directory: &Path, arguments: &[&str]) -> Result<(), ExtensionError> {
         .args(arguments)
         .current_dir(directory)
         .output()
-        .map_err(|error| ExtensionError::new("extensions.error.git_unavailable", error.to_string()))?;
+        .map_err(|error| {
+            ExtensionError::new("extensions.error.git_unavailable", error.to_string())
+        })?;
     if output.status.success() {
         Ok(())
     } else {
@@ -721,7 +754,10 @@ fn inspect_zip(path: &Path) -> Result<ZipMetadata, ExtensionError> {
     let raw_id = manifest_prefix
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| path.file_stem().map(|name| name.to_string_lossy().into_owned()))
+        .or_else(|| {
+            path.file_stem()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .unwrap_or_default();
     let extension_id = sanitize_extension_id(&raw_id)?;
     Ok(ZipMetadata {
@@ -730,7 +766,11 @@ fn inspect_zip(path: &Path) -> Result<ZipMetadata, ExtensionError> {
     })
 }
 
-fn extract_zip(path: &Path, metadata: &ZipMetadata, destination: &Path) -> Result<(), ExtensionError> {
+fn extract_zip(
+    path: &Path,
+    metadata: &ZipMetadata,
+    destination: &Path,
+) -> Result<(), ExtensionError> {
     let file = File::open(path).map_err(|error| {
         ExtensionError::new("extensions.error.offline_open_failed", error.to_string())
     })?;
@@ -742,7 +782,8 @@ fn extract_zip(path: &Path, metadata: &ZipMetadata, destination: &Path) -> Resul
             ExtensionError::new("extensions.error.offline_invalid", error.to_string())
         })?;
         let enclosed = validate_zip_entry(&entry)?;
-        if enclosed.starts_with("__MACOSX") || enclosed.file_name() == Some(OsStr::new(".DS_Store")) {
+        if enclosed.starts_with("__MACOSX") || enclosed.file_name() == Some(OsStr::new(".DS_Store"))
+        {
             continue;
         }
         let relative = if metadata.manifest_prefix.as_os_str().is_empty() {
@@ -790,13 +831,16 @@ fn validate_zip_entry(entry: &zip::read::ZipFile<'_>) -> Result<PathBuf, Extensi
             entry.name(),
         ));
     }
-    let enclosed = entry.enclosed_name().ok_or_else(|| {
-        ExtensionError::new("extensions.error.archive_path", entry.name())
-    })?;
+    let enclosed = entry
+        .enclosed_name()
+        .ok_or_else(|| ExtensionError::new("extensions.error.archive_path", entry.name()))?;
     if enclosed.is_absolute()
-        || enclosed
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+        || enclosed.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
     {
         return Err(ExtensionError::new(
             "extensions.error.archive_path",
@@ -819,7 +863,10 @@ fn validate_installed_manifest(directory: &Path) -> Result<(), ExtensionError> {
 
 fn replace_directory(staging: &Path, target: &Path, overwrite: bool) -> Result<(), ExtensionError> {
     let parent = target.parent().ok_or_else(|| {
-        ExtensionError::new("extensions.error.invalid_target", target.display().to_string())
+        ExtensionError::new(
+            "extensions.error.invalid_target",
+            target.display().to_string(),
+        )
     })?;
     let backup = unique_sibling(
         parent,
@@ -854,7 +901,10 @@ fn replace_directory(staging: &Path, target: &Path, overwrite: bool) -> Result<(
     Ok(())
 }
 
-fn validate_existing_third_party(instance_path: &Path, target: &Path) -> Result<(), ExtensionError> {
+fn validate_existing_third_party(
+    instance_path: &Path,
+    target: &Path,
+) -> Result<(), ExtensionError> {
     let root = third_party_root(instance_path);
     if !root.is_dir() || !target.exists() {
         return Err(ExtensionError::new(
@@ -923,7 +973,10 @@ fn prepare_third_party_root(instance_path: &Path) -> Result<PathBuf, ExtensionEr
 }
 
 fn official_root(instance_path: &Path) -> PathBuf {
-    instance_path.join("public").join("scripts").join("extensions")
+    instance_path
+        .join("public")
+        .join("scripts")
+        .join("extensions")
 }
 
 fn third_party_root(instance_path: &Path) -> PathBuf {
@@ -949,7 +1002,10 @@ fn unique_sibling(parent: &Path, id: &str, suffix: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_nanos());
-    parent.join(format!(".{id}.astrabrew-{suffix}-{}-{nonce}", std::process::id()))
+    parent.join(format!(
+        ".{id}.astrabrew-{suffix}-{}-{nonce}",
+        std::process::id()
+    ))
 }
 
 fn remove_if_exists(path: &Path) -> Result<(), ExtensionError> {
@@ -1020,19 +1076,28 @@ fn is_github_repository(value: &str) -> bool {
     };
     let mut components = path.split('/');
     let owner = components.next().unwrap_or_default();
-    let repository = components.next().unwrap_or_default().trim_end_matches(".git");
+    let repository = components
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(".git");
     !owner.is_empty() && !repository.is_empty() && components.next().is_none()
 }
 
 fn normalize_repository_url(value: &str) -> String {
-    value.trim().trim_end_matches('/').trim_end_matches(".git").to_ascii_lowercase()
+    value
+        .trim()
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_ascii_lowercase()
 }
 
 fn candidate_urls(repository_url: &str, proxy: &GithubProxyConfig) -> Vec<String> {
     let original = repository_url.trim().to_owned();
     if !proxy.enabled
         || proxy.base_url.trim().is_empty()
-        || !original.to_ascii_lowercase().starts_with("https://github.com/")
+        || !original
+            .to_ascii_lowercase()
+            .starts_with("https://github.com/")
     {
         return vec![original];
     }

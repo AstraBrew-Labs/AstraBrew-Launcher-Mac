@@ -308,8 +308,7 @@ fn parse_lan_ipv6(output: &str) -> Option<String> {
             .next()?;
         let address = raw.split('%').next().unwrap_or(raw);
         let lower = address.to_ascii_lowercase();
-        (address != "::1" && !lower.starts_with("fe80:"))
-            .then(|| address.to_owned())
+        (address != "::1" && !lower.starts_with("fe80:")).then(|| address.to_owned())
     })
 }
 

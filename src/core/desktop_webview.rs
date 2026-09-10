@@ -17,10 +17,10 @@
 
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::sync::LazyLock;
 
 use block2::{DynBlock, RcBlock};
 use objc2_06::define_class;
@@ -433,8 +433,7 @@ unsafe fn handle_file_download(message: &WKScriptMessage) {
         let body = message.body();
         // JS postMessage({filename, base64}) → NSDictionary<NSString, NSString>
         let dict: &NSDictionary<NSString, NSString> =
-            &*(&*body as *const AnyObject
-                as *const NSDictionary<NSString, NSString>);
+            &*(&*body as *const AnyObject as *const NSDictionary<NSString, NSString>);
 
         let requested_name = dict
             .objectForKey(&NSString::from_str("filename"))
@@ -453,9 +452,7 @@ unsafe fn handle_file_download(message: &WKScriptMessage) {
             .map(|value| value.to_string())
             .unwrap_or_default();
         if base64.is_empty() {
-            push_download_event(WebViewDownloadEvent::Failed(
-                "下载数据为空。".to_owned(),
-            ));
+            push_download_event(WebViewDownloadEvent::Failed("下载数据为空。".to_owned()));
             return;
         }
 
@@ -532,7 +529,10 @@ fn available_download_path(directory: &Path, filename: &str) -> PathBuf {
         return requested;
     }
     let path = Path::new(filename);
-    let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("download");
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download");
     let extension = path.extension().and_then(|value| value.to_str());
     for counter in 1_u32.. {
         let candidate = match extension {
@@ -563,9 +563,7 @@ unsafe fn handle_file_input_accept(message: &WKScriptMessage) {
 impl FileDownloadHandler {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm);
-        unsafe {
-            core::mem::transmute::<objc2_06::rc::Allocated<Self>, Retained<Self>>(this)
-        }
+        unsafe { core::mem::transmute::<objc2_06::rc::Allocated<Self>, Retained<Self>>(this) }
     }
 }
 
@@ -610,8 +608,7 @@ impl DesktopWebView {
         // 更新 blob 下载目标目录
         Self::set_export_path(&export_path);
 
-        let mtm =
-            MainThreadMarker::new().ok_or("桌面模式 WebView 必须在主线程创建")?;
+        let mtm = MainThreadMarker::new().ok_or("桌面模式 WebView 必须在主线程创建")?;
         validate_webview_url(url)?;
         let (event_tx, event_rx) = mpsc::channel();
 
@@ -910,10 +907,7 @@ fn validate_webview_url(url: &str) -> Result<(), String> {
         .ok_or_else(|| format!("WebView 地址无效：{url}"))
 }
 
-fn load_webview_url(
-    webview: &WKWebView,
-    url: &str,
-) -> Result<Retained<WKNavigation>, String> {
+fn load_webview_url(webview: &WKWebView, url: &str) -> Result<Retained<WKNavigation>, String> {
     let nsurl = NSURL::URLWithString(&NSString::from_str(url))
         .ok_or_else(|| format!("WebView 地址无效：{url}"))?;
     let request = NSURLRequest::requestWithURL(&nsurl);
@@ -947,7 +941,10 @@ mod tests {
 
     #[test]
     fn default_download_setting_expands_to_home_downloads() {
-        assert_eq!(resolve_download_directory("~/Downloads"), default_download_directory());
+        assert_eq!(
+            resolve_download_directory("~/Downloads"),
+            default_download_directory()
+        );
         assert_eq!(resolve_download_directory(""), default_download_directory());
     }
 

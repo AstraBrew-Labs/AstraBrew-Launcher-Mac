@@ -5,6 +5,7 @@ pub(crate) mod extensions;
 pub(crate) mod network;
 pub(crate) mod settings;
 
+pub(crate) mod library;
 pub(crate) mod local_instances;
 
 pub(crate) mod tavern_config;

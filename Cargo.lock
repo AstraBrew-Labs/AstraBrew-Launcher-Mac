@@ -195,6 +195,7 @@ dependencies = [
 name = "astrabrew-launcher-mac"
 version = "0.2.0"
 dependencies = [
+ "base64",
  "block2 0.6.2",
  "fontdb",
  "iced",
@@ -208,6 +209,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-uniform-type-identifiers 0.3.2",
  "objc2-web-kit",
+ "png",
  "qrcode",
  "regex",
  "reqwest",

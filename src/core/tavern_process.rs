@@ -133,7 +133,9 @@ pub struct TavernRuntime {
 
 impl std::fmt::Debug for TavernRuntime {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("TavernRuntime").finish_non_exhaustive()
+        formatter
+            .debug_struct("TavernRuntime")
+            .finish_non_exhaustive()
     }
 }
 
@@ -317,7 +319,10 @@ fn start(state: &mut WorkerState, spec: TavernLaunchSpec, events: &Sender<Proces
 
 fn validate_spec(spec: &TavernLaunchSpec) -> Result<(), String> {
     if !spec.instance_path.is_dir() {
-        return Err(format!("酒馆实例目录不存在：{}", spec.instance_path.display()));
+        return Err(format!(
+            "酒馆实例目录不存在：{}",
+            spec.instance_path.display()
+        ));
     }
     if !spec.instance_path.join("server.js").is_file() {
         return Err(format!(
@@ -343,7 +348,9 @@ fn prepare_webui_settings(spec: &TavernLaunchSpec) -> Result<(), String> {
     if target.exists() {
         return Ok(());
     }
-    let parent = target.parent().ok_or_else(|| "酒馆设置目标路径无效。".to_owned())?;
+    let parent = target
+        .parent()
+        .ok_or_else(|| "酒馆设置目标路径无效。".to_owned())?;
     fs::create_dir_all(parent)
         .map_err(|error| format!("无法创建酒馆数据目录 {}：{error}", parent.display()))?;
     crate::utils::app_paths().ensure_default_tavern_settings();
@@ -382,10 +389,7 @@ fn launch_command(spec: &TavernLaunchSpec) -> Result<LaunchCommand, String> {
         ]);
     }
     if spec.launch_mode != TavernLaunchMode::Normal {
-        arguments.extend([
-            "--browserLaunchEnabled".to_owned(),
-            "false".to_owned(),
-        ]);
+        arguments.extend(["--browserLaunchEnabled".to_owned(), "false".to_owned()]);
     }
     let mut environment = Vec::new();
     let mut proxy = spec.proxy.clone().map(|value| normalize_proxy_url(&value));
@@ -648,7 +652,10 @@ fn poll_direct(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         while let Ok(line) = process.logs.try_recv() {
             pending_logs.push(line);
         }
-        if process.stop_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        if process
+            .stop_deadline
+            .is_some_and(|deadline| Instant::now() >= deadline)
+        {
             let _ = process.child.kill();
         }
         match process.child.try_wait() {
@@ -711,7 +718,9 @@ fn poll_pm2(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
         Ok(Some(info)) if info.status == "errored" => {
             state.active_mode = None;
             state.active_spec = None;
-            let _ = events.send(ProcessEvent::Failed("PM2 中的 SillyTavern 进程进入错误状态。".to_owned()));
+            let _ = events.send(ProcessEvent::Failed(
+                "PM2 中的 SillyTavern 进程进入错误状态。".to_owned(),
+            ));
         }
         Ok(_) => finish_stopped(state, events),
         Err(error) => {
@@ -812,13 +821,13 @@ for (const name of ['https','http']) { const mod=await import(name); const origi
 "#;
 
 fn prepare_interceptor() -> Result<PathBuf, String> {
-    let path = crate::utils::app_paths().temp.join("github-interceptor.mjs");
+    let path = crate::utils::app_paths()
+        .temp
+        .join("github-interceptor.mjs");
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("无法创建临时目录：{error}"))?;
+        fs::create_dir_all(parent).map_err(|error| format!("无法创建临时目录：{error}"))?;
     }
-    fs::write(&path, INTERCEPTOR)
-        .map_err(|error| format!("无法写入 GitHub 加速脚本：{error}"))?;
+    fs::write(&path, INTERCEPTOR).map_err(|error| format!("无法写入 GitHub 加速脚本：{error}"))?;
     Ok(path)
 }
 
@@ -849,7 +858,10 @@ fn display_command(spec: &TavernLaunchSpec, mode: RuntimeMode) -> String {
                 crate::core::pm2::PROCESS_NAME.to_owned(),
             ]);
             if let Some(path) = launch.node_import {
-                parts.extend(["--node-args".to_owned(), shell_quote(&format!("--import {path}"))]);
+                parts.extend([
+                    "--node-args".to_owned(),
+                    shell_quote(&format!("--import {path}")),
+                ]);
             }
             if launch.arguments.len() > 1 {
                 parts.push("--".to_owned());
@@ -861,7 +873,10 @@ fn display_command(spec: &TavernLaunchSpec, mode: RuntimeMode) -> String {
 }
 
 fn shell_quote(value: &str) -> String {
-    if value.chars().all(|ch| ch.is_ascii_alphanumeric() || "-._/:".contains(ch)) {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || "-._/:".contains(ch))
+    {
         value.to_owned()
     } else {
         format!("'{}'", value.replace('\'', "'\\''"))
@@ -902,9 +917,7 @@ pub fn strip_terminal_sequences(line: &str) -> String {
                         index += 1;
                         break;
                     }
-                    if bytes[index] == 0x1b
-                        && bytes.get(index + 1).copied() == Some(b'\\')
-                    {
+                    if bytes[index] == 0x1b && bytes.get(index + 1).copied() == Some(b'\\') {
                         index += 2;
                         break;
                     }
@@ -931,7 +944,6 @@ pub fn extract_tavern_url(line: &str) -> Option<String> {
     let url = captures.get(1)?.as_str().trim_end_matches([',', '.', ')']);
     Some(url.to_owned())
 }
-
 
 pub fn extract_conflict_port(line: &str) -> Option<u16> {
     let lower = line.to_ascii_lowercase();
@@ -971,7 +983,10 @@ pub fn parse_lsof_processes(output: &str) -> Result<Vec<PortProcess>, String> {
         } else if let Some(name) = line.strip_prefix('c')
             && let Some(pid) = pid.take()
         {
-            if !processes.iter().any(|process: &PortProcess| process.pid == pid) {
+            if !processes
+                .iter()
+                .any(|process: &PortProcess| process.pid == pid)
+            {
                 processes.push(PortProcess {
                     pid,
                     name: name.to_owned(),
@@ -1007,11 +1022,9 @@ pub fn prepare_sillytavern_log_file() -> Result<(), String> {
     let latest = paths.sillytavern_latest_log_file();
     if current.exists() {
         if latest.exists() {
-            fs::remove_file(&latest)
-                .map_err(|error| format!("无法替换上一份酒馆日志：{error}"))?;
+            fs::remove_file(&latest).map_err(|error| format!("无法替换上一份酒馆日志：{error}"))?;
         }
-        fs::rename(&current, &latest)
-            .map_err(|error| format!("无法轮换酒馆日志：{error}"))?;
+        fs::rename(&current, &latest).map_err(|error| format!("无法轮换酒馆日志：{error}"))?;
     }
     fs::File::create(&current)
         .map(|_| ())
@@ -1066,9 +1079,12 @@ mod tests {
                 .windows(2)
                 .any(|pair| pair == ["--browserLaunchEnabled", "false"])
         );
-        assert!(command.environment.iter().any(|(key, value)| {
-            key == "HTTP_PROXY" && value == "http://127.0.0.1:7890"
-        }));
+        assert!(
+            command
+                .environment
+                .iter()
+                .any(|(key, value)| { key == "HTTP_PROXY" && value == "http://127.0.0.1:7890" })
+        );
     }
 
     #[test]
@@ -1086,31 +1102,48 @@ mod tests {
             export_path: "/tmp".to_owned(),
         };
         let normal = launch_command(&base).unwrap();
-        assert!(!normal.arguments.iter().any(|argument| argument == "--browserLaunchEnabled"));
+        assert!(
+            !normal
+                .arguments
+                .iter()
+                .any(|argument| argument == "--browserLaunchEnabled")
+        );
 
         let desktop = launch_command(&TavernLaunchSpec {
             launch_mode: TavernLaunchMode::Desktop,
             ..base.clone()
         })
         .unwrap();
-        assert!(desktop.arguments.windows(2).any(|pair| {
-            pair == ["--browserLaunchEnabled", "false"]
-        }));
+        assert!(
+            desktop
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["--browserLaunchEnabled", "false"] })
+        );
 
         let server = launch_command(&TavernLaunchSpec {
             launch_mode: TavernLaunchMode::Server,
             ..base
         })
         .unwrap();
-        assert!(server.arguments.windows(2).any(|pair| {
-            pair == ["--browserLaunchEnabled", "false"]
-        }));
+        assert!(
+            server
+                .arguments
+                .windows(2)
+                .any(|pair| { pair == ["--browserLaunchEnabled", "false"] })
+        );
     }
 
     #[test]
     fn normalizes_proxy_protocol() {
-        assert_eq!(normalize_proxy_url("127.0.0.1:7890"), "http://127.0.0.1:7890");
-        assert_eq!(normalize_proxy_url("socks5://127.0.0.1:1080"), "socks5://127.0.0.1:1080");
+        assert_eq!(
+            normalize_proxy_url("127.0.0.1:7890"),
+            "http://127.0.0.1:7890"
+        );
+        assert_eq!(
+            normalize_proxy_url("socks5://127.0.0.1:1080"),
+            "socks5://127.0.0.1:1080"
+        );
     }
 
     #[test]
@@ -1129,7 +1162,10 @@ mod tests {
             extract_tavern_url("Proxy URL is used: http://127.0.0.1:7892"),
             None
         );
-        assert_eq!(extract_conflict_port("Error: listen EADDRINUSE: address already in use :::8000"), Some(8000));
+        assert_eq!(
+            extract_conflict_port("Error: listen EADDRINUSE: address already in use :::8000"),
+            Some(8000)
+        );
     }
 
     #[test]

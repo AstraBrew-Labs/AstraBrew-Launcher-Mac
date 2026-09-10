@@ -187,10 +187,8 @@ impl SettingsStore {
             "ui_scale".into(),
             Value::from(crate::core::typography::normalize_ui_scale(preferences.ui_scale) as f64),
         );
-        self.document.insert(
-            "font_family".into(),
-            Value::String(preferences.font_family),
-        );
+        self.document
+            .insert("font_family".into(), Value::String(preferences.font_family));
         self.document.insert(
             "remember_window_pos".into(),
             Value::Bool(preferences.remember_window_position),
@@ -630,8 +628,13 @@ mod tests {
     #[test]
     fn interface_preferences_default_normalize_and_roundtrip() {
         let defaults = PersistentPreferences::default();
-        assert!((defaults.ui_scale - crate::core::typography::DEFAULT_UI_SCALE).abs() < f32::EPSILON);
-        assert_eq!(defaults.font_family, crate::core::typography::DEFAULT_FONT_KEY);
+        assert!(
+            (defaults.ui_scale - crate::core::typography::DEFAULT_UI_SCALE).abs() < f32::EPSILON
+        );
+        assert_eq!(
+            defaults.font_family,
+            crate::core::typography::DEFAULT_FONT_KEY
+        );
 
         let path = test_path("interface-preferences");
         fs::write(

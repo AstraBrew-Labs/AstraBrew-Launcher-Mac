@@ -15,14 +15,15 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, WHITE,
-    icons,
-};
+use astra_ui::{BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, WHITE, icons};
 
+use super::notice::TransientNotice;
 use super::settings::{SettingsState, TavernDataMode};
 use super::versions::VersionState;
-use super::notice::TransientNotice;
+use crate::core::library::{
+    ResourceData, ResourceImportItem, ResourceImportReport, ResourceKind, ValidationIssue,
+    WorldEntry, import_batch, validate_path,
+};
 use crate::lang::{current_language, t, text};
 use crate::theme::button_style;
 
@@ -61,15 +62,6 @@ impl ResourceTab {
         }
     }
 
-    const fn singular(self) -> &'static str {
-        match self {
-            Self::Characters => "角色卡",
-            Self::WorldBooks => "世界书",
-            Self::Chats => "对话记录",
-            Self::Presets => "预设",
-        }
-    }
-
     const fn icon(self) -> Icon {
         match self {
             Self::Characters => Icon::ContactRound,
@@ -91,14 +83,15 @@ impl ResourceTab {
     const fn supports_import(self) -> bool {
         !matches!(self, Self::Chats)
     }
-}
 
-#[derive(Debug, Clone, Default)]
-pub struct WorldEntry {
-    pub keys: Vec<String>,
-    pub content: String,
-    pub comment: String,
-    pub enabled: bool,
+    const fn resource_kind(self) -> Option<ResourceKind> {
+        match self {
+            Self::Characters => Some(ResourceKind::CharacterCard),
+            Self::WorldBooks => Some(ResourceKind::WorldBook),
+            Self::Presets => Some(ResourceKind::Preset),
+            Self::Chats => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -157,14 +150,7 @@ pub struct ChatMessage {
     pub content: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct PresetPrompt {
-    pub name: String,
-    pub role: String,
-    pub content: String,
-    pub enabled: bool,
-    pub marker: bool,
-}
+pub(crate) use crate::core::library::PresetPrompt;
 
 #[derive(Debug, Clone)]
 pub struct PresetInfo {
@@ -201,6 +187,12 @@ pub enum ResourceManageMessage {
     Refresh,
     OpenDirectory,
     Import,
+    ImportCompleted(ResourceTab, ResourceImportReport),
+    ShowImportFailures,
+    CloseImportFailures,
+    ClearImportFailures,
+    /// 消费导入失败弹窗内部及遮罩点击，防止事件穿透到底层页面。
+    ImportFailureModalInteract,
     SelectCharacter(usize),
     SelectWorldBook(usize),
     SelectChat(usize, usize),
@@ -240,6 +232,10 @@ pub struct ResourceManageState {
     pub chat_messages: Vec<ChatMessage>,
     pub notice: Option<TransientNotice>,
     pending_delete: Option<PendingDelete>,
+    pub import_pending: bool,
+    import_failures: Vec<ResourceImportItem>,
+    import_failure_kind: Option<ResourceKind>,
+    import_failures_visible: bool,
 }
 
 impl Default for ResourceManageState {
@@ -267,6 +263,10 @@ impl Default for ResourceManageState {
             chat_messages: Vec::new(),
             notice: None,
             pending_delete: None,
+            import_pending: false,
+            import_failures: Vec::new(),
+            import_failure_kind: None,
+            import_failures_visible: false,
         }
     }
 }
@@ -327,10 +327,26 @@ impl ResourceManageState {
                 self.open_current_directory();
                 Task::none()
             }
-            ResourceManageMessage::Import => {
-                self.import_current_resource();
+            ResourceManageMessage::Import => self.import_current_resource(),
+            ResourceManageMessage::ImportCompleted(tab, report) => {
+                self.apply_import_report(tab, report);
                 Task::none()
             }
+            ResourceManageMessage::ShowImportFailures => {
+                self.import_failures_visible = !self.import_failures.is_empty();
+                Task::none()
+            }
+            ResourceManageMessage::CloseImportFailures => {
+                self.import_failures_visible = false;
+                Task::none()
+            }
+            ResourceManageMessage::ClearImportFailures => {
+                self.import_failures.clear();
+                self.import_failure_kind = None;
+                self.import_failures_visible = false;
+                Task::none()
+            }
+            ResourceManageMessage::ImportFailureModalInteract => Task::none(),
             ResourceManageMessage::SelectCharacter(index) => {
                 self.selected_character = Some(index);
                 self.pending_delete = None;
@@ -369,9 +385,7 @@ impl ResourceManageState {
                 if let Some(index) = self.selected_preset
                     && let Some(preset) = self.presets.get(index)
                 {
-                    let page_count = preset
-                        .prompt_count
-                        .div_ceil(PRESET_PROMPTS_PER_PAGE);
+                    let page_count = preset.prompt_count.div_ceil(PRESET_PROMPTS_PER_PAGE);
                     if self.preset_detail_page + 1 < page_count {
                         self.preset_detail_page += 1;
                     }
@@ -393,11 +407,9 @@ impl ResourceManageState {
             ResourceManageMessage::DeleteModalInteract => Task::none(),
         };
 
-        let load_task = if self.tab == ResourceTab::Presets {
-            self.start_presets_loading()
-        } else {
-            Task::none()
-        };
+        // 顶部标签始终展示预设数量；即使当前停留在其他资源页，也要保证预设扫描已启动。
+        // 资源目录在异步切换时，过期扫描结果会被丢弃，此处会自动为新目录补发扫描任务。
+        let load_task = self.start_presets_loading();
         Task::batch([task, load_task])
     }
 
@@ -473,11 +485,7 @@ impl ResourceManageState {
     }
 
     /// 应用后台返回的预设列表，并丢弃已经过期的请求结果。
-    fn apply_presets_loaded(
-        &mut self,
-        request_id: u64,
-        result: Result<Vec<PresetInfo>, String>,
-    ) {
+    fn apply_presets_loaded(&mut self, request_id: u64, result: Result<Vec<PresetInfo>, String>) {
         if request_id != self.preset_load_request_id {
             return;
         }
@@ -504,9 +512,7 @@ impl ResourceManageState {
         index: usize,
         result: Result<Vec<PresetPrompt>, String>,
     ) {
-        if request_id != self.preset_detail_request_id
-            || self.selected_preset != Some(index)
-        {
+        if request_id != self.preset_detail_request_id || self.selected_preset != Some(index) {
             return;
         }
 
@@ -515,10 +521,8 @@ impl ResourceManageState {
             Ok(prompts) => {
                 if let Some(preset) = self.presets.get_mut(index) {
                     preset.prompt_count = prompts.len();
-                    preset.enabled_prompt_count = prompts
-                        .iter()
-                        .filter(|prompt| prompt.enabled)
-                        .count();
+                    preset.enabled_prompt_count =
+                        prompts.iter().filter(|prompt| prompt.enabled).count();
                     preset.prompts = prompts;
                     preset.prompts_loaded = true;
                 }
@@ -545,6 +549,10 @@ impl ResourceManageState {
         self.preset_detail_request_id = self.preset_detail_request_id.wrapping_add(1);
         self.chat_messages.clear();
         self.pending_delete = None;
+        self.import_pending = false;
+        self.import_failures.clear();
+        self.import_failure_kind = None;
+        self.import_failures_visible = false;
     }
 
     fn repair_selections(&mut self) {
@@ -615,61 +623,80 @@ impl ResourceManageState {
         }
     }
 
-    fn import_current_resource(&mut self) {
-        if !self.tab.supports_import() {
+    fn import_current_resource(&mut self) -> Task<ResourceManageMessage> {
+        if self.import_pending {
+            return Task::none();
+        }
+        let Some(kind) = self.tab.resource_kind() else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
                 "历史对话请通过资源迁移或直接放入角色对应目录。",
             ));
-            return;
-        }
+            return Task::none();
+        };
         let Some(directory) = self.directory_for(self.tab) else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
                 "请先在版本管理中选择一个 SillyTavern 实例。",
             ));
-            return;
+            return Task::none();
         };
         let dialog = match self.tab {
             ResourceTab::Characters => rfd::FileDialog::new().add_filter("角色卡 PNG", &["png"]),
             ResourceTab::WorldBooks | ResourceTab::Presets => {
                 rfd::FileDialog::new().add_filter("JSON 文件", &["json"])
             }
-            ResourceTab::Chats => return,
+            ResourceTab::Chats => return Task::none(),
         };
         let Some(files) = dialog.pick_files() else {
-            return;
+            return Task::none();
         };
-        if let Err(error) = fs::create_dir_all(&directory) {
-            self.notice = Some(TransientNotice::danger(
-                "notice.operation_failed",
-                format!("无法创建资源目录：{error}"),
-            ));
-            return;
-        }
+        let tab = self.tab;
+        self.import_pending = true;
+        let task_sources = files.clone();
+        Task::perform(
+            async move {
+                std::thread::spawn(move || import_batch(kind, files, &directory))
+                    .join()
+                    .unwrap_or_else(|_| {
+                        ResourceImportReport::task_failed(
+                            task_sources,
+                            "资源导入后台线程意外退出。",
+                        )
+                    })
+            },
+            move |report| ResourceManageMessage::ImportCompleted(tab, report),
+        )
+    }
 
-        let mut imported = 0usize;
-        let mut failed = Vec::new();
-        for source in files {
-            let Some(filename) = source.file_name() else {
-                continue;
-            };
-            let destination = directory.join(filename);
-            match fs::copy(&source, destination) {
-                Ok(_) => imported += 1,
-                Err(error) => failed.push(error.to_string()),
-            }
+    /// 应用后台导入结果，并保留逐文件失败原因供详情弹窗查看。
+    fn apply_import_report(&mut self, tab: ResourceTab, report: ResourceImportReport) {
+        self.import_pending = false;
+        let imported = report.imported;
+        let failed = report.failed.len();
+        self.import_failures = report.failed;
+        self.import_failure_kind = (!self.import_failures.is_empty()).then_some(
+            tab.resource_kind()
+                .expect("仅支持导入的资源页会产生导入报告"),
+        );
+        self.import_failures_visible = false;
+        if imported > 0 {
+            self.refresh_all();
         }
-        self.refresh_all();
-        self.notice = if failed.is_empty() {
+        self.notice = if failed == 0 {
             Some(TransientNotice::success(
                 "notice.import_complete",
-                format!("已导入 {imported} 个{}。", self.tab.singular()),
+                import_result_detail(tab, imported, failed),
+            ))
+        } else if imported == 0 {
+            Some(TransientNotice::danger(
+                "notice.operation_failed",
+                import_result_detail(tab, imported, failed),
             ))
         } else {
             Some(TransientNotice::warning(
                 "notice.import_partial",
-                format!("已导入 {imported} 个文件，{} 个失败。", failed.len()),
+                import_result_detail(tab, imported, failed),
             ))
         };
     }
@@ -739,13 +766,16 @@ impl ResourceManageState {
             .into_iter()
             .filter_map(|path| {
                 let metadata = fs::metadata(&path).ok()?;
-                let parsed = parse_character_png(&path);
+                let validated = validate_path(ResourceKind::CharacterCard, &path).ok()?;
+                let ResourceData::CharacterCard(parsed) = validated.data else {
+                    return None;
+                };
                 let filename = file_name(&path);
-                let name = non_empty(parsed.name, file_stem(&path));
-                let (image_width, image_height) = fs::read(&path)
-                    .ok()
-                    .and_then(|data| read_png_dimensions(&data))
-                    .unwrap_or((0, 0));
+                let name = parsed.name.clone();
+                let (world_name, world_entries) = parsed
+                    .world_book
+                    .map(|world| (world.name, world.entries))
+                    .unwrap_or_default();
                 Some(CharacterCardInfo {
                     filename,
                     filepath: path,
@@ -759,12 +789,12 @@ impl ResourceManageState {
                     first_message: parsed.first_message,
                     spec: parsed.spec,
                     spec_version: parsed.spec_version,
-                    world_name: parsed.world_name,
-                    world_entries: parsed.world_entries,
+                    world_name,
+                    world_entries,
                     file_size: metadata.len(),
                     modified_secs: modified_secs(&metadata),
-                    image_width,
-                    image_height,
+                    image_width: parsed.image_width,
+                    image_height: parsed.image_height,
                 })
             })
             .collect::<Vec<_>>();
@@ -780,26 +810,17 @@ impl ResourceManageState {
             .into_iter()
             .filter_map(|path| {
                 let metadata = fs::metadata(&path).ok()?;
-                let value: serde_json::Value =
-                    serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-                let name = value
-                    .get("name")
-                    .and_then(|value| value.as_str())
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| file_stem(&path));
-                let author = value
-                    .get("author")
-                    .or_else(|| value.get("creator"))
-                    .and_then(|value| value.as_str())
-                    .unwrap_or_default()
-                    .to_owned();
+                let validated = validate_path(ResourceKind::WorldBook, &path).ok()?;
+                let ResourceData::WorldBook(world) = validated.data else {
+                    return None;
+                };
+                let name = non_empty(world.name, file_stem(&path));
                 Some(WorldBookInfo {
                     filename: file_name(&path),
                     filepath: path,
                     name,
-                    author,
-                    entries: parse_world_entries(&value),
+                    author: world.author,
+                    entries: world.entries,
                     file_size: metadata.len(),
                     modified_secs: modified_secs(&metadata),
                 })
@@ -858,9 +879,7 @@ impl ResourceManageState {
     fn current_count(&self) -> usize {
         self.resource_count(self.tab)
     }
-
 }
-
 
 /// 在后台线程中读取预设列表，只解析卡片展示需要的元数据。
 fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, String> {
@@ -868,56 +887,29 @@ fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, Stri
         .into_iter()
         .filter_map(|path| {
             let metadata = fs::metadata(&path).ok()?;
-            let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-            let source = string_value(&value, "chat_completion_source");
-            let model = if source.to_lowercase().contains("claude") {
-                string_value(&value, "claude_model")
-            } else {
-                non_empty(
-                    string_value(&value, "openai_model"),
-                    string_value(&value, "claude_model"),
-                )
+            let validated = validate_path(ResourceKind::Preset, &path).ok()?;
+            let ResourceData::Preset(preset) = validated.data else {
+                return None;
             };
-            let prompt_values = value.get("prompts").and_then(|value| value.as_array());
-            let prompt_count = prompt_values.map_or(0, Vec::len);
-            let enabled_prompt_count = prompt_values.map_or(0, |prompts| {
-                prompts
-                    .iter()
-                    .filter(|prompt| {
-                        prompt
-                            .get("enabled")
-                            .and_then(|value| value.as_bool())
-                            .unwrap_or(true)
-                    })
-                    .count()
-            });
-
             let name = file_stem(&path);
-            // 分离扩展格式与酒馆助手依赖状态，避免将依赖关系误显示为格式。
-            let (has_spreset, requires_tavern_helper) = preset_extension_info(&value);
             Some(PresetInfo {
                 filename: file_name(&path),
                 filepath: path,
                 name,
-                source,
-                model,
-                max_context: value
-                    .get("openai_max_context")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or_default(),
-                max_tokens: value
-                    .get("openai_max_tokens")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or_default(),
-                stream: value
-                    .get("stream_openai")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
-                prompt_count,
-                enabled_prompt_count,
+                source: preset.source,
+                model: preset.model,
+                max_context: preset.max_context,
+                max_tokens: preset.max_tokens,
+                stream: preset.stream,
+                prompt_count: preset.prompts.len(),
+                enabled_prompt_count: preset
+                    .prompts
+                    .iter()
+                    .filter(|prompt| prompt.enabled)
+                    .count(),
                 prompts: Vec::new(),
-                has_spreset,
-                requires_tavern_helper,
+                has_spreset: preset.has_spreset,
+                requires_tavern_helper: preset.requires_tavern_helper,
                 file_size: metadata.len(),
                 modified_secs: modified_secs(&metadata),
                 prompts_loaded: false,
@@ -931,210 +923,26 @@ fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, Stri
 
 /// 异步加载单个预设的完整提示词内容。
 fn load_preset_prompts(path: &Path) -> Result<Vec<PresetPrompt>, String> {
-    let data = fs::read(path).map_err(|error| format!("读取预设文件失败：{error}"))?;
-    let value: serde_json::Value = serde_json::from_slice(&data)
-        .map_err(|error| format!("解析预设文件失败：{error}"))?;
-    Ok(value
-        .get("prompts")
-        .and_then(|value| value.as_array())
-        .map(|items| items.iter().map(parse_preset_prompt).collect())
-        .unwrap_or_default())
+    let validated = validate_path(ResourceKind::Preset, path)
+        .map_err(|issues| validation_issue_summary(&issues))?;
+    let ResourceData::Preset(preset) = validated.data else {
+        return Err("预设解析结果类型不正确。".into());
+    };
+    Ok(preset.prompts)
 }
 
-/// 将一个 JSON 提示词条目转换为界面详情结构。
-fn parse_preset_prompt(prompt: &serde_json::Value) -> PresetPrompt {
-    PresetPrompt {
-        name: string_value(prompt, "name"),
-        role: string_value(prompt, "role"),
-        content: string_value(prompt, "content"),
-        enabled: prompt
-            .get("enabled")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(true),
-        marker: prompt
-            .get("marker")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false),
-    }
-}
-
-/// 分别识别预设格式与酒馆助手依赖，兼容旧版和新版预设字段。
-fn preset_extension_info(value: &serde_json::Value) -> (bool, bool) {
-    let mut has_spreset = false;
-    let mut requires_tavern_helper = false;
-
-    if let Some(extensions) = value.get("extensions").and_then(|value| value.as_object()) {
-        for key in extensions.keys() {
-            match key.to_ascii_lowercase().as_str() {
-                "spreset" => {
-                    has_spreset = true;
-                    // 旧版 SPreset 本身就是酒馆助手预设格式。
-                    requires_tavern_helper = true;
-                }
-                "tavern_helper" | "tavernhelper" | "tavern helper" => {
-                    requires_tavern_helper = true;
-                }
-                _ => {}
+/// 将一组字段级问题压缩为预设详情加载使用的单行错误。
+fn validation_issue_summary(issues: &[ValidationIssue]) -> String {
+    issues
+        .first()
+        .map(|issue| {
+            if issue.field_path.is_empty() {
+                issue.detail.clone()
+            } else {
+                format!("{}：{}", issue.field_path, issue.detail)
             }
-        }
-    }
-
-    (has_spreset, requires_tavern_helper)
-}
-
-#[derive(Default)]
-struct ParsedCharacter {
-    name: String,
-    description: String,
-    creator: String,
-    version: String,
-    tags: Vec<String>,
-    personality: String,
-    scenario: String,
-    first_message: String,
-    spec: String,
-    spec_version: String,
-    world_name: String,
-    world_entries: Vec<WorldEntry>,
-}
-
-fn parse_character_png(path: &Path) -> ParsedCharacter {
-    let Ok(data) = fs::read(path) else {
-        return ParsedCharacter::default();
-    };
-    if data.len() < 8 || data[..8] != [137, 80, 78, 71, 13, 10, 26, 10] {
-        return ParsedCharacter::default();
-    }
-
-    let mut text_chunks = Vec::new();
-    let mut position = 8usize;
-    while position + 12 <= data.len() {
-        let length = u32::from_be_bytes([
-            data[position],
-            data[position + 1],
-            data[position + 2],
-            data[position + 3],
-        ]) as usize;
-        if position + 12 + length > data.len() {
-            break;
-        }
-        let kind = &data[position + 4..position + 8];
-        if kind == b"tEXt" {
-            let payload = &data[position + 8..position + 8 + length];
-            if let Some(separator) = payload.iter().position(|byte| *byte == 0) {
-                text_chunks.push((
-                    String::from_utf8_lossy(&payload[..separator]).to_string(),
-                    String::from_utf8_lossy(&payload[separator + 1..]).to_string(),
-                ));
-            }
-        }
-        position += length + 12;
-        if kind == b"IEND" {
-            break;
-        }
-    }
-
-    let encoded = ["chara", "ccv3"]
-        .into_iter()
-        .find_map(|wanted| {
-            text_chunks
-                .iter()
-                .find(|(key, _)| key.to_lowercase().contains(wanted))
-                .map(|(_, value)| value.as_str())
         })
-        .or_else(|| text_chunks.first().map(|(_, value)| value.as_str()));
-    let Some(encoded) = encoded else {
-        return ParsedCharacter::default();
-    };
-    let value = decode_base64(encoded)
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .or_else(|| serde_json::from_str::<serde_json::Value>(encoded).ok());
-    let Some(value) = value else {
-        return ParsedCharacter::default();
-    };
-    let data = value.get("data").unwrap_or(&value);
-    let pick = |keys: &[&str]| {
-        keys.iter()
-            .find_map(|key| data.get(*key).and_then(|value| value.as_str()))
-            .unwrap_or_default()
-            .to_owned()
-    };
-    let tags = data
-        .get("tags")
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    let world = data
-        .get("character_book")
-        .or_else(|| value.get("character_book"));
-    ParsedCharacter {
-        name: pick(&["name"]),
-        description: pick(&["description"]),
-        creator: pick(&["creator"]),
-        version: pick(&["character_version", "version"]),
-        tags,
-        personality: pick(&["personality"]),
-        scenario: pick(&["scenario"]),
-        first_message: pick(&["first_mes", "firstMessage"]),
-        spec: string_value(&value, "spec"),
-        spec_version: string_value(&value, "spec_version"),
-        world_name: world
-            .map(|value| string_value(value, "name"))
-            .unwrap_or_default(),
-        world_entries: world.map(parse_world_entries).unwrap_or_default(),
-    }
-}
-
-fn parse_world_entries(value: &serde_json::Value) -> Vec<WorldEntry> {
-    let entries = value.get("entries").unwrap_or(value);
-    match entries {
-        serde_json::Value::Array(items) => items.iter().filter_map(parse_world_entry).collect(),
-        serde_json::Value::Object(items) => items.values().filter_map(parse_world_entry).collect(),
-        _ => Vec::new(),
-    }
-}
-
-fn parse_world_entry(value: &serde_json::Value) -> Option<WorldEntry> {
-    let object = value.as_object()?;
-    let keys = object
-        .get("keys")
-        .or_else(|| object.get("key"))
-        .and_then(|value| value.as_array())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    Some(WorldEntry {
-        keys,
-        content: object
-            .get("content")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_owned(),
-        comment: object
-            .get("comment")
-            .or_else(|| object.get("name"))
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_owned(),
-        enabled: object
-            .get("enabled")
-            .and_then(|value| value.as_bool())
-            .unwrap_or_else(|| {
-                !object
-                    .get("disable")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-            }),
-    })
+        .unwrap_or_else(|| "资源校验失败。".into())
 }
 
 fn load_chat_messages(path: &Path) -> Vec<ChatMessage> {
@@ -1171,43 +979,6 @@ fn load_chat_messages(path: &Path) -> Vec<ChatMessage> {
         messages.drain(..messages.len() - CHAT_MESSAGE_LIMIT);
     }
     messages
-}
-
-fn decode_base64(input: &str) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(input.len() * 3 / 4);
-    let mut buffer = 0u32;
-    let mut bits = 0u8;
-    for byte in input.bytes().filter(|byte| !byte.is_ascii_whitespace()) {
-        if byte == b'=' {
-            break;
-        }
-        let value = match byte {
-            b'A'..=b'Z' => byte - b'A',
-            b'a'..=b'z' => byte - b'a' + 26,
-            b'0'..=b'9' => byte - b'0' + 52,
-            b'+' => 62,
-            b'/' => 63,
-            _ => return None,
-        } as u32;
-        buffer = (buffer << 6) | value;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            output.push((buffer >> bits) as u8);
-            buffer &= (1 << bits) - 1;
-        }
-    }
-    Some(output)
-}
-
-fn read_png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
-    if data.len() < 24 || data[..8] != [137, 80, 78, 71, 13, 10, 26, 10] {
-        return None;
-    }
-    Some((
-        u32::from_be_bytes([data[16], data[17], data[18], data[19]]),
-        u32::from_be_bytes([data[20], data[21], data[22], data[23]]),
-    ))
 }
 
 fn read_files(directory: &Path, extension: &str) -> Vec<PathBuf> {
@@ -1310,31 +1081,29 @@ fn truncate(value: &str, length: usize) -> String {
 
 pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
     // 资源管理页头部只保留标题，避免重复展示全局数据路径卡片。
-    let header = row![
-        column![
-            row![
-                container(icons::icon(Icon::LibraryBig, 19, BLUE_600))
-                    .width(36)
-                    .height(36)
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center)
-                    .style(page_icon_surface),
-                column![
-                    text("资源管理")
-                        .size(22)
-                        .font(crate::core::typography::medium())
-                        .style(crate::theme::text_style),
-                    text("统一查看与整理 SillyTavern 本地资源")
-                        .size(13)
-                        .font(crate::core::typography::regular())
-                        .style(crate::theme::muted_text_style),
-                ]
-                .spacing(3),
+    let header = row![column![
+        row![
+            container(icons::icon(Icon::LibraryBig, 19, BLUE_600))
+                .width(36)
+                .height(36)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .style(page_icon_surface),
+            column![
+                text("资源管理")
+                    .size(22)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::text_style),
+                text("统一查看与整理 SillyTavern 本地资源")
+                    .size(13)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
             ]
-            .spacing(11)
-            .align_y(Alignment::Center),
-        ],
-    ]
+            .spacing(3),
+        ]
+        .spacing(11)
+        .align_y(Alignment::Center),
+    ],]
     .align_y(Alignment::Center);
 
     let tabs = row(ResourceTab::ALL
@@ -1345,22 +1114,67 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     .align_y(Alignment::End);
 
     let import_button: Element<'_, ResourceManageMessage> = if state.tab.supports_import() {
+        let content = row![
+            icons::icon(
+                if state.import_pending {
+                    Icon::LoaderCircle
+                } else {
+                    Icon::FileUp
+                },
+                14,
+                WHITE,
+            ),
+            text(if state.import_pending {
+                tr("resources.import.validating").to_owned()
+            } else {
+                format!(
+                    "{}{}",
+                    tr("resources.import.action"),
+                    state
+                        .tab
+                        .resource_kind()
+                        .map(resource_kind_label)
+                        .unwrap_or_default()
+                )
+            })
+            .size(13)
+            .font(crate::core::typography::medium()),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center);
+        let control = button(content)
+            .padding([8, 12])
+            .style(button_style(ButtonVariant::Primary));
+        if state.import_pending {
+            control.into()
+        } else {
+            control.on_press(ResourceManageMessage::Import).into()
+        }
+    } else {
+        space::horizontal().width(Length::Shrink).into()
+    };
+
+    let failure_button: Element<'_, ResourceManageMessage> = if state.import_failures.is_empty() {
+        space::horizontal().width(Length::Shrink).into()
+    } else {
         button(
             row![
-                icons::icon(Icon::FileUp, 14, WHITE),
-                text(format!("导入{}", state.tab.singular()))
-                    .size(13)
-                    .font(crate::core::typography::medium()),
+                icons::icon(Icon::TriangleAlert, 14, DANGER),
+                text(format!(
+                    "{} ({})",
+                    tr("resources.import.show_failures"),
+                    state.import_failures.len()
+                ))
+                .size(13)
+                .font(crate::core::typography::medium()),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
         )
-        .on_press(ResourceManageMessage::Import)
+        .on_press(ResourceManageMessage::ShowImportFailures)
         .padding([8, 12])
-        .style(button_style(ButtonVariant::Primary))
+        .style(danger_outline_button_style)
         .into()
-    } else {
-        space::horizontal().width(Length::Shrink).into()
     };
 
     let toolbar = row![
@@ -1392,6 +1206,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         )
         .padding([7, 10])
         .style(count_surface),
+        failure_button,
         space::horizontal(),
         tooltip(
             button(crate::theme::muted_icon(Icon::FolderOpen, 15))
@@ -1450,13 +1265,240 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
     .align_x(Alignment::Center)
     .style(crate::theme::canvas_style);
 
-    if let Some(pending) = &state.pending_delete {
+    if state.import_failures_visible {
+        stack![page, import_failure_modal(state)]
+            .width(Fill)
+            .height(Fill)
+            .into()
+    } else if let Some(pending) = &state.pending_delete {
         stack![page, delete_confirmation_modal(pending)]
             .width(Fill)
             .height(Fill)
             .into()
     } else {
         page.into()
+    }
+}
+
+/// 构建导入失败详情弹窗，按文件和字段展示稳定校验结果。
+fn import_failure_modal(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
+    let resource_label = state
+        .import_failure_kind
+        .map(resource_kind_label)
+        .unwrap_or_else(|| tr("resources.import.resource_unknown"));
+    let header = row![
+        container(icons::icon(Icon::ShieldAlert, 18, DANGER))
+            .width(38)
+            .height(38)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(delete_modal_icon_surface),
+        column![
+            text(tr("resources.import.failure_title"))
+                .size(18)
+                .font(crate::core::typography::medium())
+                .style(crate::theme::text_style),
+            text(format!(
+                "{} · {} {}",
+                resource_label,
+                state.import_failures.len(),
+                tr("resources.import.failure_count")
+            ))
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(crate::theme::muted_text_style),
+        ]
+        .spacing(3)
+        .width(Fill),
+        button(crate::theme::muted_icon(Icon::X, 17))
+            .on_press(ResourceManageMessage::CloseImportFailures)
+            .width(32)
+            .height(32)
+            .style(button_style(ButtonVariant::Ghost)),
+    ]
+    .spacing(12)
+    .align_y(Alignment::Center);
+
+    let rows = state
+        .import_failures
+        .iter()
+        .map(import_failure_item)
+        .collect::<Vec<_>>();
+    let details = scrollable(column(rows).spacing(10).width(Fill))
+        .height(Length::Fill)
+        .width(Fill);
+    let footer = row![
+        text(tr("resources.import.failure_hint"))
+            .size(11)
+            .font(crate::core::typography::regular())
+            .style(crate::theme::muted_text_style),
+        space::horizontal(),
+        button(
+            text(tr("resources.import.clear_failures"))
+                .size(12)
+                .font(crate::core::typography::medium()),
+        )
+        .on_press(ResourceManageMessage::ClearImportFailures)
+        .height(36)
+        .padding([8, 14])
+        .style(button_style(ButtonVariant::Secondary)),
+        button(
+            text(tr("resources.import.close"))
+                .size(12)
+                .font(crate::core::typography::medium())
+                .color(WHITE),
+        )
+        .on_press(ResourceManageMessage::CloseImportFailures)
+        .height(36)
+        .padding([8, 16])
+        .style(button_style(ButtonVariant::Primary)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+
+    let panel = mouse_area(
+        container(
+            column![
+                header,
+                modal_separator(),
+                details,
+                modal_separator(),
+                footer
+            ]
+            .spacing(14),
+        )
+        .width(660)
+        .height(520)
+        .padding(20)
+        .style(delete_modal_surface),
+    )
+    .on_press(ResourceManageMessage::ImportFailureModalInteract);
+
+    stack![
+        button(space::Space::new())
+            .on_press(ResourceManageMessage::CloseImportFailures)
+            .width(Fill)
+            .height(Fill)
+            .padding(0)
+            .style(delete_modal_backdrop_style),
+        container(panel)
+            .width(Fill)
+            .height(Fill)
+            .padding(24)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
+}
+
+/// 构建单个失败文件及其字段级问题列表。
+fn import_failure_item(item: &ResourceImportItem) -> Element<'_, ResourceManageMessage> {
+    let file_name = truncate(
+        &item
+            .source
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy(),
+        64,
+    );
+    let format = item
+        .format
+        .map(|format| format.label())
+        .unwrap_or_else(|| tr("resources.import.format_unrecognized"));
+    let issues = item
+        .result
+        .as_ref()
+        .err()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let issue_rows = issues
+        .iter()
+        .map(|issue| {
+            let path = if issue.field_path.is_empty() {
+                tr("resources.validation.file_level").to_owned()
+            } else {
+                issue.field_path.clone()
+            };
+            row![
+                icons::icon(Icon::CircleX, 13, DANGER),
+                text(path)
+                    .size(11)
+                    .width(150)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
+                text(t(issue.message_key, current_language()))
+                    .size(12)
+                    .width(Fill)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::text_style),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into()
+        })
+        .collect::<Vec<Element<'_, ResourceManageMessage>>>();
+    container(
+        column![
+            row![
+                icons::icon(Icon::FileWarning, 15, DANGER),
+                text(file_name)
+                    .size(13)
+                    .width(Fill)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::text_style),
+                space::horizontal(),
+                text(format)
+                    .size(11)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+            column(issue_rows).spacing(7),
+        ]
+        .spacing(10),
+    )
+    .width(Fill)
+    .padding([12, 14])
+    .style(info_surface)
+    .into()
+}
+
+fn resource_kind_label(kind: ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::CharacterCard => tr("resources.import.kind.character"),
+        ResourceKind::WorldBook => tr("resources.import.kind.world_book"),
+        ResourceKind::Preset => tr("resources.import.kind.preset"),
+    }
+}
+
+/// 根据当前语言生成带数量的导入结果，避免动态文案出现中英混排。
+fn import_result_detail(tab: ResourceTab, imported: usize, failed: usize) -> String {
+    let resource = tab
+        .resource_kind()
+        .map(resource_kind_label)
+        .unwrap_or_else(|| tr("resources.import.resource_unknown"));
+    match current_language() {
+        crate::lang::Language::Chinese if failed == 0 => {
+            format!("已导入 {imported} 个{resource}。")
+        }
+        crate::lang::Language::Chinese if imported == 0 => {
+            format!("没有导入任何{resource}，{failed} 个文件未通过校验。")
+        }
+        crate::lang::Language::Chinese => {
+            format!("已导入 {imported} 个文件，{failed} 个文件未通过校验。")
+        }
+        crate::lang::Language::English if failed == 0 => {
+            format!("Imported {imported} {resource}.")
+        }
+        crate::lang::Language::English if imported == 0 => {
+            format!("No {resource} were imported; {failed} files failed validation.")
+        }
+        crate::lang::Language::English => {
+            format!("Imported {imported} files; {failed} files failed validation.")
+        }
     }
 }
 
@@ -2363,10 +2405,7 @@ fn preset_detail_error<'a>(
     .into()
 }
 
-fn preset_detail(
-    item: &PresetInfo,
-    detail_page: usize,
-) -> Element<'_, ResourceManageMessage> {
+fn preset_detail(item: &PresetInfo, detail_page: usize) -> Element<'_, ResourceManageMessage> {
     let page_count = item.prompt_count.div_ceil(PRESET_PROMPTS_PER_PAGE);
     let current_page = detail_page.min(page_count.saturating_sub(1));
     let mut content = column![
@@ -2387,7 +2426,12 @@ fn preset_detail(
             metric_card(
                 Icon::PlugZap,
                 "扩展格式",
-                if item.has_spreset { "SPreset" } else { "标准" }.into(),
+                if item.has_spreset {
+                    "SPreset"
+                } else {
+                    "标准"
+                }
+                .into(),
                 if item.has_spreset {
                     TAVERN_HELPER_ACCENT
                 } else {
@@ -2397,7 +2441,12 @@ fn preset_detail(
             metric_card(
                 Icon::Puzzle,
                 "依赖酒馆助手",
-                if item.requires_tavern_helper { "是" } else { "否" }.into(),
+                if item.requires_tavern_helper {
+                    "是"
+                } else {
+                    "否"
+                }
+                .into(),
                 if item.requires_tavern_helper {
                     TAVERN_HELPER_ACCENT
                 } else {
@@ -2633,16 +2682,20 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
                 space::horizontal(),
-                text(if entry.enabled { "已启用" } else { "已禁用" })
-                    .size(12)
-                    .font(crate::core::typography::medium())
-                    .style(move |theme| iced::widget::text::Style {
-                        color: Some(if entry.enabled {
-                            SUCCESS
-                        } else {
-                            crate::theme::text_muted(theme)
-                        }),
+                text(if entry.enabled {
+                    "已启用"
+                } else {
+                    "已禁用"
+                })
+                .size(12)
+                .font(crate::core::typography::medium())
+                .style(move |theme| iced::widget::text::Style {
+                    color: Some(if entry.enabled {
+                        SUCCESS
+                    } else {
+                        crate::theme::text_muted(theme)
                     }),
+                }),
             ]
             .align_y(Alignment::Center),
             text(format!("关键词：{}", truncate(&keywords, 80)))
@@ -2779,10 +2832,15 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
 }
 
 fn tag_chip<'a>(label: &'a str, color: Color) -> Element<'a, ResourceManageMessage> {
-    container(text(label).size(12).font(crate::core::typography::medium()).color(color))
-        .padding([3, 7])
-        .style(move |_theme| accent_surface(color))
-        .into()
+    container(
+        text(label)
+            .size(12)
+            .font(crate::core::typography::medium())
+            .color(color),
+    )
+    .padding([3, 7])
+    .style(move |_theme| accent_surface(color))
+    .into()
 }
 
 fn muted_tag_chip(label: &str) -> Element<'_, ResourceManageMessage> {
@@ -3121,7 +3179,11 @@ fn delete_modal_surface(theme: &Theme) -> container::Style {
                 0.0,
                 0.0,
                 0.0,
-                if crate::theme::is_dark(theme) { 0.46 } else { 0.20 },
+                if crate::theme::is_dark(theme) {
+                    0.46
+                } else {
+                    0.20
+                },
             ),
             offset: iced::Vector::new(0.0, 10.0),
             blur_radius: 30.0,
@@ -3183,30 +3245,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_world_entries_from_object_and_array_shapes() {
-        let object = serde_json::json!({
-            "entries": {
-                "0": { "key": ["Astra"], "content": "Lore", "disable": false }
-            }
-        });
-        let array = serde_json::json!({
-            "entries": [
-                { "keys": ["Brew"], "content": "World", "enabled": false }
-            ]
-        });
-        assert_eq!(parse_world_entries(&object).len(), 1);
-        assert!(parse_world_entries(&object)[0].enabled);
-        assert_eq!(parse_world_entries(&array)[0].keys, vec!["Brew"]);
-        assert!(!parse_world_entries(&array)[0].enabled);
-    }
-
-    #[test]
-    fn base64_decoder_handles_character_json() {
-        let decoded = decode_base64("eyJuYW1lIjoiQXN0cmEifQ==").expect("valid base64");
-        assert_eq!(String::from_utf8(decoded).unwrap(), r#"{"name":"Astra"}"#);
-    }
-
-    #[test]
     fn transient_notice_is_consumed_once() {
         let mut state = ResourceManageState::default();
         state.notice = Some(TransientNotice::info(
@@ -3216,5 +3254,15 @@ mod tests {
 
         assert!(state.take_notice().is_some());
         assert!(state.take_notice().is_none());
+    }
+
+    #[test]
+    fn starts_preset_scan_while_viewing_another_resource_tab() {
+        let mut state = ResourceManageState::default();
+        state.data_root = Some(std::path::PathBuf::from("/tmp/astrabrew-resource-test"));
+
+        let _task = state.update(ResourceManageMessage::SearchChanged("Astra".into()));
+
+        assert!(state.presets_loading);
     }
 }

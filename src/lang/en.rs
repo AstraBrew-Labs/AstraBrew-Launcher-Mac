@@ -379,7 +379,9 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "console.webview.ready" => "The desktop window loaded SillyTavern successfully.",
         "console.webview.retrying" => "The desktop window failed to load and will retry",
         "console.webview.failed" => "The desktop window failed to load:",
-        "console.webview.process_terminated" => "The WebView content process terminated unexpectedly.",
+        "console.webview.process_terminated" => {
+            "The WebView content process terminated unexpectedly."
+        }
         "console.webview.timeout" => "The desktop window timed out while loading.",
         "console.webview.blank_page" => "WebView only completed a blank-page navigation:",
         "webview.download.saved" => "File saved to:",
@@ -401,18 +403,65 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "notice.delete_complete" => "Delete Complete",
         "notice.delete_failed" => "Delete Failed",
         "resources.confirm.delete.title" => "Delete resource?",
-        "resources.confirm.delete.description" => "The following resource will be permanently deleted",
-        "resources.confirm.delete.warning" => "This cannot be undone. Confirm that this is the resource you want to delete.",
+        "resources.confirm.delete.description" => {
+            "The following resource will be permanently deleted"
+        }
+        "resources.confirm.delete.warning" => {
+            "This cannot be undone. Confirm that this is the resource you want to delete."
+        }
         "resources.confirm.delete.cancel" => "Cancel",
         "resources.confirm.delete.confirm" => "Delete Resource",
+        "resources.import.action" => "Import ",
+        "resources.import.validating" => "Validating…",
+        "resources.import.show_failures" => "View Import Failures",
+        "resources.import.failure_title" => "Import Failure Details",
+        "resources.import.failure_count" => "files were not imported",
+        "resources.import.failure_hint" => {
+            "Repair the files and import them again. Forced import is not available."
+        }
+        "resources.import.clear_failures" => "Clear Records",
+        "resources.import.close" => "Close",
+        "resources.import.resource_unknown" => "Unknown Resource",
+        "resources.import.kind.character" => "Character Cards",
+        "resources.import.kind.world_book" => "World Books",
+        "resources.import.kind.preset" => "Presets",
+        "resources.import.format_unrecognized" => "Unrecognized Format",
+        "resources.validation.file_level" => "File",
+        "resources.validation.invalid_extension" => "The file extension is not supported",
+        "resources.validation.file_too_large" => "The file exceeds the allowed size",
+        "resources.validation.read_failed" => "The file could not be read",
+        "resources.validation.task_failed" => "The resource import task ended unexpectedly",
+        "resources.validation.invalid_encoding" => "The file is not valid UTF-8 text",
+        "resources.validation.invalid_png" => "The PNG structure is invalid",
+        "resources.validation.invalid_png_text" => {
+            "Embedded PNG text could not be decompressed or parsed"
+        }
+        "resources.validation.missing_metadata" => "No valid character-card metadata was found",
+        "resources.validation.invalid_json" => "The JSON content is invalid",
+        "resources.validation.invalid_json_root" => "The JSON root must be an object",
+        "resources.validation.unrecognized_version" => {
+            "The character-card version is not recognized"
+        }
+        "resources.validation.missing_field" => "A required field is missing",
+        "resources.validation.invalid_field_type" => "A field has an invalid type",
+        "resources.validation.empty_entries" => "Resource entries cannot be empty",
+        "resources.validation.unrecognized_resource" => {
+            "The content does not match this resource format"
+        }
+        "resources.validation.target_conflict" => "A file with the same name already exists",
+        "resources.validation.write_failed" => "The target file could not be written",
         "console.webview.closed_stopping" => "The desktop window closed. Stopping SillyTavern.",
-        "console.webview.closed_running" => "The desktop window closed. SillyTavern is still running.",
+        "console.webview.closed_running" => {
+            "The desktop window closed. SillyTavern is still running."
+        }
         "console.log.starting" => "Preparing the SillyTavern runtime…",
         "console.log.started" => "SillyTavern started.",
         "console.log.stopping" => "Stopping SillyTavern…",
         "console.log.stopped" => "SillyTavern stopped.",
         "console.log.exited" => "Tavern process exited with code:",
-        "console.pm2.unavailable" => "PM2 was not found. Falling back to direct mode; closing the launcher will stop the service.",
+        "console.pm2.unavailable" => {
+            "PM2 was not found. Falling back to direct mode; closing the launcher will stop the service."
+        }
         "console.pm2.restored" => "Restored the PM2-managed SillyTavern service.",
         "console.network.lan" => "LAN access",
         "access.title" => "Access Tavern",
@@ -430,13 +479,17 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "access.scan_hint" => "Scan to access Tavern",
         "console.network.internet" => "Internet access",
         "console.network.lan_hint" => "Devices on the same LAN can use the address below.",
-        "console.network.internet_warning" => "Internet mode only adjusts the allowlist. Reverse proxy support is not implemented; do not expose an unsecured port directly.",
+        "console.network.internet_warning" => {
+            "Internet mode only adjusts the allowlist. Reverse proxy support is not implemented; do not expose an unsecured port directly."
+        }
         "console.network.security" => "Connection security",
         "console.port.title" => "Port in use",
         "console.port.description" => "SillyTavern could not listen on port:",
         "console.port.detected" => "Port conflict detected:",
         "console.port.warning_title" => "Stop another process",
-        "console.port.warning" => "Continue only if these processes can be stopped. The launcher never terminates an unconfirmed process.",
+        "console.port.warning" => {
+            "Continue only if these processes can be stopped. The launcher never terminates an unconfirmed process."
+        }
         "console.port.confirm" => "Release port and retry",
         "console.port.cancel" => "Cancel",
         "console.port.releasing" => "Stopping the confirmed port owners and retrying…",
@@ -452,8 +505,12 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "settings.interface.font.placeholder" => "Search system fonts",
         "settings.interface.font.loading" => "Applying font…",
         "settings.interface.font.error_title" => "Could Not Change Font",
-        "settings.interface.font.read_error" => "The selected font files could not be read. The current font was kept.",
-        "settings.interface.font.render_error" => "The selected font could not be registered with the renderer. The current font was kept.",
+        "settings.interface.font.read_error" => {
+            "The selected font files could not be read. The current font was kept."
+        }
+        "settings.interface.font.render_error" => {
+            "The selected font could not be registered with the renderer. The current font was kept."
+        }
         "settings.interface.font.default" => "Default (HarmonyOS Sans)",
         "environment.nodejs_required.title" => "Node.js Required",
         "environment.nodejs_required.description" => {
@@ -495,7 +552,9 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "extensions.install" => "Install Extension",
         "extensions.open_root" => "Open Extensions Folder",
         "extensions.no_instance" => "No Tavern instance selected",
-        "extensions.no_instance_hint" => "Select or install a Tavern instance in Version Management first.",
+        "extensions.no_instance_hint" => {
+            "Select or install a Tavern instance in Version Management first."
+        }
         "extensions.go_versions" => "Go to Version Management",
         "extensions.current_instance" => "Current Tavern Instance",
         "extensions.version" => "Current Version",
@@ -523,13 +582,17 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "extensions.on" => "On",
         "extensions.off" => "Off",
         "extensions.install.title" => "Install Extension",
-        "extensions.install.description" => "Install a third-party extension from Git or an offline ZIP package.",
+        "extensions.install.description" => {
+            "Install a third-party extension from Git or an offline ZIP package."
+        }
         "extensions.install.git" => "Git Install",
         "extensions.install.offline" => "Offline Package",
         "extensions.installing" => "Installing…",
         "extensions.install.executing" => "Installing extension files…",
         "extensions.install.failed" => "Installation failed",
-        "extensions.install.not_completed" => "The installation did not complete. Check the logs and try again.",
+        "extensions.install.not_completed" => {
+            "The installation did not complete. Check the logs and try again."
+        }
         "extensions.install.success_title" => "Installation complete",
         "extensions.install.ready" => "The extension was installed successfully.",
         "extensions.install.elapsed" => "Elapsed",
@@ -552,26 +615,42 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "extensions.remove" => "Remove",
         "extensions.overwrite" => "Overwrite",
         "extensions.confirm.delete.title" => "Delete extension?",
-        "extensions.confirm.delete.description" => "This will permanently delete the third-party extension:",
+        "extensions.confirm.delete.description" => {
+            "This will permanently delete the third-party extension:"
+        }
         "extensions.confirm.overwrite.title" => "Overwrite existing extension?",
-        "extensions.confirm.overwrite.description" => "An extension with the same name already exists. Continuing will replace its directory.",
+        "extensions.confirm.overwrite.description" => {
+            "An extension with the same name already exists. Continuing will replace its directory."
+        }
         "extensions.confirm.repair.title" => "Repair Git metadata?",
-        "extensions.confirm.repair.description" => "This initializes Git and configures the homepage as origin for:",
-        "extensions.notice.stop_required" => "Stop the current Tavern service before modifying extensions.",
-        "extensions.log.proxy_fallback" => "The GitHub accelerator failed. Retrying with the original URL.",
+        "extensions.confirm.repair.description" => {
+            "This initializes Git and configures the homepage as origin for:"
+        }
+        "extensions.notice.stop_required" => {
+            "Stop the current Tavern service before modifying extensions."
+        }
+        "extensions.log.proxy_fallback" => {
+            "The GitHub accelerator failed. Retrying with the original URL."
+        }
         "extensions.error.root_missing" => "The selected instance has no extensions directory",
         "extensions.error.scan_failed" => "Failed to read the extensions directory",
         "extensions.error.invalid_repository" => "Invalid Git repository URL",
         "extensions.error.branch_fetch_failed" => "Failed to fetch Git branches",
-        "extensions.error.branch_fetch_timeout" => "Git branch detection timed out. Check the network and try again",
+        "extensions.error.branch_fetch_timeout" => {
+            "Git branch detection timed out. Check the network and try again"
+        }
         "extensions.error.git_unavailable" => "Git could not be executed",
         "extensions.error.no_branches" => "The repository has no installable branches",
         "extensions.error.select_branch" => "Detect the repository and select a branch first",
-        "extensions.error.conflict" => "The extension already exists and requires overwrite confirmation",
+        "extensions.error.conflict" => {
+            "The extension already exists and requires overwrite confirmation"
+        }
         "extensions.error.clone_failed" => "Failed to clone the extension repository",
         "extensions.error.cancelled" => "Operation cancelled",
         "extensions.error.offline_invalid" => "Invalid offline extension package",
-        "extensions.error.duplicate_package" => "The selection contains duplicate extension packages",
+        "extensions.error.duplicate_package" => {
+            "The selection contains duplicate extension packages"
+        }
         "extensions.error.task_disconnected" => "The extension background task ended unexpectedly",
         "extensions.error.offline_open_failed" => "Could not open the offline package",
         "extensions.error.offline_write_failed" => "Failed to write offline extension files",
@@ -580,17 +659,25 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "extensions.error.manifest_invalid" => "The extension manifest is invalid",
         "extensions.error.archive_path" => "The archive contains an unsafe path",
         "extensions.error.archive_symlink" => "The archive contains an unsupported symbolic link",
-        "extensions.error.invalid_extension_id" => "Could not determine a safe extension directory name",
+        "extensions.error.invalid_extension_id" => {
+            "Could not determine a safe extension directory name"
+        }
         "extensions.error.invalid_target" => "Invalid extension target directory",
-        "extensions.error.path_outside_root" => "The extension path is outside the third-party root",
+        "extensions.error.path_outside_root" => {
+            "The extension path is outside the third-party root"
+        }
         "extensions.error.create_directory" => "Failed to create the extension directory",
         "extensions.error.cleanup_failed" => "Failed to clean an extension temporary directory",
-        "extensions.error.replace_failed" => "Failed to replace the existing extension; restoration was attempted",
+        "extensions.error.replace_failed" => {
+            "Failed to replace the existing extension; restoration was attempted"
+        }
         "extensions.error.toggle_failed" => "Failed to change the extension state",
         "extensions.error.delete_failed" => "Failed to delete the extension",
         "extensions.error.git_repair_unsupported" => "The extension has no repairable GitHub URL",
         "extensions.error.git_repair_failed" => "Failed to repair Git metadata",
-        "extensions.error.remote_conflict" => "The existing origin differs from the extension homepage",
+        "extensions.error.remote_conflict" => {
+            "The existing origin differs from the extension homepage"
+        }
         "extensions.error.open_failed" => "Failed to open the target",
         _ => return None,
     })
@@ -607,7 +694,10 @@ fn translate_dynamic(content: &str) -> String {
             "在线版本请求失败，当前使用旧缓存。",
             "The online request failed. Showing the previous cache.",
         ),
-        ("在线版本列表已更新。", "The online version list was updated."),
+        (
+            "在线版本列表已更新。",
+            "The online version list was updated.",
+        ),
         (
             "当前正在使用的版本不能删除。",
             "The active version cannot be deleted.",
@@ -644,7 +734,10 @@ fn translate_dynamic(content: &str) -> String {
     }
     for (prefix, translated) in [
         ("预设加载失败：", "Failed to load presets: "),
-        ("无法创建资源目录：", "Could not create the resource folder: "),
+        (
+            "无法创建资源目录：",
+            "Could not create the resource folder: ",
+        ),
         ("无法打开资源目录：", "Could not open the resource folder: "),
         ("删除失败：", "Delete failed: "),
         ("开始切换到 ", "Switching to "),
@@ -656,10 +749,19 @@ fn translate_dynamic(content: &str) -> String {
         if let Some(value) = content.strip_prefix(prefix) {
             return match prefix {
                 "开始切换到 " => format!("{translated}{}.", value.trim_end_matches(" 分支。")),
-                "未找到在线版本 v" => format!("{translated}{} was not found.", value.trim_end_matches('。')),
-                "开始安装在线版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
-                "已切换到在线安装版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
-                "已删除在线安装版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
+                "未找到在线版本 v" => format!(
+                    "{translated}{} was not found.",
+                    value.trim_end_matches('。')
+                ),
+                "开始安装在线版本 v" => {
+                    format!("{translated}{}.", value.trim_end_matches('。'))
+                }
+                "已切换到在线安装版本 v" => {
+                    format!("{translated}{}.", value.trim_end_matches('。'))
+                }
+                "已删除在线安装版本 v" => {
+                    format!("{translated}{}.", value.trim_end_matches('。'))
+                }
                 _ => format!("{translated}{value}"),
             };
         }
@@ -677,13 +779,14 @@ fn translate_dynamic(content: &str) -> String {
         };
         return format!("Opened the {resource} folder.");
     }
-    if let Some(value) = content.strip_prefix("已删除“").and_then(|value| value.strip_suffix("”。")) {
+    if let Some(value) = content
+        .strip_prefix("已删除“")
+        .and_then(|value| value.strip_suffix("”。"))
+    {
         return format!("Deleted “{value}”.");
     }
     if let Some(value) = content.strip_prefix("已导入 ")
-        && let Some((imported, failed)) = value
-            .trim_end_matches('。')
-            .split_once(" 个文件，")
+        && let Some((imported, failed)) = value.trim_end_matches('。').split_once(" 个文件，")
         && let Some(failed) = failed.strip_suffix(" 个失败")
     {
         return format!("Imported {imported} files; {failed} failed.");
