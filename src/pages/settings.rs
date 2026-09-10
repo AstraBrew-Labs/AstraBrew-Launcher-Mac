@@ -538,13 +538,6 @@ pub fn settings_view(state: &SettingsState, mode_controls_locked: bool) -> Eleme
     ]
     .spacing(22)
     .width(Fill);
-    if let Some(action) = state.last_action {
-        sections = sections.push(crate::theme::alert(
-            "功能入口已保留",
-            action.feedback(),
-            AlertKind::Info,
-        ));
-    }
     if let Some(error) = &state.appearance_error {
         sections = sections.push(crate::theme::alert(
             t("settings.interface.font.error_title", current_language()),

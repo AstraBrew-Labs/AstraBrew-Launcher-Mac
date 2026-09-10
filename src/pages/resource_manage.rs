@@ -9,16 +9,17 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use iced::widget::{button, column, container, image, row, scrollable, space, text_input, tooltip};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
-    BLUE_600, ButtonVariant, DANGER, SUCCESS, WARNING, WHITE,
+    BLUE_600, ButtonVariant, DANGER, INK_MUTED, SUCCESS, WHITE,
     icons,
 };
 
 use super::settings::{SettingsState, TavernDataMode};
 use super::versions::VersionState;
+use super::notice::TransientNotice;
 use crate::lang::text;
 use crate::theme::button_style;
 
@@ -26,6 +27,10 @@ const LIST_WIDTH: f32 = 390.0;
 const CHARACTER_THUMB_WIDTH: f32 = 52.0;
 const CHARACTER_THUMB_HEIGHT: f32 = 70.0;
 const CHAT_MESSAGE_LIMIT: usize = 300;
+// 预设详情按旧版的 2×2 分页展示，避免一次性布局大量提示词卡片。
+const PRESET_PROMPTS_PER_PAGE: usize = 4;
+/// 「依赖酒馆助手」为真时的强调色；为假时改用中性灰，避免与提示词指标抢视觉。
+const TAVERN_HELPER_ACCENT: Color = Color::from_rgb8(142, 68, 220);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ResourceTab {
@@ -168,10 +173,13 @@ pub struct PresetInfo {
     pub max_context: i64,
     pub max_tokens: i64,
     pub stream: bool,
+    pub prompt_count: usize,
+    pub enabled_prompt_count: usize,
     pub prompts: Vec<PresetPrompt>,
     pub has_spreset: bool,
     pub file_size: u64,
     pub modified_secs: u64,
+    prompts_loaded: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -191,10 +199,13 @@ pub enum ResourceManageMessage {
     SelectWorldBook(usize),
     SelectChat(usize, usize),
     SelectPreset(usize),
+    PresetsLoaded(u64, Result<Vec<PresetInfo>, String>),
+    PresetDetailLoaded(u64, usize, Result<Vec<PresetPrompt>, String>),
+    PresetDetailPreviousPage,
+    PresetDetailNextPage,
     RequestDelete,
     ConfirmDelete,
     CancelDelete,
-    ClearNotice,
 }
 
 #[derive(Debug, Clone)]
@@ -202,18 +213,24 @@ pub struct ResourceManageState {
     pub tab: ResourceTab,
     pub search: String,
     data_root: Option<PathBuf>,
-    source_label: String,
     context_key: String,
     pub characters: Vec<CharacterCardInfo>,
     pub world_books: Vec<WorldBookInfo>,
     pub chat_groups: Vec<ChatGroup>,
     pub presets: Vec<PresetInfo>,
+    pub presets_loaded: bool,
+    pub presets_loading: bool,
     pub selected_character: Option<usize>,
     pub selected_world_book: Option<usize>,
     pub selected_chat: Option<(usize, usize)>,
     pub selected_preset: Option<usize>,
+    pub preset_detail_page: usize,
+    pub preset_detail_loading: bool,
+    pub preset_detail_error: Option<String>,
+    preset_load_request_id: u64,
+    preset_detail_request_id: u64,
     pub chat_messages: Vec<ChatMessage>,
-    pub notice: Option<String>,
+    pub notice: Option<TransientNotice>,
     pending_delete: Option<PendingDelete>,
 }
 
@@ -223,16 +240,22 @@ impl Default for ResourceManageState {
             tab: ResourceTab::Characters,
             search: String::new(),
             data_root: None,
-            source_label: "尚未选择 SillyTavern 实例".into(),
             context_key: String::new(),
             characters: Vec::new(),
             world_books: Vec::new(),
             chat_groups: Vec::new(),
             presets: Vec::new(),
+            presets_loaded: false,
+            presets_loading: false,
             selected_character: None,
             selected_world_book: None,
             selected_chat: None,
             selected_preset: None,
+            preset_detail_page: 0,
+            preset_detail_loading: false,
+            preset_detail_error: None,
+            preset_load_request_id: 0,
+            preset_detail_request_id: 0,
             chat_messages: Vec::new(),
             notice: None,
             pending_delete: None,
@@ -242,10 +265,10 @@ impl Default for ResourceManageState {
 
 impl ResourceManageState {
     pub fn configure(&mut self, settings: &SettingsState, versions: &VersionState) {
-        let (root, label) = match settings.data_mode {
+        let root = match settings.data_mode {
             TavernDataMode::Global => {
                 let path = expand_home(&settings.global_data_path).join("default-user");
-                (Some(path), "全局数据".to_owned())
+                Some(path)
             }
             TavernDataMode::Current => {
                 let instance = versions.current_path.as_deref().or_else(|| {
@@ -255,11 +278,8 @@ impl ResourceManageState {
                         .map(|item| item.path.as_str())
                 });
                 match instance {
-                    Some(path) => (
-                        Some(PathBuf::from(path).join("data").join("default-user")),
-                        format!("独立数据 · {}", compact_path(path)),
-                    ),
-                    None => (None, "尚未选择 SillyTavern 实例".to_owned()),
+                    Some(path) => Some(PathBuf::from(path).join("data").join("default-user")),
+                    None => None,
                 }
             }
         };
@@ -271,34 +291,47 @@ impl ResourceManageState {
         if key != self.context_key {
             self.context_key = key;
             self.data_root = root;
-            self.source_label = label;
             self.clear_loaded_data();
-        } else {
-            self.source_label = label;
         }
     }
 
-    pub fn update(&mut self, message: ResourceManageMessage) {
-        match message {
+    pub fn update(&mut self, message: ResourceManageMessage) -> Task<ResourceManageMessage> {
+        let task = match message {
             ResourceManageMessage::SelectTab(tab) => {
                 self.tab = tab;
                 self.search.clear();
                 self.pending_delete = None;
+                Task::none()
             }
-            ResourceManageMessage::SearchChanged(value) => self.search = value,
+            ResourceManageMessage::SearchChanged(value) => {
+                self.search = value;
+                Task::none()
+            }
             ResourceManageMessage::Refresh => {
                 self.refresh_all();
-                self.notice = Some("资源目录已重新扫描。".into());
+                self.notice = Some(TransientNotice::info(
+                    "notice.refresh_complete",
+                    "资源目录已重新扫描。",
+                ));
+                Task::none()
             }
-            ResourceManageMessage::OpenDirectory => self.open_current_directory(),
-            ResourceManageMessage::Import => self.import_current_resource(),
+            ResourceManageMessage::OpenDirectory => {
+                self.open_current_directory();
+                Task::none()
+            }
+            ResourceManageMessage::Import => {
+                self.import_current_resource();
+                Task::none()
+            }
             ResourceManageMessage::SelectCharacter(index) => {
                 self.selected_character = Some(index);
                 self.pending_delete = None;
+                Task::none()
             }
             ResourceManageMessage::SelectWorldBook(index) => {
                 self.selected_world_book = Some(index);
                 self.pending_delete = None;
+                Task::none()
             }
             ResourceManageMessage::SelectChat(group_index, file_index) => {
                 self.selected_chat = Some((group_index, file_index));
@@ -309,24 +342,180 @@ impl ResourceManageState {
                     .and_then(|group| group.files.get(file_index))
                     .map(|file| load_chat_messages(&file.filepath))
                     .unwrap_or_default();
+                Task::none()
             }
-            ResourceManageMessage::SelectPreset(index) => {
-                self.selected_preset = Some(index);
+            ResourceManageMessage::SelectPreset(index) => self.select_preset(index),
+            ResourceManageMessage::PresetsLoaded(request_id, result) => {
+                self.apply_presets_loaded(request_id, result);
+                Task::none()
+            }
+            ResourceManageMessage::PresetDetailLoaded(request_id, index, result) => {
+                self.apply_preset_detail_loaded(request_id, index, result);
+                Task::none()
+            }
+            ResourceManageMessage::PresetDetailPreviousPage => {
+                self.preset_detail_page = self.preset_detail_page.saturating_sub(1);
+                Task::none()
+            }
+            ResourceManageMessage::PresetDetailNextPage => {
+                if let Some(index) = self.selected_preset
+                    && let Some(preset) = self.presets.get(index)
+                {
+                    let page_count = preset
+                        .prompt_count
+                        .div_ceil(PRESET_PROMPTS_PER_PAGE);
+                    if self.preset_detail_page + 1 < page_count {
+                        self.preset_detail_page += 1;
+                    }
+                }
+                Task::none()
+            }
+            ResourceManageMessage::RequestDelete => {
+                self.request_delete();
+                Task::none()
+            }
+            ResourceManageMessage::ConfirmDelete => {
+                self.confirm_delete();
+                Task::none()
+            }
+            ResourceManageMessage::CancelDelete => {
                 self.pending_delete = None;
+                Task::none()
             }
-            ResourceManageMessage::RequestDelete => self.request_delete(),
-            ResourceManageMessage::ConfirmDelete => self.confirm_delete(),
-            ResourceManageMessage::CancelDelete => self.pending_delete = None,
-            ResourceManageMessage::ClearNotice => self.notice = None,
-        }
+        };
+
+        let load_task = if self.tab == ResourceTab::Presets {
+            self.start_presets_loading()
+        } else {
+            Task::none()
+        };
+        Task::batch([task, load_task])
     }
 
     pub fn refresh_all(&mut self) {
         self.characters = self.scan_characters();
         self.world_books = self.scan_world_books();
         self.chat_groups = self.scan_chats();
-        self.presets = self.scan_presets();
+        // 预设文件可能包含大量提示词，列表改由后台任务异步加载。
+        self.presets.clear();
+        self.presets_loaded = false;
+        self.presets_loading = false;
+        self.preset_load_request_id = self.preset_load_request_id.wrapping_add(1);
+        self.preset_detail_request_id = self.preset_detail_request_id.wrapping_add(1);
+        self.preset_detail_loading = false;
+        self.preset_detail_error = None;
         self.repair_selections();
+    }
+
+    /// 启动预设列表后台加载，只读取列表所需的轻量元数据。
+    pub fn start_presets_loading(&mut self) -> Task<ResourceManageMessage> {
+        if self.presets_loaded || self.presets_loading {
+            return Task::none();
+        }
+
+        let Some(directory) = self.directory_for(ResourceTab::Presets) else {
+            self.presets_loaded = true;
+            return Task::none();
+        };
+
+        self.preset_load_request_id = self.preset_load_request_id.wrapping_add(1);
+        let request_id = self.preset_load_request_id;
+        self.presets_loading = true;
+
+        Task::perform(
+            async move {
+                std::thread::spawn(move || scan_presets_from_directory(&directory))
+                    .join()
+                    .unwrap_or_else(|_| Err("预设加载线程意外退出。".into()))
+            },
+            move |result| ResourceManageMessage::PresetsLoaded(request_id, result),
+        )
+    }
+
+    /// 选择预设时只异步读取当前预设的完整提示词内容，避免切换详情阻塞界面。
+    fn select_preset(&mut self, index: usize) -> Task<ResourceManageMessage> {
+        let Some(preset) = self.presets.get(index) else {
+            return Task::none();
+        };
+
+        self.selected_preset = Some(index);
+        self.pending_delete = None;
+        self.preset_detail_page = 0;
+        self.preset_detail_error = None;
+        self.preset_detail_request_id = self.preset_detail_request_id.wrapping_add(1);
+
+        if preset.prompts_loaded {
+            self.preset_detail_loading = false;
+            return Task::none();
+        }
+
+        let path = preset.filepath.clone();
+        let request_id = self.preset_detail_request_id;
+        self.preset_detail_loading = true;
+
+        Task::perform(
+            async move {
+                std::thread::spawn(move || load_preset_prompts(&path))
+                    .join()
+                    .unwrap_or_else(|_| Err("预设详情加载线程意外退出。".into()))
+            },
+            move |result| ResourceManageMessage::PresetDetailLoaded(request_id, index, result),
+        )
+    }
+
+    /// 应用后台返回的预设列表，并丢弃已经过期的请求结果。
+    fn apply_presets_loaded(
+        &mut self,
+        request_id: u64,
+        result: Result<Vec<PresetInfo>, String>,
+    ) {
+        if request_id != self.preset_load_request_id {
+            return;
+        }
+
+        self.presets_loading = false;
+        self.presets_loaded = true;
+        match result {
+            Ok(presets) => self.presets = presets,
+            Err(error) => {
+                self.presets.clear();
+                self.notice = Some(TransientNotice::danger(
+                    "notice.load_failed",
+                    format!("预设加载失败：{error}"),
+                ));
+            }
+        }
+        self.repair_selections();
+    }
+
+    /// 应用当前预设的异步详情内容，并确保切换预设后不会串入旧结果。
+    fn apply_preset_detail_loaded(
+        &mut self,
+        request_id: u64,
+        index: usize,
+        result: Result<Vec<PresetPrompt>, String>,
+    ) {
+        if request_id != self.preset_detail_request_id
+            || self.selected_preset != Some(index)
+        {
+            return;
+        }
+
+        self.preset_detail_loading = false;
+        match result {
+            Ok(prompts) => {
+                if let Some(preset) = self.presets.get_mut(index) {
+                    preset.prompt_count = prompts.len();
+                    preset.enabled_prompt_count = prompts
+                        .iter()
+                        .filter(|prompt| prompt.enabled)
+                        .count();
+                    preset.prompts = prompts;
+                    preset.prompts_loaded = true;
+                }
+            }
+            Err(error) => self.preset_detail_error = Some(error),
+        }
     }
 
     fn clear_loaded_data(&mut self) {
@@ -338,6 +527,13 @@ impl ResourceManageState {
         self.selected_world_book = None;
         self.selected_chat = None;
         self.selected_preset = None;
+        self.preset_detail_page = 0;
+        self.preset_detail_loading = false;
+        self.preset_detail_error = None;
+        self.presets_loaded = false;
+        self.presets_loading = false;
+        self.preset_load_request_id = self.preset_load_request_id.wrapping_add(1);
+        self.preset_detail_request_id = self.preset_detail_request_id.wrapping_add(1);
         self.chat_messages.clear();
         self.pending_delete = None;
     }
@@ -381,26 +577,48 @@ impl ResourceManageState {
 
     fn open_current_directory(&mut self) {
         let Some(directory) = self.directory_for(self.tab) else {
-            self.notice = Some("请先在版本管理中选择一个 SillyTavern 实例。".into());
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                "请先在版本管理中选择一个 SillyTavern 实例。",
+            ));
             return;
         };
         if let Err(error) = fs::create_dir_all(&directory) {
-            self.notice = Some(format!("无法创建资源目录：{error}"));
+            self.notice = Some(TransientNotice::danger(
+                "notice.operation_failed",
+                format!("无法创建资源目录：{error}"),
+            ));
             return;
         }
         match Command::new("open").arg(&directory).spawn() {
-            Ok(_) => self.notice = Some(format!("已打开 {} 目录。", self.tab.label())),
-            Err(error) => self.notice = Some(format!("无法打开资源目录：{error}")),
+            Ok(_) => {
+                self.notice = Some(TransientNotice::success(
+                    "notice.directory_opened",
+                    format!("已打开 {} 目录。", self.tab.label()),
+                ));
+            }
+            Err(error) => {
+                self.notice = Some(TransientNotice::danger(
+                    "notice.operation_failed",
+                    format!("无法打开资源目录：{error}"),
+                ));
+            }
         }
     }
 
     fn import_current_resource(&mut self) {
         if !self.tab.supports_import() {
-            self.notice = Some("历史对话请通过资源迁移或直接放入角色对应目录。".into());
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                "历史对话请通过资源迁移或直接放入角色对应目录。",
+            ));
             return;
         }
         let Some(directory) = self.directory_for(self.tab) else {
-            self.notice = Some("请先在版本管理中选择一个 SillyTavern 实例。".into());
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                "请先在版本管理中选择一个 SillyTavern 实例。",
+            ));
             return;
         };
         let dialog = match self.tab {
@@ -414,7 +632,10 @@ impl ResourceManageState {
             return;
         };
         if let Err(error) = fs::create_dir_all(&directory) {
-            self.notice = Some(format!("无法创建资源目录：{error}"));
+            self.notice = Some(TransientNotice::danger(
+                "notice.operation_failed",
+                format!("无法创建资源目录：{error}"),
+            ));
             return;
         }
 
@@ -432,11 +653,14 @@ impl ResourceManageState {
         }
         self.refresh_all();
         self.notice = if failed.is_empty() {
-            Some(format!("已导入 {imported} 个{}。", self.tab.singular()))
+            Some(TransientNotice::success(
+                "notice.import_complete",
+                format!("已导入 {imported} 个{}。", self.tab.singular()),
+            ))
         } else {
-            Some(format!(
-                "已导入 {imported} 个文件，{} 个失败。",
-                failed.len()
+            Some(TransientNotice::warning(
+                "notice.import_partial",
+                format!("已导入 {imported} 个文件，{} 个失败。", failed.len()),
             ))
         };
     }
@@ -478,11 +702,24 @@ impl ResourceManageState {
         };
         match fs::remove_file(&pending.path) {
             Ok(()) => {
-                self.notice = Some(format!("已删除“{}”。", pending.label));
+                self.notice = Some(TransientNotice::success(
+                    "notice.delete_complete",
+                    format!("已删除“{}”。", pending.label),
+                ));
                 self.refresh_all();
             }
-            Err(error) => self.notice = Some(format!("删除失败：{error}")),
+            Err(error) => {
+                self.notice = Some(TransientNotice::danger(
+                    "notice.delete_failed",
+                    format!("删除失败：{error}"),
+                ));
+            }
         }
+    }
+
+    /// 取出页面本次产生的轻提示，确保同一条消息只展示一次。
+    pub fn take_notice(&mut self) -> Option<TransientNotice> {
+        self.notice.take()
     }
 
     fn scan_characters(&self) -> Vec<CharacterCardInfo> {
@@ -600,80 +837,6 @@ impl ResourceManageState {
         groups
     }
 
-    fn scan_presets(&self) -> Vec<PresetInfo> {
-        let Some(directory) = self.directory_for(ResourceTab::Presets) else {
-            return Vec::new();
-        };
-        let mut items = read_files(&directory, "json")
-            .into_iter()
-            .filter_map(|path| {
-                let metadata = fs::metadata(&path).ok()?;
-                let value: serde_json::Value =
-                    serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
-                let source = string_value(&value, "chat_completion_source");
-                let model = if source.to_lowercase().contains("claude") {
-                    string_value(&value, "claude_model")
-                } else {
-                    non_empty(
-                        string_value(&value, "openai_model"),
-                        string_value(&value, "claude_model"),
-                    )
-                };
-                let prompts = value
-                    .get("prompts")
-                    .and_then(|value| value.as_array())
-                    .map(|items| {
-                        items
-                            .iter()
-                            .map(|prompt| PresetPrompt {
-                                name: string_value(prompt, "name"),
-                                role: string_value(prompt, "role"),
-                                content: string_value(prompt, "content"),
-                                enabled: prompt
-                                    .get("enabled")
-                                    .and_then(|value| value.as_bool())
-                                    .unwrap_or(true),
-                                marker: prompt
-                                    .get("marker")
-                                    .and_then(|value| value.as_bool())
-                                    .unwrap_or(false),
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let has_spreset = value
-                    .get("extensions")
-                    .and_then(|value| value.as_object())
-                    .is_some_and(|extensions| extensions.contains_key("SPreset"));
-                Some(PresetInfo {
-                    filename: file_name(&path),
-                    filepath: path.clone(),
-                    name: file_stem(&path),
-                    source,
-                    model,
-                    max_context: value
-                        .get("openai_max_context")
-                        .and_then(|value| value.as_i64())
-                        .unwrap_or_default(),
-                    max_tokens: value
-                        .get("openai_max_tokens")
-                        .and_then(|value| value.as_i64())
-                        .unwrap_or_default(),
-                    stream: value
-                        .get("stream_openai")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(false),
-                    prompts,
-                    has_spreset,
-                    file_size: metadata.len(),
-                    modified_secs: modified_secs(&metadata),
-                })
-            })
-            .collect::<Vec<_>>();
-        items.sort_by(|a, b| b.modified_secs.cmp(&a.modified_secs));
-        items
-    }
-
     fn resource_count(&self, tab: ResourceTab) -> usize {
         match tab {
             ResourceTab::Characters => self.characters.len(),
@@ -687,11 +850,116 @@ impl ResourceManageState {
         self.resource_count(self.tab)
     }
 
-    fn current_directory(&self) -> String {
-        self.directory_for(self.tab)
-            .map(|path| path.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "未配置数据目录".into())
+}
+
+
+/// 在后台线程中读取预设列表，只解析卡片展示需要的元数据。
+fn scan_presets_from_directory(directory: &Path) -> Result<Vec<PresetInfo>, String> {
+    let mut items = read_files(directory, "json")
+        .into_iter()
+        .filter_map(|path| {
+            let metadata = fs::metadata(&path).ok()?;
+            let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+            let source = string_value(&value, "chat_completion_source");
+            let model = if source.to_lowercase().contains("claude") {
+                string_value(&value, "claude_model")
+            } else {
+                non_empty(
+                    string_value(&value, "openai_model"),
+                    string_value(&value, "claude_model"),
+                )
+            };
+            let prompt_values = value.get("prompts").and_then(|value| value.as_array());
+            let prompt_count = prompt_values.map_or(0, Vec::len);
+            let enabled_prompt_count = prompt_values.map_or(0, |prompts| {
+                prompts
+                    .iter()
+                    .filter(|prompt| {
+                        prompt
+                            .get("enabled")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(true)
+                    })
+                    .count()
+            });
+
+            let name = file_stem(&path);
+            Some(PresetInfo {
+                filename: file_name(&path),
+                filepath: path,
+                name,
+                source,
+                model,
+                max_context: value
+                    .get("openai_max_context")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or_default(),
+                max_tokens: value
+                    .get("openai_max_tokens")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or_default(),
+                stream: value
+                    .get("stream_openai")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+                prompt_count,
+                enabled_prompt_count,
+                prompts: Vec::new(),
+                // 兼容旧版 SPreset 与新版 Tavern Helper 扩展字段。
+                has_spreset: has_tavern_helper_extension(&value),
+                file_size: metadata.len(),
+                modified_secs: modified_secs(&metadata),
+                prompts_loaded: false,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    items.sort_by(|a, b| b.modified_secs.cmp(&a.modified_secs));
+    Ok(items)
+}
+
+/// 异步加载单个预设的完整提示词内容。
+fn load_preset_prompts(path: &Path) -> Result<Vec<PresetPrompt>, String> {
+    let data = fs::read(path).map_err(|error| format!("读取预设文件失败：{error}"))?;
+    let value: serde_json::Value = serde_json::from_slice(&data)
+        .map_err(|error| format!("解析预设文件失败：{error}"))?;
+    Ok(value
+        .get("prompts")
+        .and_then(|value| value.as_array())
+        .map(|items| items.iter().map(parse_preset_prompt).collect())
+        .unwrap_or_default())
+}
+
+/// 将一个 JSON 提示词条目转换为界面详情结构。
+fn parse_preset_prompt(prompt: &serde_json::Value) -> PresetPrompt {
+    PresetPrompt {
+        name: string_value(prompt, "name"),
+        role: string_value(prompt, "role"),
+        content: string_value(prompt, "content"),
+        enabled: prompt
+            .get("enabled")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true),
+        marker: prompt
+            .get("marker")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     }
+}
+
+/// 检测旧版 SPreset 和新版 tavern_helper 两种扩展标记。
+fn has_tavern_helper_extension(value: &serde_json::Value) -> bool {
+    value
+        .get("extensions")
+        .and_then(|value| value.as_object())
+        .is_some_and(|extensions| {
+            extensions.keys().any(|key| {
+                matches!(
+                    key.to_ascii_lowercase().as_str(),
+                    "spreset" | "tavern_helper" | "tavernhelper" | "tavern helper"
+                )
+            })
+        })
 }
 
 #[derive(Default)]
@@ -991,14 +1259,6 @@ fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn compact_path(path: &str) -> String {
-    Path::new(path)
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .into_owned()
-}
-
 fn chat_display_time(filename: &str) -> String {
     filename
         .strip_suffix(".jsonl")
@@ -1029,6 +1289,7 @@ fn truncate(value: &str, length: usize) -> String {
 }
 
 pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
+    // 资源管理页头部只保留标题，避免重复展示全局数据路径卡片。
     let header = row![
         column![
             row![
@@ -1053,40 +1314,6 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             .spacing(11)
             .align_y(Alignment::Center),
         ],
-        space::horizontal(),
-        container(
-            row![
-                icons::icon(
-                    if state.data_root.is_some() {
-                        Icon::Database
-                    } else {
-                        Icon::CircleAlert
-                    },
-                    14,
-                    if state.data_root.is_some() {
-                        SUCCESS
-                    } else {
-                        WARNING
-                    },
-                ),
-                column![
-                    text(&state.source_label)
-                        .size(13)
-                        .font(crate::core::typography::medium())
-                        .style(crate::theme::text_style),
-                    text(state.current_directory())
-                        .size(12)
-                        .font(crate::core::typography::regular())
-                        .style(crate::theme::muted_text_style),
-                ]
-                .spacing(2),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        )
-        .max_width(390)
-        .padding([8, 12])
-        .style(source_surface),
     ]
     .align_y(Alignment::Center);
 
@@ -1196,25 +1423,6 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
         )
         .padding([8, 12])
         .style(delete_notice_surface)
-    } else if let Some(notice) = &state.notice {
-        container(
-            row![
-                icons::icon(Icon::Info, 14, BLUE_600),
-                text(notice)
-                    .size(12)
-                    .font(crate::core::typography::regular())
-                    .style(crate::theme::muted_text_style),
-                space::horizontal(),
-                button(crate::theme::subtle_icon(Icon::X, 13))
-                    .on_press(ResourceManageMessage::ClearNotice)
-                    .padding(4)
-                    .style(quiet_button_style),
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
-        )
-        .padding([7, 11])
-        .style(notice_surface)
     } else {
         container(space::vertical()).height(0)
     };
@@ -1509,6 +1717,10 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
 }
 
 fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
+    if state.presets_loading {
+        return preset_loading_panel();
+    }
+
     let query = state.search.to_lowercase();
     let rows = state
         .presets
@@ -1521,6 +1733,20 @@ fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage
                 || item.model.to_lowercase().contains(&query)
         })
         .map(|(index, item)| {
+            let prompt_meta = if item.has_spreset {
+                format!(
+                    "{} 段提示词 · {} · {}",
+                    item.prompt_count,
+                    format_size(item.file_size),
+                    crate::lang::display_label("依赖酒馆助手"),
+                )
+            } else {
+                format!(
+                    "{} 段提示词 · {}",
+                    item.prompt_count,
+                    format_size(item.file_size)
+                )
+            };
             simple_list_item(
                 Icon::ListChecks,
                 &item.name,
@@ -1529,17 +1755,37 @@ fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage
                 } else {
                     &item.model
                 },
-                format!(
-                    "{} 段提示词 · {}",
-                    item.prompts.len(),
-                    format_size(item.file_size)
-                ),
+                prompt_meta,
                 state.selected_preset == Some(index),
                 ResourceManageMessage::SelectPreset(index),
             )
         })
         .collect::<Vec<_>>();
     list_scroll(rows, "没有找到预设", "导入 JSON 预设后会显示在这里。")
+}
+
+/// 预设列表正在读取时的占位界面，避免用户误以为没有预设。
+fn preset_loading_panel() -> Element<'static, ResourceManageMessage> {
+    container(
+        column![
+            crate::theme::subtle_icon(Icon::LoaderCircle, 28),
+            text("正在加载预设…")
+                .size(13)
+                .font(crate::core::typography::medium())
+                .style(crate::theme::muted_text_style),
+            text("正在读取预设元数据，完成后即可查看详情。")
+                .size(11)
+                .font(crate::core::typography::regular())
+                .style(crate::theme::muted_text_style),
+        ]
+        .spacing(9)
+        .align_x(Alignment::Center),
+    )
+    .width(Fill)
+    .height(Fill)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .into()
 }
 
 fn simple_list_item<'a>(
@@ -1650,7 +1896,15 @@ fn resource_detail(state: &ResourceManageState) -> Element<'_, ResourceManageMes
         ResourceTab::Presets => state
             .selected_preset
             .and_then(|index| state.presets.get(index))
-            .map(preset_detail),
+            .map(|preset| {
+                if state.preset_detail_loading {
+                    preset_detail_loading(preset)
+                } else if let Some(error) = state.preset_detail_error.as_deref() {
+                    preset_detail_error(preset, error)
+                } else {
+                    preset_detail(preset, state.preset_detail_page)
+                }
+            }),
     };
 
     container(content.unwrap_or_else(|| {
@@ -1919,35 +2173,102 @@ fn chat_detail<'a>(
     .into()
 }
 
-fn preset_detail(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
+fn preset_detail_loading(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
+    column![
+        detail_header(
+            Icon::SlidersHorizontal,
+            &item.name,
+            format!("{} · {}", item.filename, format_size(item.file_size)),
+        ),
+        container(
+            column![
+                crate::theme::subtle_icon(Icon::LoaderCircle, 32),
+                text("正在加载预设详情…")
+                    .size(14)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::muted_text_style),
+                text("正在读取提示词内容，请稍候。")
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+            ]
+            .spacing(10)
+            .align_x(Alignment::Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center),
+    ]
+    .height(Fill)
+    .into()
+}
+
+fn preset_detail_error<'a>(
+    item: &'a PresetInfo,
+    error: &'a str,
+) -> Element<'a, ResourceManageMessage> {
+    column![
+        detail_header(
+            Icon::SlidersHorizontal,
+            &item.name,
+            format!("{} · {}", item.filename, format_size(item.file_size)),
+        ),
+        container(
+            column![
+                crate::theme::subtle_icon(Icon::CircleAlert, 28),
+                text("预设详情加载失败")
+                    .size(14)
+                    .font(crate::core::typography::medium())
+                    .style(crate::theme::text_style),
+                text(error)
+                    .size(12)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+            ]
+            .spacing(9)
+            .align_x(Alignment::Center),
+        )
+        .width(Fill)
+        .height(Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center),
+    ]
+    .height(Fill)
+    .into()
+}
+
+fn preset_detail(
+    item: &PresetInfo,
+    detail_page: usize,
+) -> Element<'_, ResourceManageMessage> {
+    let page_count = item.prompt_count.div_ceil(PRESET_PROMPTS_PER_PAGE);
+    let current_page = detail_page.min(page_count.saturating_sub(1));
     let mut content = column![
         row![
             metric_card(
                 Icon::ListChecks,
                 "提示词",
-                item.prompts.len().to_string(),
+                item.prompt_count.to_string(),
                 BLUE_600
             ),
             metric_card(
                 Icon::CircleCheck,
                 "已启用",
-                item.prompts
-                    .iter()
-                    .filter(|prompt| prompt.enabled)
-                    .count()
-                    .to_string(),
+                item.enabled_prompt_count.to_string(),
                 SUCCESS,
             ),
+            // 「是否依赖酒馆助手」独立成卡：扩展标记（SPreset / Tavern Helper）只决定
+            // 这一项布尔结论，不应被塞进含义模糊的「扩展格式」里。
             metric_card(
                 Icon::PlugZap,
-                "扩展格式",
+                "依赖酒馆助手",
+                if item.has_spreset { "是" } else { "否" }.into(),
                 if item.has_spreset {
-                    "SPreset"
+                    TAVERN_HELPER_ACCENT
                 } else {
-                    "标准"
-                }
-                .into(),
-                Color::from_rgb8(142, 68, 220),
+                    INK_MUTED
+                },
             ),
         ]
         .spacing(9),
@@ -1979,15 +2300,39 @@ fn preset_detail(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
         section_heading(
             Icon::ListChecks,
             "提示词结构",
-            format!("{} 个条目", item.prompts.len())
+            format!("{} 个条目", item.prompt_count)
         ),
     ]
     .spacing(12);
-    if item.prompts.is_empty() {
+    if item.prompt_count == 0 {
         content = content.push(inline_empty("这个预设中没有可识别的 prompts 数组。"));
     } else {
-        for (index, prompt) in item.prompts.iter().take(100).enumerate() {
-            content = content.push(prompt_card(index, prompt));
+        if page_count > 1 {
+            content = content.push(
+                row![
+                    button(text("上一页").size(12))
+                        .on_press(ResourceManageMessage::PresetDetailPreviousPage)
+                        .padding([6, 10])
+                        .style(button_style(ButtonVariant::Secondary)),
+                    space::horizontal(),
+                    text(preset_page_label(current_page + 1, page_count))
+                        .size(12)
+                        .font(crate::core::typography::medium())
+                        .style(crate::theme::muted_text_style),
+                    space::horizontal(),
+                    button(text("下一页").size(12))
+                        .on_press(ResourceManageMessage::PresetDetailNextPage)
+                        .padding([6, 10])
+                        .style(button_style(ButtonVariant::Secondary)),
+                ]
+                .align_y(Alignment::Center),
+            );
+        }
+
+        let start = current_page * PRESET_PROMPTS_PER_PAGE;
+        let end = (start + PRESET_PROMPTS_PER_PAGE).min(item.prompts.len());
+        for (index, prompt) in item.prompts[start..end].iter().enumerate() {
+            content = content.push(prompt_card(start + index, prompt));
         }
     }
     column![
@@ -2000,6 +2345,13 @@ fn preset_detail(item: &PresetInfo) -> Element<'_, ResourceManageMessage> {
     ]
     .height(Fill)
     .into()
+}
+
+fn preset_page_label(page: usize, total: usize) -> String {
+    match crate::lang::current_language() {
+        crate::lang::Language::Chinese => format!("第 {page} / {total} 页"),
+        crate::lang::Language::English => format!("Page {page} / {total}"),
+    }
 }
 
 fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, ResourceManageMessage> {
@@ -2238,7 +2590,8 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
     } else {
         muted_tag_chip(role)
     };
-    let content_is_empty = prompt.content.trim().is_empty();
+    // 这里只判断字符串是否为空，避免查看详情时再次扫描可能很长的提示词正文。
+    let content_is_empty = prompt.content.is_empty();
     container(
         column![
             row![
@@ -2391,18 +2744,6 @@ fn spec_label(item: &CharacterCardInfo) -> String {
 
 fn page_icon_surface(_theme: &Theme) -> container::Style {
     accent_surface(BLUE_600)
-}
-
-fn source_surface(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(crate::theme::surface(theme))),
-        border: Border {
-            color: crate::theme::line(theme),
-            width: 1.0,
-            radius: 8.0.into(),
-        },
-        ..container::Style::default()
-    }
 }
 
 fn panel_surface(theme: &Theme) -> container::Style {
@@ -2608,20 +2949,6 @@ fn chat_surface(accent: Color) -> container::Style {
     }
 }
 
-fn notice_surface(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgba(
-            BLUE_600.r, BLUE_600.g, BLUE_600.b, 0.08,
-        ))),
-        border: Border {
-            color: Color::from_rgba(BLUE_600.r, BLUE_600.g, BLUE_600.b, 0.18),
-            width: 1.0,
-            radius: 7.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
 fn delete_notice_surface(_theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(Color::from_rgba(
@@ -2645,18 +2972,6 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
             ..Border::default()
         },
         ..container::Style::default()
-    }
-}
-
-fn quiet_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    button::Style {
-        background: matches!(status, button::Status::Hovered)
-            .then_some(Background::Color(crate::theme::surface_alt(theme))),
-        border: Border {
-            radius: 5.0.into(),
-            ..Border::default()
-        },
-        ..button::Style::default()
     }
 }
 
@@ -2725,5 +3040,17 @@ mod tests {
     fn base64_decoder_handles_character_json() {
         let decoded = decode_base64("eyJuYW1lIjoiQXN0cmEifQ==").expect("valid base64");
         assert_eq!(String::from_utf8(decoded).unwrap(), r#"{"name":"Astra"}"#);
+    }
+
+    #[test]
+    fn transient_notice_is_consumed_once() {
+        let mut state = ResourceManageState::default();
+        state.notice = Some(TransientNotice::info(
+            "notice.refresh_complete",
+            "资源目录已重新扫描。",
+        ));
+
+        assert!(state.take_notice().is_some());
+        assert!(state.take_notice().is_none());
     }
 }

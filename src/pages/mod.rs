@@ -15,6 +15,7 @@ use crate::lang::text;
 use crate::theme::button_style;
 pub(crate) mod console;
 pub(crate) mod extensions;
+pub(crate) mod notice;
 pub(crate) mod resource_manage;
 pub(crate) mod settings;
 pub(crate) mod tavern;

@@ -20,6 +20,18 @@ pub fn translate_owned(content: &str) -> String {
         "版本管理" => "Versions",
         "扩展管理" => "Extensions",
         "资源管理" => "Resources",
+        "依赖酒馆助手" => "Requires Tavern Helper",
+        "是" => "Yes",
+        "否" => "No",
+        "正在加载预设…" => "Loading presets…",
+        "正在读取预设元数据，完成后即可查看详情。" => {
+            "Reading preset metadata. Details will be available when loading finishes."
+        }
+        "正在加载预设详情…" => "Loading preset details…",
+        "正在读取提示词内容，请稍候。" => "Reading prompt contents. Please wait.",
+        "预设详情加载失败" => "Failed to load preset details",
+        "上一页" => "Previous",
+        "下一页" => "Next",
         "控制台" => "Console",
         "设置" | "软件设置" => "Settings",
         "当前版本" => "Current Version",
@@ -372,6 +384,20 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "webview.download.failed" => "File download failed:",
         "webview.download.reveal" => "Show in Finder",
         "webview.download.reveal_failed" => "Could not reveal the file in Finder",
+        "notice.refresh_complete" => "Refresh Complete",
+        "notice.refresh_warning" => "Refresh Partially Failed",
+        "notice.operation_complete" => "Operation Complete",
+        "notice.operation_failed" => "Operation Failed",
+        "notice.operation_started" => "Operation Started",
+        "notice.switch_complete" => "Switch Complete",
+        "notice.action_unavailable" => "Action Unavailable",
+        "notice.settings_updated" => "Settings Updated",
+        "notice.directory_opened" => "Folder Opened",
+        "notice.load_failed" => "Load Failed",
+        "notice.import_complete" => "Import Complete",
+        "notice.import_partial" => "Some Files Failed to Import",
+        "notice.delete_complete" => "Delete Complete",
+        "notice.delete_failed" => "Delete Failed",
         "console.webview.closed_stopping" => "The desktop window closed. Stopping SillyTavern.",
         "console.webview.closed_running" => "The desktop window closed. SillyTavern is still running.",
         "console.log.starting" => "Preparing the SillyTavern runtime…",
@@ -564,6 +590,110 @@ fn translate_key(key: &str) -> Option<&'static str> {
 }
 
 fn translate_dynamic(content: &str) -> String {
+    for (source, translated) in [
+        ("资源目录已重新扫描。", "Resource folders rescanned."),
+        (
+            "历史对话请通过资源迁移或直接放入角色对应目录。",
+            "Move chat history through resource migration or place it in the matching character folder.",
+        ),
+        (
+            "在线版本请求失败，当前使用旧缓存。",
+            "The online request failed. Showing the previous cache.",
+        ),
+        ("在线版本列表已更新。", "The online version list was updated."),
+        (
+            "当前正在使用的版本不能删除。",
+            "The active version cannot be deleted.",
+        ),
+        (
+            "已有在线酒馆安装任务正在执行。",
+            "An online Tavern installation is already running.",
+        ),
+        ("已打开系统登录项设置。", "Opened Login Items settings."),
+        (
+            "已更新酒馆资源保存位置。",
+            "Updated the Tavern resource folder.",
+        ),
+        (
+            "已更新全局数据存放位置。",
+            "Updated the shared data folder.",
+        ),
+        (
+            "下载渠道测速已刷新。",
+            "Download channel testing was refreshed.",
+        ),
+        (
+            "GitHub 连通性测试服务待接入。",
+            "GitHub connectivity testing is not connected yet.",
+        ),
+        (
+            "启动器更新检查服务待接入。",
+            "Launcher update checking is not connected yet.",
+        ),
+    ] {
+        if content == source {
+            return translated.to_owned();
+        }
+    }
+    for (prefix, translated) in [
+        ("预设加载失败：", "Failed to load presets: "),
+        ("无法创建资源目录：", "Could not create the resource folder: "),
+        ("无法打开资源目录：", "Could not open the resource folder: "),
+        ("删除失败：", "Delete failed: "),
+        ("开始切换到 ", "Switching to "),
+        ("未找到在线版本 v", "Online version v"),
+        ("开始安装在线版本 v", "Installing online version v"),
+        ("已切换到在线安装版本 v", "Switched to online version v"),
+        ("已删除在线安装版本 v", "Deleted online version v"),
+    ] {
+        if let Some(value) = content.strip_prefix(prefix) {
+            return match prefix {
+                "开始切换到 " => format!("{translated}{}.", value.trim_end_matches(" 分支。")),
+                "未找到在线版本 v" => format!("{translated}{} was not found.", value.trim_end_matches('。')),
+                "开始安装在线版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
+                "已切换到在线安装版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
+                "已删除在线安装版本 v" => format!("{translated}{}.", value.trim_end_matches('。')),
+                _ => format!("{translated}{value}"),
+            };
+        }
+    }
+    if let Some(value) = content
+        .strip_prefix("已打开 ")
+        .and_then(|value| value.strip_suffix(" 目录。"))
+    {
+        let resource = match value {
+            "角色卡" => "character cards",
+            "世界书" => "world books",
+            "历史对话" => "chat history",
+            "预设" => "presets",
+            _ => value,
+        };
+        return format!("Opened the {resource} folder.");
+    }
+    if let Some(value) = content.strip_prefix("已删除“").and_then(|value| value.strip_suffix("”。")) {
+        return format!("Deleted “{value}”.");
+    }
+    if let Some(value) = content.strip_prefix("已导入 ")
+        && let Some((imported, failed)) = value
+            .trim_end_matches('。')
+            .split_once(" 个文件，")
+        && let Some(failed) = failed.strip_suffix(" 个失败")
+    {
+        return format!("Imported {imported} files; {failed} failed.");
+    }
+    if let Some(value) = content.strip_prefix("已导入 ") {
+        let value = value.trim_end_matches('。');
+        if let Some((count, resource)) = value.split_once(" 个") {
+            let resource = match resource {
+                "角色卡" => "character cards",
+                "世界书" => "world books",
+                "预设" => "presets",
+                _ => resource,
+            };
+            return format!("Imported {count} {resource}.");
+        }
+        return format!("Imported {value}.");
+    }
     if let Some(value) = content
         .strip_prefix("已添加 ")
         .and_then(|value| value.strip_suffix(" 个本地实例"))

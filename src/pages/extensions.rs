@@ -9,7 +9,7 @@ use iced::widget::{
     button, column, container, mouse_area, pick_list, row, scrollable, space, stack,
     text_input, tooltip,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Length, Theme};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{
@@ -18,6 +18,7 @@ use astra_ui::{
     WARNING, WHITE, icons,
 };
 
+use super::notice::TransientNotice;
 use super::versions::VersionSource;
 use crate::core::extensions::{
     ExtensionError, ExtensionEvent, ExtensionInfo, ExtensionKind, GitHealth,
@@ -91,7 +92,7 @@ pub struct ExtensionsState {
     pub show_system_extensions: bool,
     pub extensions: Vec<ExtensionInfo>,
     pub install: InstallDialogState,
-    pub notice: Option<String>,
+    pub notice: Option<TransientNotice>,
     pub target_path: Option<PathBuf>,
     pub target_version: Option<String>,
     pub target_source: Option<VersionSource>,
@@ -229,7 +230,10 @@ impl ExtensionsState {
     }
 
     pub fn set_blocked_notice(&mut self) {
-        self.notice = Some(tr("extensions.notice.stop_required").to_owned());
+        self.notice = Some(TransientNotice::warning(
+            "notice.action_unavailable",
+            tr("extensions.notice.stop_required"),
+        ));
     }
 
     /// 当前是否有待执行的 Git 仓库自动检测。
@@ -281,8 +285,12 @@ impl ExtensionsState {
         self.install.offline_checking = false;
         if self.install.visible {
             self.install.error = Some(error.clone());
+        } else {
+            self.notice = Some(TransientNotice::danger(
+                "notice.operation_failed",
+                format_error(&error),
+            ));
         }
-        self.notice = Some(format_error(&error));
     }
 
     /// 清空一次安装流程的全部临时状态，避免下次打开弹窗沿用旧内容。
@@ -558,13 +566,15 @@ impl ExtensionsState {
                 self.status = if result.is_ok() { LoadStatus::Ready } else { LoadStatus::Error };
                 match result {
                     Ok(extensions) => {
-                        self.notice = Some(format_count_notice(extensions.len()));
+                        self.notice = Some(TransientNotice::info(
+                            "notice.refresh_complete",
+                            format_count_notice(extensions.len()),
+                        ));
                         self.extensions = extensions;
                         self.error = None;
                     }
                     Err(error) => {
                         self.error = Some(error.clone());
-                        self.notice = Some(format_error(&error));
                     }
                 }
                 false
@@ -609,7 +619,10 @@ impl ExtensionsState {
                 match result {
                     Ok(success) => {
                         let installed = matches!(success, OperationSuccess::Installed(_));
-                        self.notice = Some(format_success(&success));
+                        self.notice = Some(TransientNotice::success(
+                            "notice.operation_complete",
+                            format_success(&success),
+                        ));
                         self.install.completed = installed;
                         self.install.started_at = self.install.started_at.or_else(|| Some(std::time::Instant::now()));
                         self.install.auto_close_due = installed.then(|| {
@@ -620,7 +633,12 @@ impl ExtensionsState {
                     }
                     Err(error) => {
                         self.install.error = Some(error.clone());
-                        self.notice = Some(format_error(&error));
+                        if !self.install.visible {
+                            self.notice = Some(TransientNotice::danger(
+                                "notice.operation_failed",
+                                format_error(&error),
+                            ));
+                        }
                         false
                     }
                 }
@@ -630,6 +648,11 @@ impl ExtensionsState {
             self.task_running = false;
         }
         refresh
+    }
+
+    /// 取出扩展页面产生的轻提示，避免在每次重绘时重复展示。
+    pub fn take_notice(&mut self) -> Option<TransientNotice> {
+        self.notice.take()
     }
 
     fn find_extension(&self, id: &str) -> Option<&ExtensionInfo> {
@@ -753,7 +776,6 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
                 .padding([4, 8])
                 .style(meta_surface),
             space::horizontal(),
-            state.notice.as_deref().map(notice_badge).unwrap_or_else(|| space::horizontal().width(Length::Shrink).into()),
             text(tr("extensions.show_system"))
                 .size(11)
                 .font(crate::core::typography::medium())
@@ -1423,14 +1445,6 @@ fn icon_badge<'a>(label: &'a str, icon: Icon, color: Color) -> Element<'a, Exten
         .into()
 }
 
-fn notice_badge(message: &str) -> Element<'_, ExtensionsMessage> {
-    container(text(message).size(9).style(crate::theme::muted_text_style))
-        .max_width(270)
-        .padding([4, 8])
-        .style(notice_surface)
-        .into()
-}
-
 fn small_action<'a>(label: &'a str, icon: Icon, message: ExtensionsMessage) -> Element<'a, ExtensionsMessage> {
     button(row![crate::theme::muted_icon(icon, 11), text(label).size(9).style(crate::theme::muted_text_style)].spacing(4).align_y(Alignment::Center))
         .on_press(message)
@@ -1539,9 +1553,6 @@ fn badge_surface(color: Color) -> container::Style {
 }
 fn meta_surface(theme: &Theme) -> container::Style {
     container::Style { background: Some(Background::Color(crate::theme::surface_alt(theme))), border: Border { color: crate::theme::line(theme), width: 1.0, radius: 10.0.into() }, ..container::Style::default() }
-}
-fn notice_surface(theme: &Theme) -> container::Style {
-    container::Style { background: Some(Background::Color(Color::from_rgba(theme.palette().primary.r, theme.palette().primary.g, theme.palette().primary.b, 0.09))), border: Border { color: Color::from_rgba(theme.palette().primary.r, theme.palette().primary.g, theme.palette().primary.b, 0.20), width: 1.0, radius: 10.0.into() }, ..container::Style::default() }
 }
 fn error_surface(_theme: &Theme) -> container::Style {
     container::Style { background: Some(Background::Color(Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.08))), border: Border { color: Color::from_rgba(DANGER.r, DANGER.g, DANGER.b, 0.25), width: 1.0, radius: 8.0.into() }, ..container::Style::default() }

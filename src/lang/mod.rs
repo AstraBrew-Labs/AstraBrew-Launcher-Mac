@@ -4,7 +4,9 @@ pub(crate) mod en;
 pub(crate) mod lang;
 pub(crate) mod zh;
 
-pub(crate) use lang::{Language, display_label, effective_language, set_language, t, text};
+pub(crate) use lang::{
+    current_language, display_label, effective_language, set_language, t, text, Language,
+};
 
 /// 将 Git 克隆阶段文案转成当前语言。
 pub(crate) fn github_clone_stage_label(stage: &str) -> String {

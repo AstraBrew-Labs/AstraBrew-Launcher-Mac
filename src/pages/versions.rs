@@ -7,7 +7,7 @@ use iced::widget::{
     button, column, container, image, markdown, mouse_area, row, rule, scrollable, space, stack,
     tooltip,
 };
-use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Theme};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Theme};
 use lucide_icons::Icon;
 
 use crate::lang::text;
@@ -15,6 +15,8 @@ use crate::theme::button_style;
 use astra_ui::{
     BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS, WHITE, icons,
 };
+
+use super::notice::TransientNotice;
 
 /// 版本页当前展示的实例类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -201,7 +203,9 @@ pub struct VersionState {
     /// 规范目录是否已经存在在线酒馆，即使当前分支/版本不是选中的目标。
     pub online_instance_exists: bool,
     pub last_sync: String,
-    pub notice: Option<String>,
+    pub notice: Option<TransientNotice>,
+    /// 在线版本加载失败时保留在页面中的可重试错误详情。
+    pub online_error: Option<String>,
     pub install_task: InstallTaskState,
     /// 安装开始前是否已经存在本地实例，用于关闭弹窗后的自动切换决策。
     pub had_local_instance_before_install: bool,
@@ -265,6 +269,7 @@ impl Default for VersionState {
             online_instance_exists: false,
             last_sync: "2026/08/30 21:37".into(),
             notice: None,
+            online_error: None,
             install_task: InstallTaskState::default(),
             had_local_instance_before_install: false,
             loading_frame: 0,
@@ -443,7 +448,7 @@ impl VersionState {
             VersionMessage::RefreshOnline => {
                 self.online_status = OnlineVersionsStatus::Loading;
                 self.loading_frame = 0;
-                self.notice = Some("正在获取在线版本…".into());
+                self.online_error = None;
             }
             VersionMessage::OnlineVersionsLoaded {
                 branch,
@@ -483,17 +488,24 @@ impl VersionState {
                 } else {
                     OnlineVersionsStatus::Ready
                 };
+                self.online_error = None;
                 self.notice = Some(if from_cache {
-                    "在线版本请求失败，当前使用旧缓存。".into()
+                    TransientNotice::warning(
+                        "notice.refresh_warning",
+                        "在线版本请求失败，当前使用旧缓存。",
+                    )
                 } else {
-                    "在线版本列表已更新。".into()
+                    TransientNotice::info(
+                        "notice.refresh_complete",
+                        "在线版本列表已更新。",
+                    )
                 });
             }
             VersionMessage::OnlineVersionsFailed(error) => {
                 // 记录本次请求已经结束，重新进入页面不应自动重复请求；用户可点击刷新重试。
                 self.branch_loaded = true;
                 self.online_status = OnlineVersionsStatus::Error;
-                self.notice = Some(format!("在线版本获取失败：{error}"));
+                self.online_error = Some(format!("在线版本获取失败：{error}"));
             }
             VersionMessage::TickLoading => {
                 self.loading_frame = self.loading_frame.wrapping_add(1) % 4;
@@ -541,7 +553,10 @@ impl VersionState {
                     self.current_path = Some(path.clone());
                     self.current_source = Some(VersionSource::Online);
                     self.online_instance_path = Some(path);
-                    self.notice = Some(format!("已切换到在线安装版本 v{version}。"));
+                    self.notice = Some(TransientNotice::success(
+                        "notice.switch_complete",
+                        format!("已切换到在线安装版本 v{version}。"),
+                    ));
                     self.local.notify("已切换到在线实例。", version, false);
                 } else {
                     self.local
@@ -552,14 +567,20 @@ impl VersionState {
                 let is_current = self.current_source == Some(VersionSource::Online)
                     && self.current_version.as_deref() == Some(version.as_str());
                 if is_current {
-                    self.notice = Some("当前正在使用的版本不能删除。".into());
+                    self.notice = Some(TransientNotice::warning(
+                        "notice.action_unavailable",
+                        "当前正在使用的版本不能删除。",
+                    ));
                 } else if let Some(release) = self
                     .online_releases
                     .iter_mut()
                     .find(|release| release.version == version)
                 {
                     release.installed = false;
-                    self.notice = Some(format!("已删除在线安装版本 v{}。", release.version));
+                    self.notice = Some(TransientNotice::success(
+                        "notice.delete_complete",
+                        format!("已删除在线安装版本 v{}。", release.version),
+                    ));
                 }
             }
             VersionMessage::InstallDownloadStarted(version) => {
@@ -632,7 +653,10 @@ impl VersionState {
 
     fn begin_branch_install(&mut self, branch: String) {
         if self.install_task.running {
-            self.notice = Some("已有在线酒馆安装任务正在执行。".into());
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                "已有在线酒馆安装任务正在执行。",
+            ));
             return;
         }
         self.had_local_instance_before_install = !self.local_instances.is_empty();
@@ -647,12 +671,18 @@ impl VersionState {
             auto_close_ticks: 0,
             switch_requested: self.online_instance_exists,
         };
-        self.notice = Some(format!("开始切换到 {branch} 分支。"));
+        self.notice = Some(TransientNotice::info(
+            "notice.operation_started",
+            format!("开始切换到 {branch} 分支。"),
+        ));
     }
 
     fn begin_online_install(&mut self, version: String) {
         if self.install_task.running {
-            self.notice = Some("已有在线酒馆安装任务正在执行。".into());
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                "已有在线酒馆安装任务正在执行。",
+            ));
             return;
         }
         let Some(release) = self
@@ -660,7 +690,10 @@ impl VersionState {
             .iter()
             .find(|release| release.version == version)
         else {
-            self.notice = Some(format!("未找到在线版本 v{version}。"));
+            self.notice = Some(TransientNotice::warning(
+                "notice.action_unavailable",
+                format!("未找到在线版本 v{version}。"),
+            ));
             return;
         };
 
@@ -677,7 +710,10 @@ impl VersionState {
             auto_close_ticks: 0,
             switch_requested: self.online_instance_exists,
         };
-        self.notice = Some(format!("开始安装在线版本 v{version}。"));
+        self.notice = Some(TransientNotice::info(
+            "notice.operation_started",
+            format!("开始安装在线版本 v{version}。"),
+        ));
         // 镜像 tag 不存在时由上层网络服务自动改用官方 GitHub 地址。
         if !release.mirror_available {
             append_log(
@@ -776,6 +812,11 @@ impl VersionState {
             .iter()
             .any(|release| release.version == version && release.installed)
     }
+
+    /// 取出版本页面产生的轻提示，避免每次重绘重复展示。
+    pub fn take_notice(&mut self) -> Option<TransientNotice> {
+        self.notice.take()
+    }
 }
 
 fn append_log(logs: &mut String, line: &str) {
@@ -809,11 +850,6 @@ pub fn versions_view(state: &VersionState) -> Element<'_, VersionMessage> {
             state.active_tab == VersionTab::Online,
         ),
         space::horizontal(),
-        state
-            .notice
-            .as_deref()
-            .map(notice_badge)
-            .unwrap_or_else(|| space::horizontal().width(Length::Shrink).into()),
     ]
     .spacing(4)
     .align_y(Alignment::End)
@@ -888,23 +924,6 @@ fn tab_button(
     .on_press(VersionMessage::SelectTab(tab))
     .padding([0, 10])
     .style(tab_button_style)
-    .into()
-}
-
-fn notice_badge(notice: &str) -> Element<'_, VersionMessage> {
-    container(
-        row![
-            icons::icon(Icon::Info, 13, BLUE_600),
-            text(notice)
-                .size(10)
-                .font(crate::core::typography::regular())
-                .style(crate::theme::muted_text_style),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .padding([6, 10])
-    .style(notice_surface)
     .into()
 }
 
@@ -1227,7 +1246,7 @@ fn online_error_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             state
-                .notice
+                .online_error
                 .as_deref()
                 .map(text)
                 .unwrap_or_else(|| text("没有可用的缓存版本。"))
@@ -2025,36 +2044,6 @@ fn tooltip_surface(_theme: &Theme) -> container::Style {
         border: Border {
             radius: 7.0.into(),
             ..Border::default()
-        },
-        ..container::Style::default()
-    }
-}
-
-fn notice_surface(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(Color::from_rgba(
-            theme.palette().primary.r,
-            theme.palette().primary.g,
-            theme.palette().primary.b,
-            if crate::theme::is_dark(theme) {
-                0.14
-            } else {
-                0.08
-            },
-        ))),
-        border: Border {
-            color: Color::from_rgba(
-                theme.palette().primary.r,
-                theme.palette().primary.g,
-                theme.palette().primary.b,
-                if crate::theme::is_dark(theme) {
-                    0.38
-                } else {
-                    0.18
-                },
-            ),
-            width: 1.0,
-            radius: 12.0.into(),
         },
         ..container::Style::default()
     }

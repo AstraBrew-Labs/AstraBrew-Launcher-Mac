@@ -38,6 +38,7 @@ use crate::lang::{effective_language, t, text};
 use crate::pages::Page;
 use crate::pages::console::{ConsoleAction, ConsoleMessage, ConsoleState, ConsoleStatus, NetworkMode};
 use crate::pages::extensions::{ExtensionAction, ExtensionsMessage, ExtensionsState};
+use crate::pages::notice::{TransientNotice, TransientNoticeAction};
 use crate::pages::resource_manage::{ResourceManageMessage, ResourceManageState};
 #[cfg(not(test))]
 use crate::pages::settings::EnvironmentVersions;
@@ -152,10 +153,7 @@ fn window_profile(monitor: Option<Size>) -> WindowProfile {
 #[derive(Debug, Clone)]
 struct GlobalNotice {
     id: u64,
-    title_key: &'static str,
-    detail: String,
-    danger: bool,
-    reveal_path: Option<PathBuf>,
+    notice: TransientNotice,
     until: Instant,
 }
 
@@ -279,6 +277,8 @@ pub(crate) enum Message {
     VersionInstallTick,
     /// 驱动扩展扫描、安装和文件操作后台事件。
     ExtensionTick,
+    /// 驱动全局轻提示按各自时长自动消失。
+    GlobalNoticeTick,
     /// 独立于弹窗可见性的本地任务轮询。
     LocalInstancesTick,
     /// 配置文本去抖、外部文件轮询及保存回执。
@@ -355,7 +355,7 @@ pub struct Launcher {
     resources: ResourceManageState,
     /// 控制台页面状态
     console: ConsoleState,
-    /// 跨页面显示的下载完成或失败消息。
+    /// 跨页面统一展示的短暂轻提示队列。
     global_notices: VecDeque<GlobalNotice>,
     global_notice_serial: u64,
     /// 配置保存完成后自动继续执行的启动请求。
@@ -628,6 +628,12 @@ impl Launcher {
             Subscription::none()
         };
 
+        let global_notice_timer = if self.global_notices.is_empty() {
+            Subscription::none()
+        } else {
+            time::every(Duration::from_millis(100)).map(|_| Message::GlobalNoticeTick)
+        };
+
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
         let local_timer = if self.local_needs_tick() {
@@ -658,6 +664,7 @@ impl Launcher {
             version_catalog_timer,
             version_install_timer,
             extension_timer,
+            global_notice_timer,
             window_events,
             system_theme,
         ])
@@ -669,8 +676,37 @@ impl Launcher {
         // 所有早返回路径也要同步配置上下文，不能遗漏异步实例切换或首页快捷操作。
         self.reconcile_tavern_config();
         let task = self.update_inner(message);
+        self.collect_page_notices();
         self.reconcile_tavern_config();
         task
+    }
+
+    /// 将各页面的一次性反馈汇总到应用根层 Toast 队列。
+    fn collect_page_notices(&mut self) {
+        if let Some(notice) = self.resources.take_notice() {
+            self.push_global_notice(notice);
+        }
+        if let Some(notice) = self.versions.take_notice() {
+            self.push_global_notice(notice);
+        }
+        if let Some(notice) = self.extensions.take_notice() {
+            self.push_global_notice(notice);
+        }
+        if let Some(action) = self.settings.last_action.take() {
+            let notice = match action {
+                SettingsAction::TestGithub
+                | SettingsAction::CheckUpdate
+                | SettingsAction::RefreshDownloadChannel => {
+                    TransientNotice::info("notice.operation_complete", action.feedback())
+                }
+                SettingsAction::OpenLoginItemSettings
+                | SettingsAction::ChooseExportPath
+                | SettingsAction::ChooseGlobalDataPath => {
+                    TransientNotice::success("notice.settings_updated", action.feedback())
+                }
+            };
+            self.push_global_notice(notice);
+        }
     }
 
     fn update_inner(&mut self, message: Message) -> Task<Message> {
@@ -704,6 +740,10 @@ impl Launcher {
                 if page == Page::Resources {
                     self.resources.configure(&self.settings, &self.versions);
                     self.resources.refresh_all();
+                    return self
+                        .resources
+                        .start_presets_loading()
+                        .map(Message::Resources);
                 }
                 if page == Page::Version {
                     self.start_version_catalog_load(false);
@@ -908,6 +948,10 @@ impl Launcher {
                 self.resources.configure(&self.settings, &self.versions);
                 self.resources.refresh_all();
                 self.persist_preferences();
+                return self
+                    .resources
+                    .start_presets_loading()
+                    .map(Message::Resources);
             }
             Message::SettingsShowStartupCommand(enabled) => {
                 self.settings.show_startup_command = enabled;
@@ -968,6 +1012,10 @@ impl Launcher {
                         self.resources.refresh_all();
                         self.persist_preferences();
                         self.settings.last_action = Some(action);
+                        return self
+                            .resources
+                            .start_presets_loading()
+                            .map(Message::Resources);
                     }
                 }
                 SettingsAction::RefreshDownloadChannel => {
@@ -1079,6 +1127,10 @@ impl Launcher {
                 self.extension_task_cancel = None;
                 self.window_position = None;
                 self.persist_preferences();
+                self.push_global_notice(TransientNotice::success(
+                    "notice.settings_updated",
+                    "已恢复默认设置",
+                ));
             }
             Message::Tavern(message) => return self.handle_tavern_config_message(message),
             Message::TavernConfigTick => return self.poll_tavern_config(),
@@ -1097,7 +1149,7 @@ impl Launcher {
             }
             Message::Resources(message) => {
                 self.resources.configure(&self.settings, &self.versions);
-                self.resources.update(message);
+                return self.resources.update(message).map(Message::Resources);
             }
             Message::Console(ConsoleMessage::Start) => {
                 let _ = self.console.update(ConsoleMessage::Poll);
@@ -1116,6 +1168,7 @@ impl Launcher {
                 self.global_notices.retain(|notice| notice.id != id);
             }
             Message::GlobalNoticeInteract => {}
+            Message::GlobalNoticeTick => {}
             Message::RevealDownloadedFile(id, path) => {
                 self.global_notices.retain(|notice| notice.id != id);
                 if let Err(error) = std::process::Command::new("open")
@@ -1123,12 +1176,10 @@ impl Launcher {
                     .arg(&path)
                     .spawn()
                 {
-                    self.push_global_notice(
+                    self.push_global_notice(TransientNotice::danger(
                         "webview.download.reveal_failed",
                         error.to_string(),
-                        true,
-                        None,
-                    );
+                    ));
                 }
             }
             Message::WindowOpened(id, position) => {
@@ -1908,24 +1959,29 @@ impl Launcher {
         }
     }
 
-    fn push_global_notice(
-        &mut self,
-        title_key: &'static str,
-        detail: String,
-        danger: bool,
-        reveal_path: Option<PathBuf>,
-    ) {
+    fn push_global_notice(&mut self, mut notice: TransientNotice) {
+        // 页面只提交语义文案，入队时按当前界面语言固化，保证 Toast 生命周期内借用稳定。
+        notice.detail = crate::lang::display_label(&notice.detail);
+        let now = Instant::now();
+        if let Some(existing) = self.global_notices.iter_mut().find(|existing| {
+            existing.notice.title_key == notice.title_key
+                && existing.notice.detail == notice.detail
+                && existing.notice.variant == notice.variant
+        }) {
+            existing.notice = notice;
+            existing.until = now + existing.notice.duration;
+            return;
+        }
+
         self.global_notice_serial = self.global_notice_serial.wrapping_add(1);
         while self.global_notices.len() >= 4 {
             self.global_notices.pop_front();
         }
+        let until = now + notice.duration;
         self.global_notices.push_back(GlobalNotice {
             id: self.global_notice_serial,
-            title_key,
-            detail,
-            danger,
-            reveal_path,
-            until: Instant::now() + Duration::from_secs(6),
+            notice,
+            until,
         });
     }
 
@@ -1949,10 +2005,8 @@ impl Launcher {
                             )
                         ));
                         self.push_global_notice(
-                            "webview.download.saved",
-                            detail,
-                            false,
-                            Some(path),
+                            TransientNotice::success("webview.download.saved", detail)
+                                .with_action(TransientNoticeAction::RevealPath(path)),
                         );
                     }
                     WebViewDownloadEvent::Failed(error) => {
@@ -1963,12 +2017,10 @@ impl Launcher {
                                 effective_language(self.settings.language),
                             )
                         ));
-                        self.push_global_notice(
+                        self.push_global_notice(TransientNotice::danger(
                             "webview.download.failed",
                             error,
-                            true,
-                            None,
-                        );
+                        ));
                     }
                 }
             }
@@ -3004,21 +3056,17 @@ impl Launcher {
             let notices = self.global_notices.iter().fold(
                 column!().spacing(8).align_x(Alignment::End),
                 |column, notice| {
-                    let action = notice.reveal_path.clone().map(|path| {
-                        (
+                    let action = notice.notice.action.clone().map(|action| match action {
+                        TransientNoticeAction::RevealPath(path) => (
                             t("webview.download.reveal", language),
                             Message::RevealDownloadedFile(notice.id, path),
-                        )
+                        ),
                     });
                     column.push(
                         container(astra_ui::toast(
-                            t(notice.title_key, language),
-                            &notice.detail,
-                            if notice.danger {
-                                astra_ui::ToastVariant::Danger
-                            } else {
-                                astra_ui::ToastVariant::Success
-                            },
+                            t(notice.notice.title_key, language),
+                            &notice.notice.detail,
+                            notice.notice.variant,
                             action,
                             Message::DismissGlobalNotice(notice.id),
                             Message::GlobalNoticeInteract,
@@ -3317,7 +3365,7 @@ fn expand_home_path(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{InitStage, Launcher, Message};
+    use super::{InitStage, Launcher, Message, TransientNotice};
     use crate::core::network::{
         DownloadChannel, DownloadChannelTestEvent, DownloadChannelTestResult, GithubTestEvent,
     };
@@ -3737,5 +3785,45 @@ mod tests {
             launcher.theme().palette().background,
             crate::theme::dark_theme().palette().background
         );
+    }
+
+    #[test]
+    fn duplicate_global_notices_are_coalesced() {
+        let mut launcher = launcher();
+        launcher.push_global_notice(TransientNotice::info(
+            "notice.refresh_complete",
+            "资源目录已重新扫描。",
+        ));
+        launcher.push_global_notice(TransientNotice::info(
+            "notice.refresh_complete",
+            "资源目录已重新扫描。",
+        ));
+
+        assert_eq!(launcher.global_notices.len(), 1);
+    }
+
+    #[test]
+    fn expired_global_notice_is_removed_by_tick() {
+        let mut launcher = launcher();
+        launcher.push_global_notice(TransientNotice::info(
+            "notice.refresh_complete",
+            "资源目录已重新扫描。",
+        ));
+        launcher.global_notices[0].until = iced::time::Instant::now();
+
+        let _ = launcher.update(Message::GlobalNoticeTick);
+
+        assert!(launcher.global_notices.is_empty());
+    }
+
+    #[test]
+    fn settings_feedback_is_consumed_into_global_toast() {
+        let mut launcher = launcher();
+        let _ = launcher.update(Message::SettingsAction(
+            crate::pages::settings::SettingsAction::CheckUpdate,
+        ));
+
+        assert!(launcher.settings.last_action.is_none());
+        assert_eq!(launcher.global_notices.len(), 1);
     }
 }
