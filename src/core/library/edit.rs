@@ -27,6 +27,13 @@ pub(crate) struct LoadedEditor {
     pub data: EditorData,
 }
 
+/// 工作台撤销/重做使用的可编辑状态快照，不包含磁盘基线，避免恢复后被误判为外部修改。
+#[derive(Debug, Clone)]
+pub(crate) struct LoadedEditorSnapshot {
+    data: EditorData,
+    character_cover: Option<Vec<u8>>,
+}
+
 /// 三类资源各自独立的可编辑数据。
 #[derive(Debug, Clone)]
 pub(crate) enum EditorData {
@@ -52,6 +59,7 @@ pub(crate) struct EditableDocument {
     bytes: Vec<u8>,
     root: Map<String, Value>,
     character_metadata: Option<CharacterMetadata>,
+    character_cover: Option<Vec<u8>>,
     kind: ResourceKind,
 }
 
@@ -172,6 +180,43 @@ pub(crate) fn create_preset_prompt(
 }
 
 impl LoadedEditor {
+    /// 捕获当前编辑数据，供工作台在一次用户操作前压入撤销栈。
+    pub(crate) fn snapshot(&self) -> LoadedEditorSnapshot {
+        LoadedEditorSnapshot {
+            data: self.data.clone(),
+            character_cover: self.document.character_cover.clone(),
+        }
+    }
+
+    /// 恢复编辑数据但保留当前文件路径、原始字节和外部修改检测基线。
+    pub(crate) fn restore_snapshot(&mut self, snapshot: LoadedEditorSnapshot) {
+        self.data = snapshot.data;
+        self.document.character_cover = snapshot.character_cover;
+    }
+
+    /// 返回当前角色卡预览使用的 PNG；未选择新封面时复用原始文件字节。
+    pub(crate) fn character_cover_bytes(&self) -> Option<&[u8]> {
+        if !matches!(self.data, EditorData::Character(_)) {
+            return None;
+        }
+        Some(
+            self.document
+                .character_cover
+                .as_deref()
+                .unwrap_or(&self.document.bytes),
+        )
+    }
+
+    /// 设置待写入的角色卡封面，真正落盘时仍由核心层合并并校验 PNG。
+    pub(crate) fn set_character_cover(&mut self, bytes: Vec<u8>) -> Result<(), String> {
+        if !matches!(self.data, EditorData::Character(_)) {
+            return Err("当前资源不是角色卡。".to_owned());
+        }
+        validate_cover_png(&bytes)?;
+        self.document.character_cover = Some(bytes);
+        Ok(())
+    }
+
     /// 保存成功后只更新磁盘基线，保留保存期间用户继续输入的编辑内容。
     pub(crate) fn adopt_saved_document(&mut self, saved: Self) {
         self.document = saved.document;
@@ -234,7 +279,11 @@ pub(crate) fn save_editor(loaded: LoadedEditor) -> Result<LoadedEditor, String> 
                 .character_metadata
                 .as_ref()
                 .ok_or_else(|| "角色卡缺少可写回的 PNG 元数据。".to_owned())?;
-            rebuild_character_png(&loaded.document.bytes, &root, metadata)?
+            if let Some(cover) = loaded.document.character_cover.as_deref() {
+                rebuild_character_png_with_cover(cover, &root, metadata)?
+            } else {
+                rebuild_character_png(&loaded.document.bytes, &root, metadata)?
+            }
         }
         EditorData::WorldBook(world) => {
             root = apply_world_book(world)?;
@@ -276,6 +325,7 @@ fn load_validated_json_editor(
             bytes,
             root,
             character_metadata: None,
+            character_cover: None,
             kind,
         },
         data,
@@ -315,6 +365,7 @@ fn load_character_editor(path: &Path, bytes: Vec<u8>) -> Result<LoadedEditor, St
             bytes,
             root,
             character_metadata: Some(metadata),
+            character_cover: None,
             kind: ResourceKind::CharacterCard,
         },
         data: EditorData::Character(character),
@@ -742,6 +793,65 @@ fn rebuild_character_png(
     root: &Map<String, Value>,
     metadata: &CharacterMetadata,
 ) -> Result<Vec<u8>, String> {
+    let replacement = encode_character_metadata(root, metadata)?;
+    let mut output = Vec::with_capacity(original.len() + replacement.len());
+    output.extend_from_slice(&original[..metadata.chunk_start]);
+    output.extend_from_slice(&replacement);
+    output.extend_from_slice(&original[metadata.chunk_end..]);
+    Ok(output)
+}
+
+fn rebuild_character_png_with_cover(
+    cover: &[u8],
+    root: &Map<String, Value>,
+    metadata: &CharacterMetadata,
+) -> Result<Vec<u8>, String> {
+    validate_cover_png(cover)?;
+    let replacement = encode_character_metadata(root, metadata)?;
+    let mut output = Vec::with_capacity(cover.len() + replacement.len());
+    output.extend_from_slice(PNG_SIGNATURE);
+
+    let mut offset = PNG_SIGNATURE.len();
+    let mut inserted = false;
+    while offset + 12 <= cover.len() {
+        let length = u32::from_be_bytes(
+            cover[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "PNG 块长度无效。".to_owned())?,
+        ) as usize;
+        let end = offset
+            .checked_add(12 + length)
+            .ok_or_else(|| "PNG 块长度溢出。".to_owned())?;
+        if end > cover.len() {
+            return Err("封面 PNG 块超出文件边界。".to_owned());
+        }
+        let kind: [u8; 4] = cover[offset + 4..offset + 8]
+            .try_into()
+            .map_err(|_| "PNG 块类型无效。".to_owned())?;
+        let data = &cover[offset + 8..offset + 8 + length];
+        if kind == *b"IEND" {
+            if !inserted {
+                output.extend_from_slice(&replacement);
+                inserted = true;
+            }
+            output.extend_from_slice(&cover[offset..end]);
+            break;
+        }
+        if !is_character_metadata_chunk(kind, data) {
+            output.extend_from_slice(&cover[offset..end]);
+        }
+        offset = end;
+    }
+    if !inserted {
+        return Err("封面 PNG 缺少 IEND 块。".to_owned());
+    }
+    Ok(output)
+}
+
+fn encode_character_metadata(
+    root: &Map<String, Value>,
+    metadata: &CharacterMetadata,
+) -> Result<Vec<u8>, String> {
     let json = serde_json::to_vec(&Value::Object(root.clone()))
         .map_err(|error| format!("序列化角色卡失败：{error}"))?;
     let payload = match metadata.encoding {
@@ -758,12 +868,49 @@ fn rebuild_character_png(
             }
         }
     };
-    let replacement = encode_text_chunk(metadata.chunk_kind, &metadata.keyword, &payload)?;
-    let mut output = Vec::with_capacity(original.len() + replacement.len());
-    output.extend_from_slice(&original[..metadata.chunk_start]);
-    output.extend_from_slice(&replacement);
-    output.extend_from_slice(&original[metadata.chunk_end..]);
-    Ok(output)
+    encode_text_chunk(metadata.chunk_kind, &metadata.keyword, &payload)
+}
+
+fn is_character_metadata_chunk(kind: [u8; 4], data: &[u8]) -> bool {
+    decode_text_chunk(kind, data).is_some_and(|(keyword, text)| {
+        character_keyword_rank(&keyword) != usize::MAX && parse_json_candidate(&text).is_some()
+    })
+}
+
+fn validate_cover_png(bytes: &[u8]) -> Result<(), String> {
+    if !bytes.starts_with(PNG_SIGNATURE) {
+        return Err("封面必须是有效的 PNG 图片。".to_owned());
+    }
+    let mut offset = PNG_SIGNATURE.len();
+    let mut has_header = false;
+    while offset + 12 <= bytes.len() {
+        let length = u32::from_be_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "封面 PNG 块长度无效。".to_owned())?,
+        ) as usize;
+        let end = offset
+            .checked_add(12 + length)
+            .ok_or_else(|| "封面 PNG 块长度溢出。".to_owned())?;
+        if end > bytes.len() {
+            return Err("封面 PNG 块超出文件边界。".to_owned());
+        }
+        let kind: [u8; 4] = bytes[offset + 4..offset + 8]
+            .try_into()
+            .map_err(|_| "封面 PNG 块类型无效。".to_owned())?;
+        if kind == *b"IHDR" {
+            has_header = length >= 13;
+        }
+        offset = end;
+        if kind == *b"IEND" {
+            return if has_header {
+                Ok(())
+            } else {
+                Err("封面 PNG 缺少有效的 IHDR 块。".to_owned())
+            };
+        }
+    }
+    Err("封面 PNG 缺少 IEND 块。".to_owned())
 }
 
 /// PNG 的 tEXt/zTXt 使用 Latin-1；将 JSON 字符串转成纯 ASCII 可兼容任意语言输入。

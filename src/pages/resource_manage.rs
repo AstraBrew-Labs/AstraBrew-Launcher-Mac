@@ -101,6 +101,8 @@ impl ResourceTab {
 pub struct CharacterCardInfo {
     pub filename: String,
     pub filepath: PathBuf,
+    /// 直接持有扫描时的 PNG 字节，避免文件路径句柄在替换同名文件后复用旧图片缓存。
+    pub cover: image::Handle,
     pub name: String,
     pub description: String,
     pub creator: String,
@@ -862,6 +864,7 @@ impl ResourceManageState {
             .into_iter()
             .filter_map(|path| {
                 let metadata = fs::metadata(&path).ok()?;
+                let cover = image::Handle::from_bytes(fs::read(&path).ok()?);
                 let validated = validate_path(ResourceKind::CharacterCard, &path).ok()?;
                 let ResourceData::CharacterCard(parsed) = validated.data else {
                     return None;
@@ -875,6 +878,7 @@ impl ResourceManageState {
                 Some(CharacterCardInfo {
                     filename,
                     filepath: path,
+                    cover,
                     name,
                     description: parsed.description,
                     creator: parsed.creator,
@@ -1860,7 +1864,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
             button(
                 row![
                     container(
-                        image(item.filepath.clone())
+                        image(item.cover.clone())
                             .width(CHARACTER_THUMB_WIDTH)
                             .height(CHARACTER_THUMB_HEIGHT)
                             .content_fit(iced::ContentFit::Cover),
@@ -2273,7 +2277,7 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
     let mut content = column![
         row![
             container(
-                image(item.filepath.clone())
+                image(item.cover.clone())
                     .width(140)
                     .height(196)
                     .content_fit(iced::ContentFit::Cover),

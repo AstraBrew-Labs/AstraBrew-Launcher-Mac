@@ -5,10 +5,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use iced::widget::{
-    button, checkbox, column, container, mouse_area, row, scrollable, space, stack, text_editor,
-    text_input,
+    button, checkbox, column, container, image, mouse_area, responsive, row, scrollable, space,
+    stack, text_editor, text_input,
 };
-use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Task, Theme};
+use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
 
 use astra_ui::{BLUE_600, ButtonVariant, DANGER, SUCCESS, icons};
@@ -16,8 +16,8 @@ use astra_ui::{BLUE_600, ButtonVariant, DANGER, SUCCESS, icons};
 use crate::core::library::ResourceKind;
 use crate::core::library::edit::{
     EditableCharacter, EditablePreset, EditablePresetPrompt, EditableWorldBook, EditableWorldEntry,
-    EditorData, LoadedEditor, create_preset_prompt, load_editor, load_world_book_for_binding,
-    save_editor,
+    EditorData, LoadedEditor, LoadedEditorSnapshot, create_preset_prompt, load_editor,
+    load_world_book_for_binding, save_editor,
 };
 use crate::lang::{current_language, t, text};
 use crate::theme::button_style;
@@ -25,6 +25,7 @@ use crate::theme::button_style;
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 // 预设只构建当前页的编辑器，避免大量条目同时参与布局和绘制。
 const PRESET_PAGE_SIZE: usize = 12;
+const MAX_HISTORY: usize = 100;
 
 #[derive(Debug, Clone)]
 pub(crate) struct WorldBookOption {
@@ -70,7 +71,6 @@ pub(crate) enum CharacterField {
     Name,
     Creator,
     Version,
-    Tags,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -108,7 +108,14 @@ pub(crate) enum PresetField {
 pub(crate) enum WorkbenchMessage {
     Loaded(u64, Result<PreparedParcel, String>),
     RetryLoad,
+    Undo,
+    Redo,
+    SelectCharacterCover,
+    CharacterCoverLoaded(Result<Option<Vec<u8>>, String>),
     CharacterChanged(CharacterField, String),
+    CharacterTagInputChanged(String),
+    AddCharacterTag,
+    RemoveCharacterTag(usize),
     CharacterAreaChanged(CharacterArea, text_editor::Action),
     WorldChanged(WorldField, String),
     EntryChanged(usize, EntryField, String),
@@ -161,10 +168,12 @@ enum WorkbenchForm {
 
 #[derive(Debug)]
 struct CharacterForm {
+    cover: image::Handle,
     name: String,
     creator: String,
     version: String,
-    tags: String,
+    tags: Vec<String>,
+    tag_input: String,
     description: text_editor::Content,
     personality: text_editor::Content,
     scenario: text_editor::Content,
@@ -242,6 +251,9 @@ pub(crate) struct WorkbenchState {
     operation_error: Option<String>,
     close_pending: bool,
     preset_add_pending: bool,
+    character_cover_pending: bool,
+    undo_stack: Vec<LoadedEditorSnapshot>,
+    redo_stack: Vec<LoadedEditorSnapshot>,
 }
 
 impl Default for WorkbenchState {
@@ -264,6 +276,9 @@ impl Default for WorkbenchState {
             operation_error: None,
             close_pending: false,
             preset_add_pending: false,
+            character_cover_pending: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 }
@@ -299,6 +314,9 @@ impl WorkbenchState {
         self.operation_error = None;
         self.close_pending = false;
         self.preset_add_pending = false;
+        self.character_cover_pending = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
         load_task(path, kind, self.load_serial)
     }
 
@@ -319,7 +337,7 @@ impl WorkbenchState {
                             self.phase = WorkbenchPhase::Ready;
                         }
                         Err(error) => self.phase = WorkbenchPhase::LoadFailed(error),
-                    }
+                    },
                     Err(error) => self.phase = WorkbenchPhase::LoadFailed(error),
                 }
                 (Task::none(), WorkbenchEvent::None)
@@ -335,13 +353,62 @@ impl WorkbenchState {
                     WorkbenchEvent::None,
                 )
             }
+            WorkbenchMessage::Undo => (self.undo(), WorkbenchEvent::None),
+            WorkbenchMessage::Redo => (self.redo(), WorkbenchEvent::None),
+            WorkbenchMessage::SelectCharacterCover => {
+                if self.character_cover_pending || !matches!(self.kind, WorkbenchKind::Character) {
+                    return (Task::none(), WorkbenchEvent::None);
+                }
+                self.character_cover_pending = true;
+                self.operation_error = None;
+                (select_character_cover_task(), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::CharacterCoverLoaded(result) => {
+                self.character_cover_pending = false;
+                match result {
+                    Ok(Some(bytes)) => {
+                        let handle = image::Handle::from_bytes(bytes.clone());
+                        self.record_history();
+                        let update_result = self.loaded.as_ref().map(|loaded| {
+                            loaded
+                                .lock()
+                                .map_err(|_| "资源编辑状态已损坏。".to_owned())
+                                .and_then(|mut loaded| loaded.set_character_cover(bytes))
+                        });
+                        match update_result.transpose() {
+                            Ok(Some(())) => {
+                                if let Some(WorkbenchForm::Character(form)) = &mut self.form {
+                                    form.cover = handle;
+                                }
+                                return (self.mark_changed(true), WorkbenchEvent::None);
+                            }
+                            Ok(None) => {
+                                self.operation_error = Some("角色卡尚未加载完成。".to_owned());
+                            }
+                            Err(error) => self.operation_error = Some(error),
+                        }
+                        self.close_pending = false;
+                    }
+                    Ok(None) => {
+                        // 用户取消文件选择不是错误；若之前请求关闭，继续等待后续关闭操作。
+                        if self.close_pending {
+                            self.close_pending = false;
+                        }
+                    }
+                    Err(error) => {
+                        self.operation_error = Some(error);
+                        self.close_pending = false;
+                    }
+                }
+                (Task::none(), WorkbenchEvent::None)
+            }
             WorkbenchMessage::CharacterChanged(field, value) => {
+                self.record_history();
                 if let Some(WorkbenchForm::Character(form)) = &mut self.form {
                     match field {
                         CharacterField::Name => form.name.clone_from(&value),
                         CharacterField::Creator => form.creator.clone_from(&value),
                         CharacterField::Version => form.version.clone_from(&value),
-                        CharacterField::Tags => form.tags.clone_from(&value),
                     }
                 }
                 self.update_loaded(|data| {
@@ -352,13 +419,100 @@ impl WorkbenchState {
                         CharacterField::Name => character.name = value,
                         CharacterField::Creator => character.creator = value,
                         CharacterField::Version => character.version = value,
-                        CharacterField::Tags => character.tags = value,
                     }
                 });
                 (self.mark_changed(false), WorkbenchEvent::None)
             }
+            WorkbenchMessage::CharacterTagInputChanged(value) => {
+                if let Some(WorkbenchForm::Character(form)) = &mut self.form {
+                    form.tag_input = value;
+                }
+                (Task::none(), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::AddCharacterTag => {
+                let can_add = match self.form.as_ref() {
+                    Some(WorkbenchForm::Character(form)) => {
+                        let tag = form.tag_input.trim();
+                        !tag.is_empty()
+                            && !form
+                                .tags
+                                .iter()
+                                .any(|existing| existing.eq_ignore_ascii_case(tag))
+                    }
+                    _ => false,
+                };
+                if !can_add {
+                    return (Task::none(), WorkbenchEvent::None);
+                }
+                self.record_history();
+                let tag = self
+                    .form
+                    .as_mut()
+                    .and_then(|form| match form {
+                        WorkbenchForm::Character(form) => {
+                            let tag = form.tag_input.trim();
+                            if tag.is_empty()
+                                || form
+                                    .tags
+                                    .iter()
+                                    .any(|existing| existing.eq_ignore_ascii_case(tag))
+                            {
+                                return None;
+                            }
+                            let tag = tag.to_owned();
+                            form.tags.push(tag.clone());
+                            form.tag_input.clear();
+                            Some(tag)
+                        }
+                        _ => None,
+                    });
+                if tag.is_some() {
+                    let tags = match self.form.as_ref() {
+                        Some(WorkbenchForm::Character(form)) => form.tags.join(", "),
+                        _ => String::new(),
+                    };
+                    self.update_loaded(|data| {
+                        if let EditorData::Character(character) = data {
+                            character.tags = tags;
+                        }
+                    });
+                    return (self.mark_changed(true), WorkbenchEvent::None);
+                }
+                (Task::none(), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::RemoveCharacterTag(index) => {
+                let can_remove = matches!(
+                    self.form.as_ref(),
+                    Some(WorkbenchForm::Character(form)) if index < form.tags.len()
+                );
+                if !can_remove {
+                    return (Task::none(), WorkbenchEvent::None);
+                }
+                self.record_history();
+                let removed = if let Some(WorkbenchForm::Character(form)) = &mut self.form {
+                    (index < form.tags.len()).then(|| form.tags.remove(index))
+                } else {
+                    None
+                };
+                if removed.is_some() {
+                    let tags = match self.form.as_ref() {
+                        Some(WorkbenchForm::Character(form)) => form.tags.join(", "),
+                        _ => String::new(),
+                    };
+                    self.update_loaded(|data| {
+                        if let EditorData::Character(character) = data {
+                            character.tags = tags;
+                        }
+                    });
+                    return (self.mark_changed(true), WorkbenchEvent::None);
+                }
+                (Task::none(), WorkbenchEvent::None)
+            }
             WorkbenchMessage::CharacterAreaChanged(field, action) => {
                 let edited = action.is_edit();
+                if edited {
+                    self.record_history();
+                }
                 let value = if let Some(WorkbenchForm::Character(form)) = &mut self.form {
                     let content = match field {
                         CharacterArea::Description => &mut form.description,
@@ -394,6 +548,7 @@ impl WorkbenchState {
                 )
             }
             WorkbenchMessage::WorldChanged(field, value) => {
+                self.record_history();
                 if let Some(form) = self.world_form_mut() {
                     match field {
                         WorldField::Name => form.name.clone_from(&value),
@@ -407,6 +562,7 @@ impl WorkbenchState {
                 (self.mark_changed(false), WorkbenchEvent::None)
             }
             WorkbenchMessage::EntryChanged(index, field, value) => {
+                self.record_history();
                 if let Some(entry) = self
                     .world_form_mut()
                     .and_then(|form| form.entries.get_mut(index))
@@ -439,6 +595,9 @@ impl WorkbenchState {
             }
             WorkbenchMessage::EntryContentChanged(index, action) => {
                 let edited = action.is_edit();
+                if edited {
+                    self.record_history();
+                }
                 let value = if let Some(entry) = self
                     .world_form_mut()
                     .and_then(|form| form.entries.get_mut(index))
@@ -465,6 +624,7 @@ impl WorkbenchState {
                 )
             }
             WorkbenchMessage::EntryToggled(index, enabled) => {
+                self.record_history();
                 if let Some(entry) = self
                     .world_form_mut()
                     .and_then(|form| form.entries.get_mut(index))
@@ -479,6 +639,7 @@ impl WorkbenchState {
                 (self.mark_changed(true), WorkbenchEvent::None)
             }
             WorkbenchMessage::PresetChanged(index, field, value) => {
+                self.record_history();
                 if let Some(prompt) = self.preset_prompt_mut(index) {
                     match field {
                         PresetField::Name => prompt.name.clone_from(&value),
@@ -498,6 +659,9 @@ impl WorkbenchState {
             }
             WorkbenchMessage::PresetContentChanged(index, action) => {
                 let edited = action.is_edit();
+                if edited {
+                    self.record_history();
+                }
                 let value = if let Some(prompt) = self.preset_prompt_mut(index) {
                     if let Some(content) = &mut prompt.content {
                         content.perform(action);
@@ -525,6 +689,7 @@ impl WorkbenchState {
                 )
             }
             WorkbenchMessage::PresetToggled(index, enabled) => {
+                self.record_history();
                 let mut resolved = None;
                 if let Some(prompt) = self.preset_prompt_mut(index) {
                     // 多套顺序模板状态不一致时，第一次点击统一启用，随后才按普通开关切换。
@@ -562,6 +727,7 @@ impl WorkbenchState {
                 self.preset_add_pending = false;
                 match result {
                     Ok(prompt) => {
+                        self.record_history();
                         self.operation_error = None;
                         if let Some(WorkbenchForm::Preset(form)) = &mut self.form {
                             form.clear_current_page();
@@ -612,6 +778,7 @@ impl WorkbenchState {
                         (bind_world_task(path), WorkbenchEvent::None)
                     }
                     Some(Confirmation::UnbindWorld) => {
+                        self.record_history();
                         if let Some(WorkbenchForm::Character(form)) = &mut self.form {
                             form.world_book = None;
                         }
@@ -628,6 +795,7 @@ impl WorkbenchState {
             WorkbenchMessage::WorldBookBound(result) => {
                 match result {
                     Ok(world) => {
+                        self.record_history();
                         if let Some(WorkbenchForm::Character(form)) = &mut self.form {
                             form.world_book = Some(WorldBookForm::from(&world));
                         }
@@ -646,6 +814,7 @@ impl WorkbenchState {
                 let Some(Confirmation::DeletePreset(index)) = self.confirmation.take() else {
                     return (Task::none(), WorkbenchEvent::None);
                 };
+                self.record_history();
                 if let Some(WorkbenchForm::Preset(form)) = &mut self.form
                     && index < form.prompts.len()
                 {
@@ -658,9 +827,9 @@ impl WorkbenchState {
                     }
                 });
                 let page = match &self.form {
-                    Some(WorkbenchForm::Preset(form)) => form
-                        .current_page
-                        .min(form.page_count().saturating_sub(1)),
+                    Some(WorkbenchForm::Preset(form)) => {
+                        form.current_page.min(form.page_count().saturating_sub(1))
+                    }
                     _ => 0,
                 };
                 self.prepare_preset_page(page);
@@ -714,12 +883,16 @@ impl WorkbenchState {
                 if self.save_error.is_some() {
                     return (Task::none(), WorkbenchEvent::None);
                 }
-                if self.preset_add_pending
+                if self.character_cover_pending
+                    || self.preset_add_pending
                     || self.saving_revision.is_some()
                     || self.revision > self.saved_revision
                 {
                     self.close_pending = true;
-                    if !self.preset_add_pending && self.saving_revision.is_none() {
+                    if !self.character_cover_pending
+                        && !self.preset_add_pending
+                        && self.saving_revision.is_none()
+                    {
                         return (self.start_save(), WorkbenchEvent::None);
                     }
                     return (Task::none(), WorkbenchEvent::None);
@@ -750,6 +923,68 @@ impl WorkbenchState {
                 WorkbenchMessage::DebounceElapsed,
             )
         }
+    }
+
+    /// 在一次可编辑操作前保存快照；新操作会清空重做栈，符合常见编辑器行为。
+    fn record_history(&mut self) {
+        let Some(loaded) = &self.loaded else {
+            return;
+        };
+        let Ok(loaded) = loaded.lock() else {
+            return;
+        };
+        self.undo_stack.push(loaded.snapshot());
+        if self.undo_stack.len() > MAX_HISTORY {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    fn undo(&mut self) -> Task<WorkbenchMessage> {
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return Task::none();
+        };
+        self.apply_history_snapshot(snapshot, true)
+    }
+
+    fn redo(&mut self) -> Task<WorkbenchMessage> {
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return Task::none();
+        };
+        self.apply_history_snapshot(snapshot, false)
+    }
+
+    fn apply_history_snapshot(
+        &mut self,
+        snapshot: LoadedEditorSnapshot,
+        from_undo: bool,
+    ) -> Task<WorkbenchMessage> {
+        let Some(loaded) = self.loaded.clone() else {
+            return Task::none();
+        };
+        let current_page = match &self.form {
+            Some(WorkbenchForm::Preset(form)) => Some(form.current_page),
+            _ => None,
+        };
+        let Ok(mut loaded) = loaded.lock() else {
+            self.operation_error = Some("资源编辑状态已损坏。".to_owned());
+            return Task::none();
+        };
+        let current = loaded.snapshot();
+        loaded.restore_snapshot(snapshot);
+        let form = form_from_loaded(&loaded);
+        if from_undo {
+            self.redo_stack.push(current);
+        } else {
+            self.undo_stack.push(current);
+        }
+        drop(loaded);
+        self.form = Some(form);
+        if let Some(page) = current_page {
+            self.prepare_preset_page(page);
+        }
+        self.operation_error = None;
+        self.mark_changed(true)
     }
 
     fn start_save(&mut self) -> Task<WorkbenchMessage> {
@@ -869,6 +1104,9 @@ impl WorkbenchState {
         self.operation_error = None;
         self.close_pending = false;
         self.preset_add_pending = false;
+        self.character_cover_pending = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
     }
 }
 
@@ -878,7 +1116,7 @@ fn load_task(path: PathBuf, kind: WorkbenchKind, serial: u64) -> Task<WorkbenchM
             tokio::task::spawn_blocking(move || {
                 let loaded = load_editor(&path, kind.resource_kind())?;
                 // 预设可能包含大量条目，文本编辑器内容也必须在后台一次性准备。
-                let form = form_from_data(&loaded.data);
+                let form = form_from_loaded(&loaded);
                 Ok(Arc::new(Mutex::new(Some(PreparedWorkbench {
                     loaded,
                     form,
@@ -888,6 +1126,28 @@ fn load_task(path: PathBuf, kind: WorkbenchKind, serial: u64) -> Task<WorkbenchM
             .unwrap_or_else(|_| Err("资源加载线程意外退出。".to_owned()))
         },
         move |result| WorkbenchMessage::Loaded(serial, result),
+    )
+}
+
+fn select_character_cover_task() -> Task<WorkbenchMessage> {
+    Task::perform(
+        async {
+            let Some(file) = rfd::AsyncFileDialog::new()
+                .add_filter("PNG 图片", &["png"])
+                .pick_file()
+                .await
+            else {
+                return Ok(None);
+            };
+            tokio::task::spawn_blocking(move || {
+                std::fs::read(file.path())
+                    .map(Some)
+                    .map_err(|error| format!("读取封面图片失败：{error}"))
+            })
+            .await
+            .unwrap_or_else(|_| Err("封面图片读取线程意外退出。".to_owned()))
+        },
+        WorkbenchMessage::CharacterCoverLoaded,
     )
 }
 
@@ -939,13 +1199,30 @@ fn form_from_data(data: &EditorData) -> WorkbenchForm {
     }
 }
 
+fn form_from_loaded(loaded: &LoadedEditor) -> WorkbenchForm {
+    let mut form = form_from_data(&loaded.data);
+    if let WorkbenchForm::Character(character) = &mut form {
+        character.cover =
+            image::Handle::from_bytes(loaded.character_cover_bytes().unwrap_or_default().to_vec());
+    }
+    form
+}
+
 impl From<&EditableCharacter> for CharacterForm {
     fn from(value: &EditableCharacter) -> Self {
         Self {
+            cover: image::Handle::from_bytes(Vec::new()),
             name: value.name.clone(),
             creator: value.creator.clone(),
             version: value.version.clone(),
-            tags: value.tags.clone(),
+            tags: value
+                .tags
+                .split(',')
+                .map(str::trim)
+                .filter(|tag| !tag.is_empty())
+                .map(ToOwned::to_owned)
+                .collect(),
+            tag_input: String::new(),
             description: text_editor::Content::with_text(&value.description),
             personality: text_editor::Content::with_text(&value.personality),
             scenario: text_editor::Content::with_text(&value.scenario),
@@ -1004,7 +1281,9 @@ impl PresetForm {
     }
 
     fn page_range(&self, page: usize) -> (usize, usize) {
-        let start = page.saturating_mul(PRESET_PAGE_SIZE).min(self.prompts.len());
+        let start = page
+            .saturating_mul(PRESET_PAGE_SIZE)
+            .min(self.prompts.len());
         let end = (start + PRESET_PAGE_SIZE).min(self.prompts.len());
         (start, end)
     }
@@ -1073,13 +1352,19 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
         ]
         .spacing(7)
         .align_y(Alignment::Center)
-    } else if state.saving_revision.is_some() || state.close_pending || state.preset_add_pending {
+    } else if state.saving_revision.is_some()
+        || state.close_pending
+        || state.preset_add_pending
+        || state.character_cover_pending
+    {
         row![
             icons::icon(Icon::LoaderCircle, 14, BLUE_600),
             text(if state.close_pending {
                 t("workbench.save.closing", language)
             } else if state.preset_add_pending {
                 t("workbench.preset.adding", language)
+            } else if state.character_cover_pending {
+                t("workbench.character.cover.loading", language)
             } else {
                 t("workbench.save.saving", language)
             })
@@ -1095,6 +1380,23 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
         .spacing(6)
         .align_y(Alignment::Center)
     };
+    let history_controls = row![
+        history_button(
+            Icon::Undo2,
+            (!state.undo_stack.is_empty()).then_some(WorkbenchMessage::Undo),
+        ),
+        history_button(
+            Icon::Redo2,
+            (!state.redo_stack.is_empty()).then_some(WorkbenchMessage::Redo),
+        ),
+    ]
+    .spacing(2)
+    .align_y(Alignment::Center);
+    // 保存状态文案长度不同，预留固定区域避免状态切换时推动撤销/重做按钮。
+    let status_slot = container(status)
+        .width(Length::Fixed(220.0))
+        .align_x(Alignment::End)
+        .align_y(Alignment::Center);
     container(
         row![
             container(icons::icon(state.kind.icon(), 18, BLUE_600))
@@ -1118,7 +1420,8 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
             ]
             .spacing(2),
             space::horizontal(),
-            status,
+            history_controls,
+            status_slot,
             button(icons::icon(Icon::X, 17, BLUE_600))
                 .on_press(WorkbenchMessage::Close)
                 .width(34)
@@ -1131,6 +1434,25 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
     .width(Fill)
     .padding([10, 14])
     .style(header_surface)
+    .into()
+}
+
+fn history_button(
+    icon: Icon,
+    message: Option<WorkbenchMessage>,
+) -> Element<'static, WorkbenchMessage> {
+    button(
+        container(icons::icon(icon, 16, BLUE_600))
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+    )
+    .on_press_maybe(message)
+    .width(30)
+    .height(30)
+    .padding(0)
+    .style(button_style(ButtonVariant::Ghost))
     .into()
 }
 
@@ -1177,7 +1499,45 @@ fn workbench_body(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
 
 fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
     let language = current_language();
+    let cover = container(
+        row![
+            container(
+                image::Image::new(&form.cover)
+                    .width(Length::Fill)
+                    .height(Length::Fixed(210.0))
+                    .content_fit(ContentFit::Contain),
+            )
+            .width(Length::FillPortion(2))
+            .height(Length::Fixed(210.0))
+            .padding(6)
+            .style(panel_surface),
+            column![
+                section_title("workbench.character.cover"),
+                text(t("workbench.character.cover.detail", language))
+                    .size(11)
+                    .style(crate::theme::muted_text_style),
+                button(
+                    row![
+                        icons::icon(Icon::ImagePlus, 14, BLUE_600),
+                        text(t("workbench.character.cover.change", language)).size(11),
+                    ]
+                    .spacing(6),
+                )
+                .on_press(WorkbenchMessage::SelectCharacterCover)
+                .padding([7, 10])
+                .style(button_style(ButtonVariant::Secondary)),
+            ]
+            .spacing(8)
+            .width(Length::FillPortion(3)),
+        ]
+        .spacing(12)
+        .align_y(Alignment::Center),
+    )
+    .width(Fill)
+    .padding(10)
+    .style(panel_surface);
     let metadata = column![
+        cover,
         section_title("workbench.character.basic"),
         row![
             field_input("workbench.field.name", &form.name, |value| {
@@ -1191,29 +1551,7 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
             }),
         ]
         .spacing(10),
-        field_input("workbench.field.tags", &form.tags, |value| {
-            WorkbenchMessage::CharacterChanged(CharacterField::Tags, value)
-        }),
-        area_field(
-            "workbench.character.description",
-            &form.description,
-            |action| { WorkbenchMessage::CharacterAreaChanged(CharacterArea::Description, action) }
-        ),
-        area_field(
-            "workbench.character.personality",
-            &form.personality,
-            |action| { WorkbenchMessage::CharacterAreaChanged(CharacterArea::Personality, action) }
-        ),
-        area_field("workbench.character.scenario", &form.scenario, |action| {
-            WorkbenchMessage::CharacterAreaChanged(CharacterArea::Scenario, action)
-        }),
-        area_field(
-            "workbench.character.first_message",
-            &form.first_message,
-            |action| {
-                WorkbenchMessage::CharacterAreaChanged(CharacterArea::FirstMessage, action)
-            }
-        ),
+        character_tags_field(form),
     ]
     .spacing(10);
 
@@ -1269,13 +1607,70 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
         .spacing(10)
         .into()
     };
-    scrollable(container(column![metadata, world].spacing(18)).padding(16))
-        .height(Fill)
-        .into()
+
+    // 角色卡上半区使用左右分栏：左侧承载资料，右侧用 2×2 网格编辑长文本。
+    let text_grid = column![
+        row![
+            container(area_field(
+                "workbench.character.description",
+                &form.description,
+                |action| {
+                    WorkbenchMessage::CharacterAreaChanged(CharacterArea::Description, action)
+                },
+            ))
+            .width(Length::FillPortion(1)),
+            container(area_field(
+                "workbench.character.personality",
+                &form.personality,
+                |action| {
+                    WorkbenchMessage::CharacterAreaChanged(CharacterArea::Personality, action)
+                },
+            ))
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(12),
+        row![
+            container(area_field(
+                "workbench.character.scenario",
+                &form.scenario,
+                |action| WorkbenchMessage::CharacterAreaChanged(CharacterArea::Scenario, action),
+            ))
+            .width(Length::FillPortion(1)),
+            container(area_field(
+                "workbench.character.first_message",
+                &form.first_message,
+                |action| {
+                    WorkbenchMessage::CharacterAreaChanged(CharacterArea::FirstMessage, action)
+                },
+            ))
+            .width(Length::FillPortion(1)),
+        ]
+        .spacing(12),
+    ]
+    .spacing(12);
+
+    // 世界书单独占用整行，避免被左侧栏限制成单列并浪费右侧空间。
+    scrollable(
+        container(
+            column![
+                row![
+                    container(metadata).width(Length::FillPortion(4)),
+                    container(text_grid).width(Length::FillPortion(6)),
+                ]
+                .spacing(16)
+                .align_y(Alignment::Start),
+                world,
+            ]
+            .spacing(18),
+        )
+        .padding(16),
+    )
+    .height(Fill)
+    .into()
 }
 
 fn world_view(form: &WorldBookForm, embedded: bool) -> Element<'_, WorkbenchMessage> {
-    let mut content = column![
+    let header = column![
         if embedded {
             space::vertical().height(Length::Shrink).into()
         } else {
@@ -1290,12 +1685,11 @@ fn world_view(form: &WorldBookForm, embedded: bool) -> Element<'_, WorkbenchMess
             }),
         ]
         .spacing(10),
-        section_title("workbench.world.entries"),
     ]
     .spacing(10);
-    for (index, entry) in form.entries.iter().enumerate() {
-        content = content.push(world_entry_view(index, entry));
-    }
+
+    let entries = world_entries_grid(form);
+    let content = column![header, section_title("workbench.world.entries"), entries].spacing(10);
     if embedded {
         content.into()
     } else {
@@ -1305,8 +1699,120 @@ fn world_view(form: &WorldBookForm, embedded: bool) -> Element<'_, WorkbenchMess
     }
 }
 
-fn world_entry_view(index: usize, entry: &WorldEntryForm) -> Element<'_, WorkbenchMessage> {
+fn world_entries_grid(form: &WorldBookForm) -> Element<'_, WorkbenchMessage> {
+    let scale = crate::core::typography::current_ui_scale();
+    responsive(move |size| {
+        let columns = adaptive_grid_columns(size.width, 280.0, scale, 5);
+        let compact = columns >= 4;
+        let mut grid = column![].spacing(10);
+
+        for chunk in form
+            .entries
+            .iter()
+            .enumerate()
+            .collect::<Vec<_>>()
+            .chunks(columns)
+        {
+            let mut line = row![].spacing(10);
+            for (index, entry) in chunk {
+                line = line.push(
+                    container(world_entry_view(*index, entry, compact))
+                        .width(Length::FillPortion(1)),
+                );
+            }
+            for _ in chunk.len()..columns {
+                line = line.push(container(space::horizontal()).width(Length::FillPortion(1)));
+            }
+            grid = grid.push(line);
+        }
+        grid.into()
+    })
+    .into()
+}
+
+/// 按当前工作区宽度和界面缩放计算桌面网格列数，保证字体变大时卡片不会被挤坏。
+fn adaptive_grid_columns(
+    available_width: f32,
+    base_card_width: f32,
+    scale: f32,
+    max_columns: usize,
+) -> usize {
+    let scaled_card_width = base_card_width * scale.max(0.75);
+    let width = available_width.max(scaled_card_width);
+    ((width / scaled_card_width).floor() as usize).clamp(1, max_columns)
+}
+
+fn world_entry_view(
+    index: usize,
+    entry: &WorldEntryForm,
+    compact: bool,
+) -> Element<'_, WorkbenchMessage> {
     let language = current_language();
+    let numeric_fields: Element<'_, WorkbenchMessage> = if compact {
+        column![
+            row![
+                indexed_input(
+                    "workbench.field.order",
+                    &entry.order,
+                    index,
+                    EntryField::Order
+                ),
+                indexed_input(
+                    "workbench.field.position",
+                    &entry.position,
+                    index,
+                    EntryField::Position,
+                ),
+            ]
+            .spacing(8),
+            row![
+                indexed_input(
+                    "workbench.field.probability",
+                    &entry.probability,
+                    index,
+                    EntryField::Probability,
+                ),
+                indexed_input(
+                    "workbench.field.depth",
+                    &entry.depth,
+                    index,
+                    EntryField::Depth
+                ),
+            ]
+            .spacing(8),
+        ]
+        .spacing(8)
+        .into()
+    } else {
+        row![
+            indexed_input(
+                "workbench.field.order",
+                &entry.order,
+                index,
+                EntryField::Order
+            ),
+            indexed_input(
+                "workbench.field.position",
+                &entry.position,
+                index,
+                EntryField::Position,
+            ),
+            indexed_input(
+                "workbench.field.probability",
+                &entry.probability,
+                index,
+                EntryField::Probability,
+            ),
+            indexed_input(
+                "workbench.field.depth",
+                &entry.depth,
+                index,
+                EntryField::Depth
+            ),
+        ]
+        .spacing(8)
+        .into()
+    };
     container(
         column![
             row![
@@ -1341,33 +1847,7 @@ fn world_entry_view(index: usize, entry: &WorldEntryForm) -> Element<'_, Workben
             area_field("workbench.field.content", &entry.content, move |action| {
                 WorkbenchMessage::EntryContentChanged(index, action)
             }),
-            row![
-                indexed_input(
-                    "workbench.field.order",
-                    &entry.order,
-                    index,
-                    EntryField::Order
-                ),
-                indexed_input(
-                    "workbench.field.position",
-                    &entry.position,
-                    index,
-                    EntryField::Position,
-                ),
-                indexed_input(
-                    "workbench.field.probability",
-                    &entry.probability,
-                    index,
-                    EntryField::Probability,
-                ),
-                indexed_input(
-                    "workbench.field.depth",
-                    &entry.depth,
-                    index,
-                    EntryField::Depth
-                ),
-            ]
-            .spacing(8),
+            numeric_fields,
         ]
         .spacing(9),
     )
@@ -1426,16 +1906,25 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
     .padding([12, 16]);
 
     let (start, end) = form.page_range(form.current_page);
-    let mut cards = column![].spacing(10);
-    for index in (start..end).step_by(2) {
-        let left = preset_prompt_view(index, &form.prompts[index]);
-        let right: Element<'_, WorkbenchMessage> = if index + 1 < end {
-            preset_prompt_view(index + 1, &form.prompts[index + 1])
-        } else {
-            container(space::horizontal()).width(Fill).into()
-        };
-        cards = cards.push(row![left, right].spacing(10));
-    }
+    let scale = crate::core::typography::current_ui_scale();
+    let cards = responsive(move |size| {
+        let columns = adaptive_grid_columns(size.width, 330.0, scale, 4);
+        let mut cards = column![].spacing(10);
+        for chunk in (start..end).collect::<Vec<_>>().chunks(columns) {
+            let mut line = row![].spacing(10);
+            for index in chunk {
+                line = line.push(
+                    container(preset_prompt_view(*index, &form.prompts[*index]))
+                        .width(Length::FillPortion(1)),
+                );
+            }
+            for _ in chunk.len()..columns {
+                line = line.push(container(space::horizontal()).width(Length::FillPortion(1)));
+            }
+            cards = cards.push(line);
+        }
+        cards.into()
+    });
 
     let page_count = form.page_count();
     // 禁用按钮也可能构建消息，因此分页索引必须使用检查算术，不能预先执行 0 - 1。
@@ -1523,18 +2012,34 @@ fn preset_prompt_view(index: usize, prompt: &PresetPromptForm) -> Element<'_, Wo
         ]
         .spacing(8)
         .align_y(Alignment::Center),
-        field_input("workbench.field.name", &prompt.name, move |value| {
-            WorkbenchMessage::PresetChanged(index, PresetField::Name, value)
-        }),
     ]
     .spacing(9);
     if !prompt.marker {
         body = body
-            .push(field_input(
-                "workbench.field.role",
-                &prompt.role,
-                move |value| WorkbenchMessage::PresetChanged(index, PresetField::Role, value),
-            ))
+            // 普通提示词的短字段横向排列，把卡片垂直空间留给正文编辑器。
+            .push(
+                row![
+                    container(field_input(
+                        "workbench.field.name",
+                        &prompt.name,
+                        move |value| {
+                            WorkbenchMessage::PresetChanged(index, PresetField::Name, value)
+                        }
+                    ))
+                    .width(Length::FillPortion(3)),
+                    container(field_input(
+                        "workbench.field.role",
+                        &prompt.role,
+                        move |value| WorkbenchMessage::PresetChanged(
+                            index,
+                            PresetField::Role,
+                            value
+                        ),
+                    ))
+                    .width(Length::FillPortion(2)),
+                ]
+                .spacing(8),
+            )
             .push(if let Some(content) = &prompt.content {
                 area_field("workbench.field.content", content, move |action| {
                     WorkbenchMessage::PresetContentChanged(index, action)
@@ -1542,12 +2047,92 @@ fn preset_prompt_view(index: usize, prompt: &PresetPromptForm) -> Element<'_, Wo
             } else {
                 container(space::vertical()).into()
             });
+    } else {
+        body = body.push(field_input(
+            "workbench.field.name",
+            &prompt.name,
+            move |value| WorkbenchMessage::PresetChanged(index, PresetField::Name, value),
+        ));
     }
     container(body)
         .width(Fill)
         .padding(12)
         .style(panel_surface)
         .into()
+}
+
+fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
+    let language = current_language();
+    let chips = row(
+        form.tags
+            .iter()
+            .enumerate()
+            .map(|(index, tag)| character_tag_chip(index, tag)),
+    )
+    .spacing(6)
+    .wrap();
+    let input = text_input(
+        t("workbench.character.tags.placeholder", language),
+        &form.tag_input,
+    )
+        .on_input(WorkbenchMessage::CharacterTagInputChanged)
+        .on_submit(WorkbenchMessage::AddCharacterTag)
+        .padding([7, 9])
+        .width(Fill);
+    column![
+        text(t("workbench.field.tags", language))
+            .size(11)
+            .style(crate::theme::muted_text_style),
+        container(chips).width(Fill),
+        row![
+            input,
+            button(
+                container(icons::icon(Icon::Plus, 14, BLUE_600))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            )
+                .on_press_maybe(
+                    (!form.tag_input.trim().is_empty())
+                        .then_some(WorkbenchMessage::AddCharacterTag),
+                )
+                .width(32)
+                .height(32)
+                .padding(0)
+                .style(button_style(ButtonVariant::Secondary)),
+        ]
+        .spacing(7)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(5)
+    .width(Fill)
+    .into()
+}
+
+fn character_tag_chip<'a>(index: usize, label: &'a str) -> Element<'a, WorkbenchMessage> {
+    container(
+        row![
+            text(label).size(11).color(BLUE_600),
+            button(
+                container(icons::icon(Icon::X, 11, DANGER))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            )
+                .on_press(WorkbenchMessage::RemoveCharacterTag(index))
+                .width(20)
+                .height(20)
+                .padding(0)
+                .style(icon_button_style),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding([3, 5])
+    .style(accent_surface)
+    .into()
 }
 
 fn field_input<'a>(
@@ -1787,6 +2372,15 @@ fn accent_surface(_theme: &Theme) -> container::Style {
             ..Border::default()
         },
         ..container::Style::default()
+    }
+}
+
+/// 标签操作只保留图标本身，避免小按钮背景挤压标签内容；固定尺寸和零内边距保证图标居中。
+fn icon_button_style(_theme: &Theme, _status: button::Status) -> button::Style {
+    button::Style {
+        background: None,
+        border: Border::default(),
+        ..button::Style::default()
     }
 }
 
