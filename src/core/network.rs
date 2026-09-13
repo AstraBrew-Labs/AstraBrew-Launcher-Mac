@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -337,6 +337,196 @@ pub fn get_public_ipv6() -> Option<String> {
         |value| value.contains(':'),
     )
 }
+
+// ─── 酒馆连接日志解析 ─────────────────────────────────────────────────────────
+
+/// 酒馆连接日志中提取出的客户端信息。
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    /// 客户端 IP 地址。
+    pub ip: String,
+    /// 从 User-Agent 推断出的操作系统。
+    pub os: String,
+    /// 从 User-Agent 推断出的设备型号。
+    pub device: Option<String>,
+    /// 原始 User-Agent，用于当前会话内去重。
+    pub user_agent: String,
+}
+
+/// 去掉酒馆日志中的 ANSI 控制序列，避免彩色输出影响连接日志匹配。
+fn strip_ansi_simple(line: &str) -> String {
+    if !line.contains('\x1b') {
+        return line.to_owned();
+    }
+    let mut result = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            result.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('[') => {
+                while let Some(c) = chars.next() {
+                    if c.is_ascii_alphabetic() || c == '~' {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+            Some(_) | None => {}
+        }
+    }
+    result
+}
+
+/// 从 User-Agent 提取可读的操作系统名称。
+fn parse_os_from_ua(ua: &str) -> String {
+    if let Some(index) = ua.find("Mac OS X ") {
+        let version: String = ua[index + 9..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+            .collect();
+        if !version.is_empty() {
+            return format!("macOS {}", version.replace('_', "."));
+        }
+    }
+    if let Some(index) = ua.find("Windows NT ") {
+        let version: String = ua[index + 11..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if !version.is_empty() {
+            return format!("Windows {version}");
+        }
+    }
+    if let Some(index) = ua.find("iPhone OS ") {
+        let version: String = ua[index + 10..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+            .collect();
+        if !version.is_empty() {
+            return format!("iOS {}", version.replace('_', "."));
+        }
+    }
+    if let Some(index) = ua.find("CPU OS ") {
+        let version: String = ua[index + 7..]
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.'))
+            .collect();
+        if !version.is_empty() {
+            return format!("iPadOS {}", version.replace('_', "."));
+        }
+    }
+    if let Some(index) = ua.find("Android ") {
+        let version: String = ua[index + 8..]
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if !version.is_empty() {
+            return format!("Android {version}");
+        }
+    }
+    if ua.contains("Linux") {
+        return "Linux".to_owned();
+    }
+    "Unknown".to_owned()
+}
+
+/// 从 User-Agent 提取移动设备名称；桌面浏览器返回 None。
+fn parse_device_from_ua(ua: &str) -> Option<String> {
+    if ua.contains("iPhone") {
+        return Some("iPhone".to_owned());
+    }
+    if ua.contains("iPad") {
+        return Some("iPad".to_owned());
+    }
+    let android = ua.find("Android")?;
+    let segment = ua[android..].split(')').next()?;
+    let model = segment.rsplit(';').next()?.trim();
+    if model.is_empty() || model.eq_ignore_ascii_case("wv") || model.starts_with("Android ") {
+        return None;
+    }
+    let upper = model.to_ascii_uppercase();
+    if model.starts_with("Pixel") {
+        return Some(format!("Google {model}"));
+    }
+    if upper.starts_with("SM-") || upper.starts_with("GT-") {
+        return Some(format!("Samsung {model}"));
+    }
+    if model.starts_with("Redmi") || model.starts_with("POCO") {
+        return Some(format!("Xiaomi {model}"));
+    }
+    if upper.starts_with("ONEPLUS") {
+        return Some(format!("OnePlus {model}"));
+    }
+    if upper.starts_with("RMX") {
+        return Some(format!("realme {model}"));
+    }
+    if upper.starts_with("CPH") {
+        return Some(format!("OPPO {model}"));
+    }
+    Some(model.to_owned())
+}
+
+/// 解析 `New connection from <IP>; User Agent: <UA>` 日志行。
+pub fn parse_connection_log(line: &str) -> Option<ConnectionInfo> {
+    let plain = strip_ansi_simple(line);
+    let rest = plain.split_once("New connection from ")?.1;
+    let (ip, ua) = rest.split_once("; User Agent:")?;
+    let ip = ip.trim();
+    let user_agent = ua.trim();
+    if ip.is_empty() || user_agent.is_empty() {
+        return None;
+    }
+    Some(ConnectionInfo {
+        ip: ip.to_owned(),
+        os: parse_os_from_ua(user_agent),
+        device: parse_device_from_ua(user_agent),
+        user_agent: user_agent.to_owned(),
+    })
+}
+
+/// 判断 IP 是否属于本机，回环地址和本机网卡地址均不提醒。
+pub fn is_local_ip(ip: &str) -> bool {
+    let ip = ip.trim();
+    ip.is_empty()
+        || matches!(ip, "localhost" | "::1")
+        || ip.starts_with("127.")
+        || LOCAL_IP_SET.contains(ip)
+}
+
+/// 启动时缓存 macOS 网卡地址，避免每条日志都调用 ifconfig。
+static LOCAL_IP_SET: LazyLock<std::collections::HashSet<String>> = LazyLock::new(|| {
+    let mut addresses = std::collections::HashSet::new();
+    let Ok(output) = Command::new("ifconfig").output() else {
+        return addresses;
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let trimmed = line.trim();
+        if let Some(address) = trimmed.strip_prefix("inet ").and_then(|rest| rest.split_whitespace().next())
+            && address != "127.0.0.1" && !address.starts_with("169.254.")
+        {
+            addresses.insert(address.to_owned());
+        } else if let Some(raw) = trimmed.strip_prefix("inet6 ").and_then(|rest| rest.split_whitespace().next()) {
+            let address = raw.split('%').next().unwrap_or(raw);
+            if address != "::1" && !address.to_ascii_lowercase().starts_with("fe80:") {
+                addresses.insert(address.to_owned());
+            }
+        }
+    }
+    addresses
+});
 
 fn public_ip(
     local_address: std::net::IpAddr,

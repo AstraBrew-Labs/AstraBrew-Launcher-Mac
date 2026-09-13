@@ -27,6 +27,7 @@ use crate::core::tavern_process::{
     TavernRuntime,
 };
 use crate::lang::{lang::current_language, t, text};
+use crate::pages::notice::TransientNotice;
 use crate::theme::button_style;
 
 const MAX_LOG_LINES: usize = 2_000;
@@ -314,6 +315,10 @@ pub struct ConsoleState {
     pub active_export_path: String,
     pub pending_port_conflict: Option<PortConflict>,
     pub restored_pm2_path: Option<String>,
+    /// 待由应用根层展示的远程设备访问通知。
+    pending_connection_notices: VecDeque<TransientNotice>,
+    /// 同一 IP 与 User-Agent 在当前酒馆会话内只提醒一次。
+    notified_connections: std::collections::HashSet<String>,
     /// 可框选复制的只读日志编辑器内容。
     log_content: text_editor::Content,
     /// 编辑器每个逻辑行对应的真实日志类型，颜色不依赖可见标签。
@@ -344,6 +349,8 @@ impl Default for ConsoleState {
             active_export_path: String::new(),
             pending_port_conflict: None,
             restored_pm2_path: None,
+            pending_connection_notices: VecDeque::new(),
+            notified_connections: std::collections::HashSet::new(),
             log_content: text_editor::Content::new(),
             log_highlights: Arc::new(Vec::new()),
             stream_context: None,
@@ -369,6 +376,8 @@ impl ConsoleState {
     /// 创建新的日志会话，并同步清空界面、选择器、高亮和旧访问状态。
     fn reset_log_session(&mut self) {
         self.clear_log_buffers();
+        self.pending_connection_notices.clear();
+        self.notified_connections.clear();
         self.server_url = None;
         self.network_port = None;
         self.pending_port_conflict = None;
@@ -422,6 +431,11 @@ impl ConsoleState {
 
     pub fn add_warning(&mut self, message: impl Into<String>) {
         self.push(LogKind::Warning, message);
+    }
+
+    /// 取出控制台产生的全局通知，交给应用根层统一渲染。
+    pub fn take_notices(&mut self) -> Vec<TransientNotice> {
+        self.pending_connection_notices.drain(..).collect()
     }
 
     pub fn update(&mut self, message: ConsoleMessage) -> ConsoleAction {
@@ -661,6 +675,7 @@ impl ConsoleState {
     }
 
     fn push_process_log_inner(&mut self, line: String, persist: bool) {
+        self.queue_connection_notice(&line);
         let explicit = classify_log(&line);
         let kind = if explicit == LogKind::Output
             && self
@@ -726,6 +741,34 @@ impl ConsoleState {
             self.disk_log_active = false;
             self.push(LogKind::Error, error);
         }
+    }
+
+    /// 解析酒馆连接日志，并为非本机设备生成全局提醒。
+    ///
+    /// 旧版仅在服务器互联网模式下提示，且按 IP 与 User-Agent 去重；这里
+    /// 继续沿用这套规则，避免本机访问和局域网模式产生过多干扰。
+    fn queue_connection_notice(&mut self, line: &str) {
+        let Some(info) = crate::core::network::parse_connection_log(line) else {
+            return;
+        };
+        if self.network_mode != Some(NetworkMode::Internet)
+            || crate::core::network::is_local_ip(&info.ip)
+        {
+            return;
+        }
+
+        let dedup_key = format!("{}|{}", info.ip, info.user_agent);
+        if !self.notified_connections.insert(dedup_key) {
+            return;
+        }
+
+        let device_and_os = match info.device {
+            Some(device) if !device.is_empty() => format!("{device}  ·  {}", info.os),
+            _ => info.os,
+        };
+        let detail = format!("{}\n{}\n{}", info.ip, device_and_os, timestamp());
+        self.pending_connection_notices
+            .push_back(TransientNotice::warning("console.connection.new_device", detail));
     }
 
     /// 向只读编辑器追加日志；暂停跟随时恢复用户原有光标和选区。
@@ -1576,6 +1619,33 @@ mod tests {
             state.log_highlights.as_slice(),
             &[LogHighlight::Warning, LogHighlight::Warning, LogHighlight::Error]
         );
+    }
+
+    #[test]
+    fn remote_connection_log_becomes_one_global_notice_per_ip_and_user_agent() {
+        let mut state = ConsoleState::default();
+        state.network_mode = Some(NetworkMode::Internet);
+        let line = "New connection from 203.0.113.7; User Agent: Mozilla/5.0 (Linux; Android 13; Pixel 6)";
+
+        state.push_process_log(line.to_owned());
+        state.push_process_log(line.to_owned());
+
+        let notices = state.take_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].title_key, "console.connection.new_device");
+        assert!(notices[0].detail.starts_with("203.0.113.7\nGoogle Pixel 6\n"));
+    }
+
+    #[test]
+    fn local_connection_log_does_not_become_a_global_notice() {
+        let mut state = ConsoleState::default();
+        state.network_mode = Some(NetworkMode::Internet);
+        state.push_process_log(
+            "New connection from 127.0.0.1; User Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
+                .to_owned(),
+        );
+
+        assert!(state.take_notices().is_empty());
     }
 
     #[test]

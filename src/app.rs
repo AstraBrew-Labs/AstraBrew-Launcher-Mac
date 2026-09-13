@@ -683,6 +683,9 @@ impl Launcher {
 
     /// 将各页面的一次性反馈汇总到应用根层 Toast 队列。
     fn collect_page_notices(&mut self) {
+        for notice in self.console.take_notices() {
+            self.push_global_notice(notice);
+        }
         if let Some(notice) = self.resources.take_notice() {
             self.push_global_notice(notice);
         }

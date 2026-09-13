@@ -3,15 +3,16 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use std::{fmt, mem};
 
 use iced::widget::{
-    button, checkbox, column, container, image, mouse_area, responsive, row, scrollable, space,
-    stack, text_editor, text_input,
+    button, checkbox, column, container, image, mouse_area, pick_list, responsive, row, scrollable,
+    space, stack, text_editor, text_input,
 };
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
 
-use astra_ui::{BLUE_600, ButtonVariant, DANGER, SUCCESS, icons};
+use astra_ui::{BLUE_600, ButtonVariant, DANGER, SUCCESS, icons, pick_list_handle};
 
 use crate::core::library::ResourceKind;
 use crate::core::library::edit::{
@@ -20,7 +21,7 @@ use crate::core::library::edit::{
     load_world_book_for_binding, save_editor,
 };
 use crate::lang::{current_language, t, text};
-use crate::theme::button_style;
+use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
 // 预设只构建当前页的编辑器，避免大量条目同时参与布局和绘制。
@@ -90,10 +91,7 @@ pub(crate) enum WorldField {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum EntryField {
     Comment,
-    Keys,
-    SecondaryKeys,
     Order,
-    Position,
     Probability,
     Depth,
 }
@@ -101,7 +99,33 @@ pub(crate) enum EntryField {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PresetField {
     Name,
-    Role,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EntryTagKind {
+    Keys,
+    SecondaryKeys,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorldPosition {
+    BeforeCharacter,
+    AfterCharacter,
+    BeforeExamples,
+    AfterExamples,
+    BeforeAuthorNote,
+    AfterAuthorNote,
+    AtDepthSystem,
+    AtDepthUser,
+    AtDepthAssistant,
+    Outlet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresetRole {
+    System,
+    User,
+    Assistant,
 }
 
 #[derive(Debug, Clone)]
@@ -119,9 +143,14 @@ pub(crate) enum WorkbenchMessage {
     CharacterAreaChanged(CharacterArea, text_editor::Action),
     WorldChanged(WorldField, String),
     EntryChanged(usize, EntryField, String),
+    EntryTagInputChanged(usize, EntryTagKind, String),
+    AddEntryTag(usize, EntryTagKind),
+    RemoveEntryTag(usize, EntryTagKind, usize),
+    EntryPositionChanged(usize, WorldPosition),
     EntryContentChanged(usize, text_editor::Action),
     EntryToggled(usize, bool),
     PresetChanged(usize, PresetField, String),
+    PresetRoleChanged(usize, PresetRole),
     PresetContentChanged(usize, text_editor::Action),
     PresetToggled(usize, bool),
     PresetPageChanged(usize),
@@ -191,12 +220,15 @@ struct WorldBookForm {
 #[derive(Debug)]
 struct WorldEntryForm {
     comment: String,
-    keys: String,
-    secondary_keys: String,
+    keys: Vec<String>,
+    keys_input: String,
+    secondary_keys: Vec<String>,
+    secondary_keys_input: String,
     content: text_editor::Content,
     enabled: bool,
     order: String,
     position: String,
+    position_role: String,
     probability: String,
     depth: String,
 }
@@ -217,6 +249,112 @@ struct PresetPromptForm {
     enabled: bool,
     partial: bool,
     marker: bool,
+}
+
+const WORLD_POSITIONS: [WorldPosition; 10] = [
+    WorldPosition::BeforeCharacter,
+    WorldPosition::AfterCharacter,
+    WorldPosition::BeforeExamples,
+    WorldPosition::AfterExamples,
+    WorldPosition::BeforeAuthorNote,
+    WorldPosition::AfterAuthorNote,
+    WorldPosition::AtDepthSystem,
+    WorldPosition::AtDepthUser,
+    WorldPosition::AtDepthAssistant,
+    WorldPosition::Outlet,
+];
+
+const PRESET_ROLES: [PresetRole; 3] = [
+    PresetRole::System,
+    PresetRole::User,
+    PresetRole::Assistant,
+];
+
+impl WorldPosition {
+    fn from_values(position: &str, role: &str) -> Self {
+        match position.trim() {
+            "1" | "after_char" => Self::AfterCharacter,
+            "2" => Self::BeforeAuthorNote,
+            "3" => Self::AfterAuthorNote,
+            "4" => match role.trim() {
+                "1" | "user" => Self::AtDepthUser,
+                "2" | "assistant" => Self::AtDepthAssistant,
+                _ => Self::AtDepthSystem,
+            },
+            "5" => Self::BeforeExamples,
+            "6" => Self::AfterExamples,
+            "7" => Self::Outlet,
+            _ => Self::BeforeCharacter,
+        }
+    }
+
+    const fn values(self) -> (&'static str, &'static str) {
+        match self {
+            Self::BeforeCharacter => ("0", ""),
+            Self::AfterCharacter => ("1", ""),
+            Self::BeforeExamples => ("5", ""),
+            Self::AfterExamples => ("6", ""),
+            Self::BeforeAuthorNote => ("2", ""),
+            Self::AfterAuthorNote => ("3", ""),
+            Self::AtDepthSystem => ("4", "0"),
+            Self::AtDepthUser => ("4", "1"),
+            Self::AtDepthAssistant => ("4", "2"),
+            Self::Outlet => ("7", ""),
+        }
+    }
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::BeforeCharacter => "workbench.position.before_character",
+            Self::AfterCharacter => "workbench.position.after_character",
+            Self::BeforeExamples => "workbench.position.before_examples",
+            Self::AfterExamples => "workbench.position.after_examples",
+            Self::BeforeAuthorNote => "workbench.position.before_author_note",
+            Self::AfterAuthorNote => "workbench.position.after_author_note",
+            Self::AtDepthSystem => "workbench.position.depth_system",
+            Self::AtDepthUser => "workbench.position.depth_user",
+            Self::AtDepthAssistant => "workbench.position.depth_assistant",
+            Self::Outlet => "workbench.position.outlet",
+        }
+    }
+}
+
+impl fmt::Display for WorldPosition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(t(self.label_key(), current_language()))
+    }
+}
+
+impl PresetRole {
+    fn from_value(value: &str) -> Self {
+        match value.trim() {
+            "user" => Self::User,
+            "assistant" => Self::Assistant,
+            _ => Self::System,
+        }
+    }
+
+    const fn value(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
+    const fn label_key(self) -> &'static str {
+        match self {
+            Self::System => "workbench.role.system",
+            Self::User => "workbench.role.user",
+            Self::Assistant => "workbench.role.assistant",
+        }
+    }
+}
+
+impl fmt::Display for PresetRole {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(t(self.label_key(), current_language()))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -460,7 +598,7 @@ impl WorkbenchState {
                                 return None;
                             }
                             let tag = tag.to_owned();
-                            form.tags.push(tag.clone());
+                            form.tags.insert(0, tag.clone());
                             form.tag_input.clear();
                             Some(tag)
                         }
@@ -569,10 +707,7 @@ impl WorkbenchState {
                 {
                     match field {
                         EntryField::Comment => entry.comment.clone_from(&value),
-                        EntryField::Keys => entry.keys.clone_from(&value),
-                        EntryField::SecondaryKeys => entry.secondary_keys.clone_from(&value),
                         EntryField::Order => entry.order.clone_from(&value),
-                        EntryField::Position => entry.position.clone_from(&value),
                         EntryField::Probability => entry.probability.clone_from(&value),
                         EntryField::Depth => entry.depth.clone_from(&value),
                     }
@@ -583,15 +718,78 @@ impl WorkbenchState {
                     };
                     match field {
                         EntryField::Comment => entry.comment = value,
-                        EntryField::Keys => entry.keys = value,
-                        EntryField::SecondaryKeys => entry.secondary_keys = value,
                         EntryField::Order => entry.order = value,
-                        EntryField::Position => entry.position = value,
                         EntryField::Probability => entry.probability = value,
                         EntryField::Depth => entry.depth = value,
                     }
                 });
                 (self.mark_changed(false), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::EntryTagInputChanged(index, kind, value) => {
+                if let Some(entry) = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get_mut(index))
+                {
+                    match kind {
+                        EntryTagKind::Keys => entry.keys_input = value,
+                        EntryTagKind::SecondaryKeys => entry.secondary_keys_input = value,
+                    }
+                }
+                (Task::none(), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::AddEntryTag(index, kind) => {
+                let can_add = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get(index))
+                    .is_some_and(|entry| entry.can_add_tag(kind));
+                if !can_add {
+                    return (Task::none(), WorkbenchEvent::None);
+                }
+                self.record_history();
+                if let Some(entry) = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get_mut(index))
+                {
+                    entry.add_tag(kind);
+                }
+                self.sync_entry_tags(index, kind);
+                (self.mark_changed(true), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::RemoveEntryTag(index, kind, tag_index) => {
+                let can_remove = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get(index))
+                    .is_some_and(|entry| entry.tags(kind).get(tag_index).is_some());
+                if !can_remove {
+                    return (Task::none(), WorkbenchEvent::None);
+                }
+                self.record_history();
+                if let Some(entry) = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get_mut(index))
+                {
+                    entry.tags_mut(kind).remove(tag_index);
+                }
+                self.sync_entry_tags(index, kind);
+                (self.mark_changed(true), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::EntryPositionChanged(index, position) => {
+                self.record_history();
+                let (position_value, role) = position.values();
+                if let Some(entry) = self
+                    .world_form_mut()
+                    .and_then(|form| form.entries.get_mut(index))
+                {
+                    entry.position = position_value.to_owned();
+                    entry.position_role = role.to_owned();
+                }
+                self.update_world(|world| {
+                    if let Some(entry) = world.entries.get_mut(index) {
+                        entry.position = position_value.to_owned();
+                        entry.position_role = role.to_owned();
+                    }
+                });
+                (self.mark_changed(true), WorkbenchEvent::None)
             }
             WorkbenchMessage::EntryContentChanged(index, action) => {
                 let edited = action.is_edit();
@@ -643,7 +841,6 @@ impl WorkbenchState {
                 if let Some(prompt) = self.preset_prompt_mut(index) {
                     match field {
                         PresetField::Name => prompt.name.clone_from(&value),
-                        PresetField::Role => prompt.role.clone_from(&value),
                     }
                 }
                 self.update_preset(|preset| {
@@ -652,10 +849,22 @@ impl WorkbenchState {
                     };
                     match field {
                         PresetField::Name => prompt.name = value,
-                        PresetField::Role => prompt.role = value,
                     }
                 });
                 (self.mark_changed(false), WorkbenchEvent::None)
+            }
+            WorkbenchMessage::PresetRoleChanged(index, role) => {
+                self.record_history();
+                let value = role.value().to_owned();
+                if let Some(prompt) = self.preset_prompt_mut(index) {
+                    prompt.role.clone_from(&value);
+                }
+                self.update_preset(|preset| {
+                    if let Some(prompt) = preset.prompts.get_mut(index) {
+                        prompt.role = value;
+                    }
+                });
+                (self.mark_changed(true), WorkbenchEvent::None)
             }
             WorkbenchMessage::PresetContentChanged(index, action) => {
                 let edited = action.is_edit();
@@ -1037,6 +1246,28 @@ impl WorkbenchState {
         });
     }
 
+    fn sync_entry_tags(&self, index: usize, kind: EntryTagKind) {
+        let value = match self.form.as_ref() {
+            Some(WorkbenchForm::Character(form)) => form.world_book.as_ref(),
+            Some(WorkbenchForm::WorldBook(form)) => Some(form),
+            _ => None,
+        }
+        .and_then(|form| form.entries.get(index))
+        .map(|entry| entry.tags(kind).join(", "));
+        let Some(value) = value else {
+            return;
+        };
+        self.update_world(|world| {
+            let Some(entry) = world.entries.get_mut(index) else {
+                return;
+            };
+            match kind {
+                EntryTagKind::Keys => entry.keys = value,
+                EntryTagKind::SecondaryKeys => entry.secondary_keys = value,
+            }
+        });
+    }
+
     fn update_preset(&self, update: impl FnOnce(&mut EditablePreset)) {
         self.update_loaded(|data| {
             if let EditorData::Preset(preset) = data {
@@ -1246,16 +1477,71 @@ impl From<&EditableWorldEntry> for WorldEntryForm {
     fn from(value: &EditableWorldEntry) -> Self {
         Self {
             comment: value.comment.clone(),
-            keys: value.keys.clone(),
-            secondary_keys: value.secondary_keys.clone(),
+            keys: split_tags(&value.keys),
+            keys_input: String::new(),
+            secondary_keys: split_tags(&value.secondary_keys),
+            secondary_keys_input: String::new(),
             content: text_editor::Content::with_text(&value.content),
             enabled: value.enabled,
             order: value.order.clone(),
             position: value.position.clone(),
+            position_role: value.position_role.clone(),
             probability: value.probability.clone(),
             depth: value.depth.clone(),
         }
     }
+}
+
+impl WorldEntryForm {
+    fn tags(&self, kind: EntryTagKind) -> &[String] {
+        match kind {
+            EntryTagKind::Keys => &self.keys,
+            EntryTagKind::SecondaryKeys => &self.secondary_keys,
+        }
+    }
+
+    fn tags_mut(&mut self, kind: EntryTagKind) -> &mut Vec<String> {
+        match kind {
+            EntryTagKind::Keys => &mut self.keys,
+            EntryTagKind::SecondaryKeys => &mut self.secondary_keys,
+        }
+    }
+
+    fn tag_input(&self, kind: EntryTagKind) -> &str {
+        match kind {
+            EntryTagKind::Keys => &self.keys_input,
+            EntryTagKind::SecondaryKeys => &self.secondary_keys_input,
+        }
+    }
+
+    fn can_add_tag(&self, kind: EntryTagKind) -> bool {
+        let candidate = self.tag_input(kind).trim();
+        !candidate.is_empty()
+            && !self
+                .tags(kind)
+                .iter()
+                .any(|tag| tag.eq_ignore_ascii_case(candidate))
+    }
+
+    fn add_tag(&mut self, kind: EntryTagKind) {
+        let input = match kind {
+            EntryTagKind::Keys => &mut self.keys_input,
+            EntryTagKind::SecondaryKeys => &mut self.secondary_keys_input,
+        };
+        let tag = mem::take(input).trim().to_owned();
+        if !tag.is_empty() {
+            self.tags_mut(kind).insert(0, tag);
+        }
+    }
+}
+
+fn split_tags(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 impl From<&EditablePreset> for PresetForm {
@@ -1751,33 +2037,33 @@ fn world_entry_view(
     let numeric_fields: Element<'_, WorkbenchMessage> = if compact {
         column![
             row![
-                indexed_input(
+                container(indexed_input(
                     "workbench.field.order",
                     &entry.order,
                     index,
                     EntryField::Order
-                ),
-                indexed_input(
-                    "workbench.field.position",
-                    &entry.position,
-                    index,
-                    EntryField::Position,
-                ),
+                ))
+                .width(Length::FillPortion(1)),
+                container(world_position_field(index, entry, true))
+                    // 位置选项文本较长，给选择器更多宽度避免中文换行。
+                    .width(Length::FillPortion(3)),
             ]
             .spacing(8),
             row![
-                indexed_input(
+                container(indexed_input(
                     "workbench.field.probability",
                     &entry.probability,
                     index,
                     EntryField::Probability,
-                ),
-                indexed_input(
+                ))
+                .width(Length::FillPortion(1)),
+                container(indexed_input(
                     "workbench.field.depth",
                     &entry.depth,
                     index,
                     EntryField::Depth
-                ),
+                ))
+                .width(Length::FillPortion(1)),
             ]
             .spacing(8),
         ]
@@ -1785,30 +2071,30 @@ fn world_entry_view(
         .into()
     } else {
         row![
-            indexed_input(
+            container(indexed_input(
                 "workbench.field.order",
                 &entry.order,
                 index,
                 EntryField::Order
-            ),
-            indexed_input(
-                "workbench.field.position",
-                &entry.position,
-                index,
-                EntryField::Position,
-            ),
-            indexed_input(
+            ))
+            .width(Length::FillPortion(1)),
+            container(world_position_field(index, entry, false))
+                // 位置选择器需要容纳完整的中文/英文选项，其余数字字段保持紧凑。
+                .width(Length::FillPortion(4)),
+            container(indexed_input(
                 "workbench.field.probability",
                 &entry.probability,
                 index,
                 EntryField::Probability,
-            ),
-            indexed_input(
+            ))
+            .width(Length::FillPortion(1)),
+            container(indexed_input(
                 "workbench.field.depth",
                 &entry.depth,
                 index,
                 EntryField::Depth
-            ),
+            ))
+            .width(Length::FillPortion(1)),
         ]
         .spacing(8)
         .into()
@@ -1828,20 +2114,15 @@ fn world_entry_view(
                     .on_toggle(move |value| WorkbenchMessage::EntryToggled(index, value)),
             ]
             .align_y(Alignment::Center),
+            indexed_input(
+                "workbench.field.comment",
+                &entry.comment,
+                index,
+                EntryField::Comment
+            ),
             row![
-                indexed_input(
-                    "workbench.field.comment",
-                    &entry.comment,
-                    index,
-                    EntryField::Comment
-                ),
-                indexed_input("workbench.field.keys", &entry.keys, index, EntryField::Keys),
-                indexed_input(
-                    "workbench.field.secondary_keys",
-                    &entry.secondary_keys,
-                    index,
-                    EntryField::SecondaryKeys,
-                ),
+                entry_tags_field(index, entry, EntryTagKind::Keys),
+                entry_tags_field(index, entry, EntryTagKind::SecondaryKeys),
             ]
             .spacing(8),
             area_field("workbench.field.content", &entry.content, move |action| {
@@ -2027,15 +2308,7 @@ fn preset_prompt_view(index: usize, prompt: &PresetPromptForm) -> Element<'_, Wo
                         }
                     ))
                     .width(Length::FillPortion(3)),
-                    container(field_input(
-                        "workbench.field.role",
-                        &prompt.role,
-                        move |value| WorkbenchMessage::PresetChanged(
-                            index,
-                            PresetField::Role,
-                            value
-                        ),
-                    ))
+                    container(preset_role_field(index, prompt))
                     .width(Length::FillPortion(2)),
                 ]
                 .spacing(8),
@@ -2061,6 +2334,166 @@ fn preset_prompt_view(index: usize, prompt: &PresetPromptForm) -> Element<'_, Wo
         .into()
 }
 
+fn world_position_field(
+    index: usize,
+    entry: &WorldEntryForm,
+    compact: bool,
+) -> Element<'_, WorkbenchMessage> {
+    let language = current_language();
+    let selector_text_size = selector_text_size(compact);
+    let selected = WorldPosition::from_values(&entry.position, &entry.position_role);
+    column![
+        text(t("workbench.field.position", language))
+            .size(11)
+            .style(crate::theme::muted_text_style),
+        pick_list(&WORLD_POSITIONS[..], Some(selected), move |position| {
+            WorkbenchMessage::EntryPositionChanged(index, position)
+        })
+        .width(Fill)
+        .padding([7, 9])
+        .text_size(selector_text_size)
+        .handle(pick_list_handle())
+        .style(pick_list_style)
+        .menu_style(pick_list_menu_style),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .into()
+}
+
+fn preset_role_field(index: usize, prompt: &PresetPromptForm) -> Element<'_, WorkbenchMessage> {
+    let language = current_language();
+    let selector_text_size = selector_text_size(false);
+    let selected = PresetRole::from_value(&prompt.role);
+    column![
+        text(t("workbench.field.role", language))
+            .size(11)
+            .style(crate::theme::muted_text_style),
+        pick_list(&PRESET_ROLES[..], Some(selected), move |role| {
+            WorkbenchMessage::PresetRoleChanged(index, role)
+        })
+        .width(Fill)
+        .padding([7, 9])
+        .text_size(selector_text_size)
+        .handle(pick_list_handle())
+        .style(pick_list_style)
+        .menu_style(pick_list_menu_style),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .into()
+}
+
+/// 选择器字号跟随界面缩放，但限制在桌面工作台可读且不易换行的范围内。
+fn selector_text_size(compact: bool) -> f32 {
+    let base = if compact { 12.0 } else { 13.0 };
+    (base * crate::core::typography::current_ui_scale()).clamp(11.0, 14.0)
+}
+
+fn entry_tags_field(
+    index: usize,
+    entry: &WorldEntryForm,
+    kind: EntryTagKind,
+) -> Element<'_, WorkbenchMessage> {
+    let language = current_language();
+    let (label_key, placeholder_key) = match kind {
+        EntryTagKind::Keys => (
+            "workbench.field.keys",
+            "workbench.world.keys.placeholder",
+        ),
+        EntryTagKind::SecondaryKeys => (
+            "workbench.field.secondary_keys",
+            "workbench.world.secondary_keys.placeholder",
+        ),
+    };
+    let chips = row(
+        entry
+            .tags(kind)
+            .iter()
+            .enumerate()
+            .map(move |(tag_index, tag)| entry_tag_chip(index, kind, tag_index, tag)),
+    )
+    .spacing(5);
+    // 关键词只保留一行，超出卡片宽度时使用横向滚动查看，避免 Tags 数量改变卡片高度。
+    let chips_view = scrollable(container(chips).width(Length::Shrink).padding([2, 0]))
+        .width(Fill)
+        .height(Length::Fixed(
+            34.0 * crate::core::typography::current_ui_scale().max(0.85),
+        ))
+        .horizontal();
+    let input = text_input(t(placeholder_key, language), entry.tag_input(kind))
+        .on_input(move |value| WorkbenchMessage::EntryTagInputChanged(index, kind, value))
+        .on_submit(WorkbenchMessage::AddEntryTag(index, kind))
+        .padding([7, 9])
+        .size(13)
+        .style(text_input_style)
+        .width(Fill);
+    column![
+        text(t(label_key, language))
+            .size(11)
+            .style(crate::theme::muted_text_style),
+        container(chips_view).width(Fill),
+        row![
+            input,
+            button(
+                container(icons::icon(Icon::Plus, 14, BLUE_600))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            )
+            .on_press_maybe(
+                entry
+                    .can_add_tag(kind)
+                    .then_some(WorkbenchMessage::AddEntryTag(index, kind)),
+            )
+            .width(32)
+            .height(32)
+            .padding(0)
+            .style(button_style(ButtonVariant::Secondary)),
+        ]
+        .spacing(7)
+        .align_y(Alignment::Center),
+    ]
+    .spacing(5)
+    .width(Fill)
+    .into()
+}
+
+fn entry_tag_chip(
+    entry_index: usize,
+    kind: EntryTagKind,
+    tag_index: usize,
+    label: &str,
+) -> Element<'_, WorkbenchMessage> {
+    container(
+        row![
+            text(label).size(11).color(BLUE_600),
+            button(
+                container(icons::icon(Icon::X, 11, DANGER))
+                    .width(Fill)
+                    .height(Fill)
+                    .align_x(Alignment::Center)
+                    .align_y(Alignment::Center),
+            )
+            .on_press(WorkbenchMessage::RemoveEntryTag(
+                entry_index,
+                kind,
+                tag_index,
+            ))
+            .width(20)
+            .height(20)
+            .padding(0)
+            .style(icon_button_style),
+        ]
+        .spacing(4)
+        .align_y(Alignment::Center),
+    )
+    .padding([3, 5])
+    .style(accent_surface)
+    .into()
+}
+
 fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
     let language = current_language();
     let chips = row(
@@ -2078,6 +2511,8 @@ fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
         .on_input(WorkbenchMessage::CharacterTagInputChanged)
         .on_submit(WorkbenchMessage::AddCharacterTag)
         .padding([7, 9])
+        .size(13)
+        .style(text_input_style)
         .width(Fill);
     column![
         text(t("workbench.field.tags", language))
@@ -2143,7 +2578,12 @@ fn field_input<'a>(
     let label = t(key, current_language());
     column![
         text(label).size(11).style(crate::theme::muted_text_style),
-        text_input(label, value).on_input(on_input).padding([7, 9]),
+        text_input(label, value)
+            .on_input(on_input)
+            .padding([7, 9])
+            .size(13)
+            .width(Fill)
+            .style(text_input_style),
     ]
     .spacing(4)
     .width(Fill)

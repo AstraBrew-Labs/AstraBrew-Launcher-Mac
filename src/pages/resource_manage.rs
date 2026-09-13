@@ -1306,16 +1306,20 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
                 crate::theme::subtle_icon(Icon::Search, 14),
                 text_input("搜索名称、文件名或标签", &state.search)
                     .on_input(ResourceManageMessage::SearchChanged)
-                    .padding([7, 2])
+                    // 输入框保留足够的水平留白，避免文字贴着焦点边框显示。
+                    .padding([7, 9])
                     .size(13)
-                    .font(crate::core::typography::regular()),
+                    .font(crate::core::typography::regular())
+                    // 输入框本身负责边框和焦点状态，避免与外层搜索容器叠加边框。
+                    .style(crate::theme::text_input_style)
+                    .width(Fill),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
         )
         .width(300)
-        .padding([0, 10])
-        .style(search_surface),
+        // 搜索图标与输入框整体距离工具栏边缘留出稳定空间。
+        .padding([0, 8]),
         container(
             row![
                 icons::icon(state.tab.icon(), 13, BLUE_600),
@@ -3083,18 +3087,6 @@ fn panel_header_surface(theme: &Theme) -> container::Style {
             color: crate::theme::line(theme),
             width: 0.0,
             radius: 8.0.into(),
-        },
-        ..container::Style::default()
-    }
-}
-
-fn search_surface(theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(Background::Color(crate::theme::surface(theme))),
-        border: Border {
-            color: crate::theme::line(theme),
-            width: 1.0,
-            radius: 7.0.into(),
         },
         ..container::Style::default()
     }

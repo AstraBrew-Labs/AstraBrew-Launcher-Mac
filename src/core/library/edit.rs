@@ -102,6 +102,7 @@ pub(crate) struct EditableWorldEntry {
     pub enabled: bool,
     pub order: String,
     pub position: String,
+    pub position_role: String,
     pub probability: String,
     pub depth: String,
     locator: EntryLocator,
@@ -468,6 +469,7 @@ fn world_entry_from_raw(
             }),
         order: number_text(object.get("order")),
         position: scalar_text(object.get("position")),
+        position_role: scalar_text(object.get("role")),
         probability: number_text(object.get("probability")),
         depth: number_text(object.get("depth")),
         locator,
@@ -507,6 +509,11 @@ fn apply_world_book(edit: &EditableWorldBook) -> Result<Map<String, Value>, Stri
         }
         set_optional_number(object, "order", &entry.order)?;
         set_optional_scalar(object, "position", &entry.position);
+        if entry.position.trim() == "4" {
+            set_optional_scalar(object, "role", &entry.position_role);
+        } else {
+            object.remove("role");
+        }
         set_optional_number(object, "probability", &entry.probability)?;
         set_optional_number(object, "depth", &entry.depth)?;
     }
