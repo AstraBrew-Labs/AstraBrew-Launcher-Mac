@@ -2,7 +2,7 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -151,8 +151,20 @@ fn cache_home_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp"))
 }
 
-/// 自动下载渠道缓存文件：`~/Library/Caches/AstraBrew Launcher/download_channel_cache.json`。
+/// 自动下载渠道缓存文件：`~/Library/Application Support/AstraBrew Launcher/download_channel_cache.json`。
+///
+/// 放在数据目录而不是 Caches：测速结果决定“自动”渠道解析成哪个镜像，属于需要跨启动保留的数据；
+/// 放进 Caches 会被系统或清理工具删除，表现为每次打开程序都要重新测速。
 pub fn download_channel_cache_path() -> PathBuf {
+    crate::utils::app_paths()
+        .root
+        .join("download_channel_cache.json")
+}
+
+/// 旧版缓存路径：`~/Library/Caches/AstraBrew Launcher/download_channel_cache.json`。
+///
+/// 只用于升级后读取一次历史结果，避免用户白白重新测速一次。
+fn legacy_download_channel_cache_path() -> PathBuf {
     cache_home_dir()
         .join("Library")
         .join("Caches")
@@ -169,7 +181,12 @@ fn unix_seconds() -> Option<u64> {
 
 /// 读取自动下载渠道缓存；文件不存在、损坏或字段不完整时返回 None。
 pub fn load_download_channel_cache() -> Option<DownloadChannelCache> {
-    let contents = fs::read_to_string(download_channel_cache_path()).ok()?;
+    read_download_channel_cache(&download_channel_cache_path())
+        .or_else(|| read_download_channel_cache(&legacy_download_channel_cache_path()))
+}
+
+fn read_download_channel_cache(path: &Path) -> Option<DownloadChannelCache> {
+    let contents = fs::read_to_string(path).ok()?;
     let value = serde_json::from_str::<serde_json::Value>(&contents).ok()?;
     let object = value.as_object()?;
     let resolved_channel = object
@@ -238,6 +255,27 @@ pub fn save_download_channel_cache(
         tested_at,
         results: results.to_vec(),
     })
+}
+
+/// 用已经完成的测速结果写入自动渠道缓存。
+///
+/// 只有四个固定渠道都拿到结果、且至少有一个渠道成功时才会写入：
+/// - 结果不完整说明测速被中断，按已完成渠道写入会把非最优渠道锁定 7 天；
+/// - 全部失败通常是临时的网络问题，写入后“自动”会长期退化成官方直连。
+///
+/// 返回 `Ok(None)` 表示本次没有可写入的结果，调用方应保留原有缓存。
+pub fn cache_download_channel_result(
+    results: &[DownloadChannelTestResult],
+) -> io::Result<Option<DownloadChannelCache>> {
+    if results.len() < DownloadChannel::fixed_channels().len()
+        || results.iter().all(|result| !result.success)
+    {
+        return Ok(None);
+    }
+    let Some(selected) = fastest_download_channel(results) else {
+        return Ok(None);
+    };
+    save_download_channel_cache(selected, results).map(Some)
 }
 
 /// 通过 `scutil --proxy` 读取 macOS 系统代理设置。
@@ -1735,6 +1773,90 @@ mod tests {
         );
     }
 
+    fn release_fixture(tag_name: &str, mirror: MirrorAvailability) -> SillyTavernRelease {
+        SillyTavernRelease {
+            version: tag_name.to_owned(),
+            tag_name: tag_name.to_owned(),
+            published_at: String::new(),
+            created_at: String::new(),
+            body: String::new(),
+            mirror,
+        }
+    }
+
+    /// 镜像站存在该 tag 时必须判定为已同步，探测失败必须判定为未知而不是未同步。
+    #[test]
+    fn mirror_state_distinguishes_absent_tags_from_failed_probes() {
+        let tags = vec!["1.18.0".to_owned(), "v1.19.0".to_owned()];
+        assert_eq!(
+            mirror_state(DownloadChannel::Mirror1, Some(&tags), "1.19.0"),
+            MirrorAvailability::Synced
+        );
+        assert_eq!(
+            mirror_state(DownloadChannel::Mirror1, Some(&tags), "1.20.0"),
+            MirrorAvailability::NotSynced
+        );
+        assert_eq!(
+            mirror_state(DownloadChannel::Mirror1, None, "1.20.0"),
+            MirrorAvailability::Unknown
+        );
+        assert_eq!(
+            mirror_state(DownloadChannel::Official, None, "1.20.0"),
+            MirrorAvailability::Official
+        );
+    }
+
+    /// 重新判定会覆盖上一轮留下的旧标记，避免缓存里的旧状态长期生效。
+    #[test]
+    fn apply_mirror_availability_overwrites_stale_state() {
+        let releases = vec![release_fixture("1.19.0", MirrorAvailability::NotSynced)];
+        let releases = apply_mirror_availability(
+            releases,
+            DownloadChannel::Mirror1,
+            Some(&["1.19.0".to_owned()]),
+        );
+        assert_eq!(releases[0].mirror, MirrorAvailability::Synced);
+
+        let staging = SillyTavernStaging {
+            branch: "staging".to_owned(),
+            commit_sha: String::new(),
+            committed_at: String::new(),
+            message: String::new(),
+            mirror: MirrorAvailability::Synced,
+        };
+        let staging = apply_staging_mirror_availability(staging, DownloadChannel::Mirror2, None);
+        assert_eq!(staging.mirror, MirrorAvailability::Unknown);
+    }
+
+    /// 镜像 ref 快照只在同渠道且未过期时可复用。
+    #[test]
+    fn mirror_ref_snapshot_is_only_reused_for_same_channel() {
+        let now = 1_000_000;
+        let snapshot = MirrorRefsCache {
+            channel: DownloadChannel::Mirror1,
+            tags: vec!["1.18.0".to_owned()],
+            tags_checked_at: now,
+            branches: vec!["staging".to_owned()],
+            branches_checked_at: now,
+        };
+        assert!(snapshot.tags_fresh_for(DownloadChannel::Mirror1, now + 60));
+        assert!(!snapshot.tags_fresh_for(
+            DownloadChannel::Mirror1,
+            now + MIRROR_REFS_CACHE_TTL
+        ));
+        assert!(!snapshot.tags_fresh_for(DownloadChannel::Mirror2, now + 60));
+        assert!(
+            snapshot
+                .for_channel(DownloadChannel::Mirror2)
+                .tags
+                .is_empty()
+        );
+        assert_eq!(
+            snapshot.for_channel(DownloadChannel::Mirror1).tags,
+            snapshot.tags
+        );
+    }
+
     #[test]
     fn fastest_channel_ignores_failed_results() {
         let results = vec![
@@ -1838,6 +1960,35 @@ mod tests {
     }
 }
 
+/// 当前有效下载渠道对某个版本的镜像同步状态。
+///
+/// 必须区分「镜像确认未同步」与「本次无法确认」：把探测失败当成镜像缺失，
+/// 会让界面显示错误的“镜像未同步”，所以这里用三态而不是布尔值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MirrorAvailability {
+    /// 尚未判定或本次无法确认，下载时会重新确认一次。
+    #[default]
+    Unknown,
+    /// 有效渠道就是官方直连，不涉及镜像同步。
+    Official,
+    /// 镜像站已存在对应的 tag 或分支。
+    Synced,
+    /// 镜像站确认不存在对应的 tag 或分支，安装时会回退官方直连。
+    NotSynced,
+}
+
+impl MirrorAvailability {
+    /// 该状态对应的中文文案，英文由语言层自动翻译。
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Official => "官方直连",
+            Self::Synced => "镜像已同步",
+            Self::NotSynced => "镜像未同步，将使用直连",
+            Self::Unknown => "镜像状态未知",
+        }
+    }
+}
+
 /// 在线酒馆稳定发行版本。
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -1852,8 +2003,8 @@ pub struct SillyTavernRelease {
     pub created_at: String,
     /// GitHub Release body，保持 Markdown 原文。
     pub body: String,
-    /// 当前有效下载渠道是否已经同步该 tag。
-    pub mirror_available: bool,
+    /// 当前有效下载渠道对该 tag 的镜像同步状态。
+    pub mirror: MirrorAvailability,
 }
 
 /// staging 分支的最新状态。
@@ -1864,7 +2015,8 @@ pub struct SillyTavernStaging {
     pub commit_sha: String,
     pub committed_at: String,
     pub message: String,
-    pub mirror_available: bool,
+    /// 当前有效下载渠道对该分支的镜像同步状态。
+    pub mirror: MirrorAvailability,
 }
 
 /// 在线版本目录读取结果。
@@ -1915,6 +2067,11 @@ const SILLYTAVERN_API_MIRROR: &str =
 const SILLYTAVERN_API_DIRECT: &str = "https://api.github.com/repos/SillyTavern/SillyTavern";
 const SILLYTAVERN_CACHE_NAME: &str = "sillytavern_versions_cache.json";
 const SILLYTAVERN_CACHE_TTL: u64 = 7 * 24 * 60 * 60;
+/// 镜像 ref 快照缓存文件名。
+const MIRROR_REFS_CACHE_NAME: &str = "sillytavern_mirror_refs_cache.json";
+/// 镜像 ref 快照有效期。镜像同步延迟以分钟计，10 分钟足够新，
+/// 同时避免每次进入版本页都执行 `git ls-remote`。
+const MIRROR_REFS_CACHE_TTL: u64 = 10 * 60;
 
 /// 在线酒馆安装目录：`~/Library/Application Support/AstraBrew Launcher/sillytavern`。
 #[allow(dead_code)]
@@ -2046,10 +2203,8 @@ fn load_sillytavern_versions_cache() -> Option<SillyTavernVersionCache> {
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default()
                             .to_owned(),
-                        mirror_available: item
-                            .get("mirror_available")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
+                        // 镜像同步状态不随版本元数据缓存，统一由目录返回前重新判定。
+                        mirror: MirrorAvailability::Unknown,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -2062,10 +2217,7 @@ fn load_sillytavern_versions_cache() -> Option<SillyTavernVersionCache> {
             commit_sha: item.get("commit_sha")?.as_str()?.to_owned(),
             committed_at: item.get("committed_at")?.as_str()?.to_owned(),
             message: item.get("message")?.as_str()?.to_owned(),
-            mirror_available: item
-                .get("mirror_available")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
+            mirror: MirrorAvailability::Unknown,
         })
     });
     if releases.is_empty() && staging.is_none() {
@@ -2128,14 +2280,12 @@ fn save_sillytavern_versions_cache(
             "published_at": release.published_at,
             "created_at": release.created_at,
             "body": release.body,
-            "mirror_available": release.mirror_available,
         })).collect::<Vec<_>>(),
         "staging": cached_staging.map(|item| serde_json::json!({
             "branch": item.branch,
             "commit_sha": item.commit_sha,
             "committed_at": item.committed_at,
             "message": item.message,
-            "mirror_available": item.mirror_available,
         })),
     });
     let temporary = path.with_extension("json.tmp");
@@ -2147,6 +2297,9 @@ fn save_sillytavern_versions_cache(
 }
 
 /// 按分支读取在线版本。有效缓存不会触发网络请求，过期后镜像失败则回退直连和旧缓存。
+///
+/// 版本元数据可以缓存，但镜像同步状态每次都会按当前下载渠道重新判定，
+/// 避免渠道切换或镜像站新同步的 tag 被旧标记长期覆盖。
 #[allow(dead_code)]
 pub fn fetch_sillytavern_catalog(
     branch: &str,
@@ -2160,7 +2313,9 @@ pub fn fetch_sillytavern_catalog(
     if let Some(cache) = cached.as_ref()
         && cache.is_fresh_at(branch, now)
     {
-        return Ok(catalog_from_cache(cache, branch, channel));
+        let mut catalog = catalog_from_cache(cache, branch, channel);
+        refresh_catalog_mirror_state(&mut catalog, channel, proxy_mode, proxy_host, now);
+        return Ok(catalog);
     }
 
     let client = build_client(proxy_mode, proxy_host);
@@ -2187,45 +2342,52 @@ pub fn fetch_sillytavern_catalog(
     match result {
         Ok(FetchedCatalog::Release(mut releases)) => {
             releases.truncate(10);
-            releases = apply_mirror_availability(releases, channel, proxy_mode, proxy_host);
-            save_sillytavern_versions_cache(
-                "release",
-                channel,
-                &releases,
-                cached.as_ref().and_then(|item| item.staging.as_ref()),
-            )
-            .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
-            Ok(SillyTavernCatalog {
+            let mut catalog = SillyTavernCatalog {
                 branch: "release".to_owned(),
                 releases,
                 staging: cached.and_then(|item| item.staging),
                 resolved_channel: channel,
-                cached_at: unix_seconds().unwrap_or_default(),
+                cached_at: now,
                 used_stale_cache: false,
-            })
+            };
+            refresh_catalog_mirror_state(&mut catalog, channel, proxy_mode, proxy_host, now);
+            save_sillytavern_versions_cache(
+                "release",
+                channel,
+                &catalog.releases,
+                catalog.staging.as_ref(),
+            )
+            .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
+            catalog.cached_at = unix_seconds().unwrap_or_default();
+            Ok(catalog)
         }
         Ok(FetchedCatalog::Staging(staging)) => {
-            let staging =
-                apply_staging_mirror_availability(staging, channel, proxy_mode, proxy_host);
-            save_sillytavern_versions_cache("staging", channel, &[], Some(&staging))
-                .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
-            Ok(SillyTavernCatalog {
+            let mut catalog = SillyTavernCatalog {
                 branch: "staging".to_owned(),
                 releases: Vec::new(),
                 staging: Some(staging),
                 resolved_channel: channel,
-                cached_at: unix_seconds().unwrap_or_default(),
+                cached_at: now,
                 used_stale_cache: false,
-            })
+            };
+            refresh_catalog_mirror_state(&mut catalog, channel, proxy_mode, proxy_host, now);
+            save_sillytavern_versions_cache("staging", channel, &[], catalog.staging.as_ref())
+                .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
+            catalog.cached_at = unix_seconds().unwrap_or_default();
+            Ok(catalog)
         }
-        Err(error) => cached
+        Err(error) => match cached
             .as_ref()
             .map(|cache| catalog_from_cache(cache, branch, channel))
-            .map(|mut catalog| {
+        {
+            Some(mut catalog) => {
                 catalog.used_stale_cache = true;
-                catalog
-            })
-            .ok_or(error),
+                // 旧缓存同样要重新判定镜像状态，镜像站通常是可访问的。
+                refresh_catalog_mirror_state(&mut catalog, channel, proxy_mode, proxy_host, now);
+                Ok(catalog)
+            }
+            None => Err(error),
+        },
     }
 }
 
@@ -2322,7 +2484,8 @@ fn fetch_sillytavern_releases(
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                mirror_available: false,
+                // 具体渠道的同步状态在目录返回前统一判定。
+                mirror: MirrorAvailability::Unknown,
             });
         }
         if items.len() < 100 {
@@ -2390,7 +2553,8 @@ fn fetch_sillytavern_staging(
             .next()
             .unwrap_or_default()
             .to_owned(),
-        mirror_available: false,
+        // 具体渠道的同步状态在目录返回前统一判定。
+        mirror: MirrorAvailability::Unknown,
     }))
 }
 
@@ -2423,33 +2587,324 @@ fn parse_release_version(version: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-fn apply_mirror_availability(
-    mut releases: Vec<SillyTavernRelease>,
+/// 镜像 ref 快照缓存路径：`~/Library/Caches/AstraBrew Launcher/sillytavern_mirror_refs_cache.json`。
+fn mirror_refs_cache_path() -> PathBuf {
+    cache_home_dir()
+        .join("Library")
+        .join("Caches")
+        .join(TEST_ROOT_DIR)
+        .join(MIRROR_REFS_CACHE_NAME)
+}
+
+/// 最近一次成功探测到的镜像 ref 快照。
+///
+/// 该快照只用于判断镜像是否已经同步某个 tag / 分支，与版本缓存分离，
+/// 这样即使版本元数据命中缓存，也能按当前渠道重新判定同步状态。
+#[derive(Debug, Clone)]
+struct MirrorRefsCache {
+    /// 快照所属的下载渠道；渠道变化后必须重新探测。
+    channel: DownloadChannel,
+    tags: Vec<String>,
+    tags_checked_at: u64,
+    branches: Vec<String>,
+    branches_checked_at: u64,
+}
+
+impl MirrorRefsCache {
+    fn empty_for(channel: DownloadChannel) -> Self {
+        Self {
+            channel,
+            tags: Vec::new(),
+            tags_checked_at: 0,
+            branches: Vec::new(),
+            branches_checked_at: 0,
+        }
+    }
+
+    fn tags_fresh_for(&self, channel: DownloadChannel, now: u64) -> bool {
+        self.channel == channel
+            && self.tags_checked_at != 0
+            && now.saturating_sub(self.tags_checked_at) < MIRROR_REFS_CACHE_TTL
+    }
+
+    fn branches_fresh_for(&self, channel: DownloadChannel, now: u64) -> bool {
+        self.channel == channel
+            && self.branches_checked_at != 0
+            && now.saturating_sub(self.branches_checked_at) < MIRROR_REFS_CACHE_TTL
+    }
+
+    /// 返回同渠道的快照副本；渠道不一致时返回空快照，避免把别的渠道的 ref 当作本渠道。
+    fn for_channel(&self, channel: DownloadChannel) -> Self {
+        if self.channel == channel {
+            self.clone()
+        } else {
+            Self::empty_for(channel)
+        }
+    }
+}
+
+fn load_mirror_refs_cache() -> Option<MirrorRefsCache> {
+    let contents = fs::read_to_string(mirror_refs_cache_path()).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&contents).ok()?;
+    let object = value.as_object()?;
+    let channel = object
+        .get("channel")
+        .and_then(serde_json::Value::as_str)
+        .map(DownloadChannel::from_key)?;
+    let collect = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    Some(MirrorRefsCache {
+        channel,
+        tags: collect("tags"),
+        tags_checked_at: object
+            .get("tags_checked_at")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        branches: collect("branches"),
+        branches_checked_at: object
+            .get("branches_checked_at")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+    })
+}
+
+fn save_mirror_refs_cache(cache: &MirrorRefsCache) -> io::Result<()> {
+    let path = mirror_refs_cache_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let value = serde_json::json!({
+        "channel": cache.channel.key(),
+        "tags": cache.tags,
+        "tags_checked_at": cache.tags_checked_at,
+        "branches": cache.branches,
+        "branches_checked_at": cache.branches_checked_at,
+    });
+    let temporary = path.with_extension("json.tmp");
+    fs::write(
+        &temporary,
+        serde_json::to_vec_pretty(&value).map_err(io::Error::other)?,
+    )?;
+    fs::rename(temporary, path)
+}
+
+/// 镜像 tag 探测结果：`items` 为可用 tag，`snapshot` 表示需要写回的新快照。
+struct MirrorTagProbe {
+    items: Option<Vec<String>>,
+    snapshot: Option<MirrorRefsCache>,
+}
+
+/// 镜像分支探测结果：`items` 为可用分支，`snapshot` 表示需要写回的新快照。
+struct MirrorBranchProbe {
+    items: Option<Vec<String>>,
+    snapshot: Option<MirrorRefsCache>,
+}
+
+/// 读取镜像 tag 列表。
+///
+/// 同渠道的新鲜快照直接复用；过期或渠道变化时重新探测；探测失败时回退到
+/// 同渠道的旧快照。`items` 为 `None` 表示确实无法确认，此时必须显示未知状态，
+/// 不能当作「镜像未同步」。
+fn probe_mirror_tags(
     channel: DownloadChannel,
     proxy_mode: &str,
     proxy_host: &str,
-) -> Vec<SillyTavernRelease> {
+    cached: Option<&MirrorRefsCache>,
+    now: u64,
+) -> MirrorTagProbe {
     if channel == DownloadChannel::Official {
-        return releases;
+        return MirrorTagProbe {
+            items: None,
+            snapshot: None,
+        };
     }
-    let tags = list_remote_tags(channel, proxy_mode, proxy_host).unwrap_or_default();
+    if let Some(cache) = cached
+        && cache.tags_fresh_for(channel, now)
+    {
+        return MirrorTagProbe {
+            items: Some(cache.tags.clone()),
+            snapshot: None,
+        };
+    }
+    match list_remote_tags(channel, proxy_mode, proxy_host) {
+        Ok(tags) => {
+            let mut snapshot = cached
+                .map(|cache| cache.for_channel(channel))
+                .unwrap_or_else(|| MirrorRefsCache::empty_for(channel));
+            snapshot.channel = channel;
+            snapshot.tags = tags.clone();
+            snapshot.tags_checked_at = now;
+            MirrorTagProbe {
+                items: Some(tags),
+                snapshot: Some(snapshot),
+            }
+        }
+        Err(_) => MirrorTagProbe {
+            items: cached
+                .filter(|cache| cache.channel == channel)
+                .map(|cache| cache.tags.clone()),
+            snapshot: None,
+        },
+    }
+}
+
+/// 读取镜像分支列表，规则与 `probe_mirror_tags` 一致。
+fn probe_mirror_branches(
+    channel: DownloadChannel,
+    proxy_mode: &str,
+    proxy_host: &str,
+    cached: Option<&MirrorRefsCache>,
+    now: u64,
+) -> MirrorBranchProbe {
+    if channel == DownloadChannel::Official {
+        return MirrorBranchProbe {
+            items: None,
+            snapshot: None,
+        };
+    }
+    if let Some(cache) = cached
+        && cache.branches_fresh_for(channel, now)
+    {
+        return MirrorBranchProbe {
+            items: Some(cache.branches.clone()),
+            snapshot: None,
+        };
+    }
+    match list_remote_branches(channel, proxy_mode, proxy_host) {
+        Ok(branches) => {
+            let mut snapshot = cached
+                .map(|cache| cache.for_channel(channel))
+                .unwrap_or_else(|| MirrorRefsCache::empty_for(channel));
+            snapshot.channel = channel;
+            snapshot.branches = branches.clone();
+            snapshot.branches_checked_at = now;
+            MirrorBranchProbe {
+                items: Some(branches),
+                snapshot: Some(snapshot),
+            }
+        }
+        Err(_) => MirrorBranchProbe {
+            items: cached
+                .filter(|cache| cache.channel == channel)
+                .map(|cache| cache.branches.clone()),
+            snapshot: None,
+        },
+    }
+}
+
+/// 刷新目录中的镜像同步状态。
+///
+/// 版本缓存只保存版本元数据，镜像同步状态每次返回目录时按当前渠道重新判定：
+/// 否则切换下载渠道、或镜像站刚刚同步的新 tag，都会被旧缓存里的标记长期覆盖。
+/// 只有在探测成功时才写回镜像 ref 快照，避免把探测失败固化成「未同步」。
+fn refresh_catalog_mirror_state(
+    catalog: &mut SillyTavernCatalog,
+    channel: DownloadChannel,
+    proxy_mode: &str,
+    proxy_host: &str,
+    now: u64,
+) {
+    if channel == DownloadChannel::Official {
+        for release in &mut catalog.releases {
+            release.mirror = MirrorAvailability::Official;
+        }
+        if let Some(staging) = catalog.staging.as_mut() {
+            staging.mirror = MirrorAvailability::Official;
+        }
+        return;
+    }
+
+    let mut cache = load_mirror_refs_cache();
+    let mut dirty = false;
+    if !catalog.releases.is_empty() {
+        let probe = probe_mirror_tags(channel, proxy_mode, proxy_host, cache.as_ref(), now);
+        if let Some(snapshot) = probe.snapshot {
+            cache = Some(snapshot);
+            dirty = true;
+        }
+        catalog.releases = apply_mirror_availability(
+            std::mem::take(&mut catalog.releases),
+            channel,
+            probe.items.as_deref(),
+        );
+    }
+    if let Some(staging) = catalog.staging.clone() {
+        let probe = probe_mirror_branches(channel, proxy_mode, proxy_host, cache.as_ref(), now);
+        if let Some(snapshot) = probe.snapshot {
+            cache = Some(snapshot);
+            dirty = true;
+        }
+        catalog.staging = Some(apply_staging_mirror_availability(
+            staging,
+            channel,
+            probe.items.as_deref(),
+        ));
+    }
+    if dirty && let Some(cache) = cache.as_ref() {
+        let _ = save_mirror_refs_cache(cache);
+    }
+}
+
+/// 依据镜像 tag 列表刷新每个版本的同步状态。
+fn apply_mirror_availability(
+    mut releases: Vec<SillyTavernRelease>,
+    channel: DownloadChannel,
+    tags: Option<&[String]>,
+) -> Vec<SillyTavernRelease> {
     for release in &mut releases {
-        release.mirror_available = tags.iter().any(|tag| tag == &release.tag_name);
+        release.mirror = mirror_state(channel, tags, &release.tag_name);
     }
     releases
 }
 
+/// 依据镜像分支列表刷新 staging 分支的同步状态。
 fn apply_staging_mirror_availability(
     mut staging: SillyTavernStaging,
     channel: DownloadChannel,
-    proxy_mode: &str,
-    proxy_host: &str,
+    branches: Option<&[String]>,
 ) -> SillyTavernStaging {
-    if channel != DownloadChannel::Official {
-        staging.mirror_available = list_remote_branches(channel, proxy_mode, proxy_host)
-            .is_ok_and(|branches| branches.iter().any(|branch| branch == "staging"));
-    }
+    let reference = staging.branch.clone();
+    staging.mirror = mirror_state(channel, branches, &reference);
     staging
+}
+
+/// 计算单个 ref 的镜像同步状态；`refs` 为 `None` 表示本次无法确认。
+fn mirror_state(
+    channel: DownloadChannel,
+    refs: Option<&[String]>,
+    reference: &str,
+) -> MirrorAvailability {
+    if channel == DownloadChannel::Official {
+        return MirrorAvailability::Official;
+    }
+    match refs {
+        Some(items) if items.iter().any(|item| tags_match(item, reference)) => {
+            MirrorAvailability::Synced
+        }
+        Some(_) => MirrorAvailability::NotSynced,
+        None => MirrorAvailability::Unknown,
+    }
+}
+
+/// 比较镜像 ref 与官方 ref 是否指向同一版本。
+///
+/// 部分镜像站习惯给 tag 加 `v` 前缀，直接字符串相等会把存在的版本误判为未同步。
+fn tags_match(left: &str, right: &str) -> bool {
+    normalize_ref_for_match(left) == normalize_ref_for_match(right)
+}
+
+fn normalize_ref_for_match(value: &str) -> &str {
+    value.trim().trim_start_matches(['v', 'V'])
 }
 
 /// Auto 优先使用现有测速缓存；没有有效测速结果时回退官方直连。

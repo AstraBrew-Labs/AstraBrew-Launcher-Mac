@@ -733,6 +733,7 @@ mod tests {
             download_channel_test_receiver: None,
             download_channel_test_cancel: None,
             version_catalog_receiver: None,
+            version_catalog_notify: false,
             version_install_receiver: None,
             version_install_cancel: None,
             extension_task_receiver: None,

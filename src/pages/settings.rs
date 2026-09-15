@@ -802,7 +802,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
     } else if test.timed_out {
         row![
             icons::icon(Icon::ClockAlert, 16, iced::Color::from_rgb8(245, 165, 36)),
-            text("渠道测速超时，请稍后重试。")
+            text("测速耗时较长，已完成的渠道结果会保留，完成后自动生效。")
                 .size(12)
                 .font(crate::core::typography::medium()),
         ]
@@ -1584,6 +1584,24 @@ fn environment_action_button(
     control.into()
 }
 
+/// 自动测速缓存状态文案。
+///
+/// 缓存是否可用与当前选中的渠道无关：只有“自动”依赖它解析实际渠道，
+/// 但手动选渠道时用户同样需要确认缓存还在有效期内，否则会误以为缓存没有保存。
+fn download_channel_cache_status(state: &SettingsState) -> &'static str {
+    if state.download_channel_test.running {
+        "测速中…"
+    } else if state.download_channel_cache_valid() {
+        "缓存有效"
+    } else if state.download_resolved_channel.is_some()
+        || state.download_channel_last_tested.is_some()
+    {
+        "缓存已过期"
+    } else {
+        "尚未测速"
+    }
+}
+
 fn download_settings(state: &SettingsState) -> Element<'_, Message> {
     let selected_label = state
         .download_channel
@@ -1672,20 +1690,12 @@ fn download_settings(state: &SettingsState) -> Element<'_, Message> {
             setting_row(
                 Icon::RefreshCw,
                 "自动测速缓存",
-                "测速结果缓存 7 天；缓存有效期内不会重复测速。",
+                "测速结果缓存 7 天；选择“自动”且缓存过期时会在启动后自动测速。",
                 row![
-                    text(if state.download_channel_test.running {
-                        "测速中…"
-                    } else if state.download_channel == DownloadChannel::Auto
-                        && state.download_channel_cache_valid()
-                    {
-                        "缓存有效"
-                    } else {
-                        "尚未测速"
-                    })
-                    .size(11)
-                    .font(crate::core::typography::medium())
-                    .style(crate::theme::muted_text_style),
+                    text(download_channel_cache_status(state))
+                        .size(11)
+                        .font(crate::core::typography::medium())
+                        .style(crate::theme::muted_text_style),
                     action_button(
                         "重新测速",
                         Icon::RefreshCw,

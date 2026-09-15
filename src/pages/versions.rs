@@ -17,6 +17,7 @@ use astra_ui::{
 };
 
 use super::notice::TransientNotice;
+use crate::core::network::MirrorAvailability;
 
 /// 版本页当前展示的实例类型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -168,8 +169,8 @@ pub struct OnlineRelease {
     pub summary: String,
     /// 是否已经安装到启动器管理目录。
     pub installed: bool,
-    /// 当前设置的下载源是否存在对应 tag。
-    pub mirror_available: bool,
+    /// 当前有效下载渠道对该版本的镜像同步状态。
+    pub mirror: MirrorAvailability,
 }
 
 /// 版本管理页面的本地界面状态。
@@ -194,7 +195,13 @@ pub struct VersionState {
     pub online_releases: Vec<OnlineRelease>,
     pub online_status: OnlineVersionsStatus,
     pub branch_loaded: bool,
+    /// 当前展示/操作的在线版本；为 `None` 时回落到列表中的最新版本。
     pub selected_online_version: Option<String>,
+    /// 用户本次运行是否主动挑选过版本。
+    ///
+    /// 为 false 时每次刷新都会把展示版本对齐到最新版本；为 true 时保留用户的选择，
+    /// 直到该版本从列表中消失。
+    pub online_selection_explicit: bool,
     pub selection_modal_open: bool,
     pub release_log_version: Option<String>,
     pub markdown_items: Vec<markdown::Item>,
@@ -260,7 +267,9 @@ impl Default for VersionState {
             online_releases,
             online_status: OnlineVersionsStatus::Ready,
             branch_loaded: false,
-            selected_online_version: Some("1.18.0".into()),
+            // 默认展示列表中的最新版本，由目录加载结果决定，避免固定指向某个版本号。
+            selected_online_version: None,
+            online_selection_explicit: false,
             selection_modal_open: false,
             release_log_version: None,
             markdown_items: Vec::new(),
@@ -286,7 +295,7 @@ fn release(version: &str, published_at: &str, created_at: &str, summary: &str) -
         body: summary.into(),
         summary: summary.into(),
         installed: false,
-        mirror_available: true,
+        mirror: MirrorAvailability::Synced,
     }
 }
 
@@ -326,6 +335,9 @@ pub enum VersionMessage {
         staging: Option<crate::core::network::SillyTavernStaging>,
         last_sync: String,
         from_cache: bool,
+        /// 是否在完成后弹出提示；只有用户主动点击刷新时为 true，
+        /// 启动预取、进入页面和下载渠道切换后的刷新都属于后台行为。
+        notify: bool,
     },
     /// 上层在无可用缓存时回传错误。
     OnlineVersionsFailed(String),
@@ -456,6 +468,7 @@ impl VersionState {
                 staging,
                 last_sync,
                 from_cache,
+                notify,
             } => {
                 self.branch = branch;
                 self.branch_loaded = true;
@@ -468,17 +481,27 @@ impl VersionState {
                         .cmp(&left.published_at)
                         .then_with(|| right.version.cmp(&left.version))
                 });
-                self.latest_version = releases
-                    .first()
-                    .map(|item| item.version.clone())
-                    .unwrap_or_default();
-                if self
-                    .selected_online_version
-                    .as_ref()
-                    .is_none_or(|version| !releases.iter().any(|item| &item.version == version))
-                {
-                    self.selected_online_version =
-                        releases.first().map(|item| item.version.clone());
+                // 列表为空时（例如开发版目录只返回分支信息）保留原有选择与最新版本号，
+                // 避免用户切到开发版再切回来时丢失已有状态。
+                if !releases.is_empty() {
+                    self.latest_version = releases
+                        .first()
+                        .map(|item| item.version.clone())
+                        .unwrap_or_default();
+                    // 未主动挑选时不钉住任何版本：显示内容交给 `effective_online_version()`
+                    // 决定（已安装版本优先，没有安装时才是最新版本）。
+                    // 只有用户本次主动挑选过、且该版本仍在列表里时才保留其选择。
+                    let keep_explicit = self.online_selection_explicit
+                        && self
+                            .selected_online_version
+                            .as_ref()
+                            .is_some_and(|version| {
+                                releases.iter().any(|item| &item.version == version)
+                            });
+                    if !keep_explicit {
+                        self.online_selection_explicit = false;
+                        self.selected_online_version = None;
+                    }
                 }
                 // 上层已经按磁盘 Git 状态标记 installed，不能再用旧列表覆盖新检测结果。
                 self.online_releases = releases;
@@ -489,17 +512,21 @@ impl VersionState {
                     OnlineVersionsStatus::Ready
                 };
                 self.online_error = None;
-                self.notice = Some(if from_cache {
-                    TransientNotice::warning(
-                        "notice.refresh_warning",
-                        "在线版本请求失败，当前使用旧缓存。",
-                    )
-                } else {
-                    TransientNotice::info(
-                        "notice.refresh_complete",
-                        "在线版本列表已更新。",
-                    )
-                });
+                // 后台刷新（启动预取、渠道切换）只更新列表，不弹提示，
+                // 避免用户正在别的页面时被“版本列表已更新”的浮层打扰。
+                if notify {
+                    self.notice = Some(if from_cache {
+                        TransientNotice::warning(
+                            "notice.refresh_warning",
+                            "在线版本请求失败，当前使用旧缓存。",
+                        )
+                    } else {
+                        TransientNotice::info(
+                            "notice.refresh_complete",
+                            "在线版本列表已更新。",
+                        )
+                    });
+                }
             }
             VersionMessage::OnlineVersionsFailed(error) => {
                 // 记录本次请求已经结束，重新进入页面不应自动重复请求；用户可点击刷新重试。
@@ -523,6 +550,8 @@ impl VersionState {
                     .any(|release| release.version == version)
                 {
                     self.selected_online_version = Some(version);
+                    // 用户主动挑选后，后续刷新不再自动跳到最新版本。
+                    self.online_selection_explicit = true;
                     self.selection_modal_open = false;
                 }
             }
@@ -548,6 +577,8 @@ impl VersionState {
                     } else {
                         self.branch = TavernBranch::Release;
                         self.selected_online_version = Some(version.clone());
+                        // 用户指定要使用的版本，后续刷新保留该版本。
+                        self.online_selection_explicit = true;
                     }
                     let path = online_instance_path();
                     self.current_path = Some(path.clone());
@@ -698,6 +729,8 @@ impl VersionState {
         };
 
         self.selected_online_version = Some(version.clone());
+        // 用户指定要安装的版本，后续刷新保留该版本。
+        self.online_selection_explicit = true;
         self.had_local_instance_before_install = !self.local_instances.is_empty();
         self.install_task = InstallTaskState {
             visible: true,
@@ -715,11 +748,16 @@ impl VersionState {
             format!("开始安装在线版本 v{version}。"),
         ));
         // 镜像 tag 不存在时由上层网络服务自动改用官方 GitHub 地址。
-        if !release.mirror_available {
-            append_log(
+        match release.mirror {
+            MirrorAvailability::NotSynced => append_log(
                 &mut self.install_task.logs,
                 "当前下载源没有同步此版本，将使用官方直连地址。",
-            );
+            ),
+            MirrorAvailability::Unknown => append_log(
+                &mut self.install_task.logs,
+                "暂时无法确认下载源是否同步此版本，将先尝试镜像地址。",
+            ),
+            MirrorAvailability::Official | MirrorAvailability::Synced => {}
         }
     }
 
@@ -811,6 +849,46 @@ impl VersionState {
         self.online_releases
             .iter()
             .any(|release| release.version == version && release.installed)
+    }
+
+    /// 当前已安装（检出）的在线版本；未安装任何列表内版本时返回 `None`。
+    ///
+    /// 在线实例只有一个检出目录，因此最多只有一个版本被标记为已安装；
+    /// 检出 staging 开发分支时这里同样返回 `None`。
+    pub fn installed_online_version(&self) -> Option<&str> {
+        self.online_releases
+            .iter()
+            .find(|release| release.installed)
+            .map(|release| release.version.as_str())
+    }
+
+    /// 选择器应当显示的在线版本：用户挑选的版本优先，其次是当前已安装的版本，
+    /// 都没有时回落到列表中的最新版本。
+    ///
+    /// 用户挑选的版本可能已经被服务端撤回或不在当前列表里，这里统一做一次兜底，
+    /// 避免面板与选择弹窗各自判断导致不一致。
+    pub fn effective_online_version(&self) -> Option<&str> {
+        if let Some(version) = self.selected_online_version.as_deref()
+            && self
+                .online_releases
+                .iter()
+                .any(|release| release.version == version)
+        {
+            return Some(version);
+        }
+        self.installed_online_version().or_else(|| {
+            self.online_releases
+                .first()
+                .map(|release| release.version.as_str())
+        })
+    }
+
+    /// 与 [`Self::effective_online_version`] 对应的发行版本数据。
+    pub fn effective_online_release(&self) -> Option<&OnlineRelease> {
+        let version = self.effective_online_version()?;
+        self.online_releases
+            .iter()
+            .find(|release| release.version == version)
     }
 
     /// 取出版本页面产生的轻提示，避免每次重绘重复展示。
@@ -986,10 +1064,23 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                     .size(13)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                button(text("开始扫描"))
-                    .on_press(VersionMessage::ScanLocal)
-                    .padding([8, 16])
-                    .style(button_style(ButtonVariant::Primary)),
+                text("可以扫描本机自动查找，也可以手动指定已有酒馆的 package.json。")
+                    .size(11)
+                    .font(crate::core::typography::regular())
+                    .style(crate::theme::muted_text_style),
+                row![
+                    button(text("开始扫描"))
+                        .on_press(VersionMessage::ScanLocal)
+                        .padding([8, 16])
+                        .style(button_style(ButtonVariant::Primary)),
+                    // 手动添加与“扫描”并列呈现，让用户自己选择自动查找还是指定目录。
+                    button(text("手动添加"))
+                        .on_press(VersionMessage::ImportLocal)
+                        .padding([8, 16])
+                        .style(button_style(ButtonVariant::Secondary)),
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
             ]
             .spacing(10)
             .align_x(Alignment::Center),
@@ -1269,13 +1360,9 @@ fn online_error_panel(state: &VersionState) -> Element<'_, VersionMessage> {
 }
 
 fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
-    let releases = &state.online_releases;
-    let selected = state
-        .selected_online_version
-        .as_deref()
-        .or_else(|| releases.first().map(|release| release.version.as_str()));
-    let selected_release =
-        selected.and_then(|version| releases.iter().find(|release| release.version == version));
+    // 选中版本可能不在列表中；统一走有效版本，缺省展示最新版本。
+    let selected = state.effective_online_version();
+    let selected_release = state.effective_online_release();
     let picker_label = selected.unwrap_or("选择版本");
     let picker = button(
         row![
@@ -1289,6 +1376,12 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     .width(Fill)
     .padding([11, 14])
     .style(button_style(ButtonVariant::Outline));
+    // 在线实例还在用旧版本时，在选择器右侧给出“更新到最新”的快捷入口。
+    let picker_row = if let Some(update) = online_update_button(state) {
+        row![picker, update].spacing(8).align_y(Alignment::Center)
+    } else {
+        row![picker].align_y(Alignment::Center)
+    };
     let action = selected_release
         .map(|release| online_action_button(state, release))
         .unwrap_or_else(|| {
@@ -1324,7 +1417,7 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
-            container(picker).width(Fill).max_width(430),
+            container(picker_row).width(Fill).max_width(430),
             status,
             stale_hint,
             action,
@@ -1338,6 +1431,61 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     .align_x(Alignment::Center)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// 选择器当前显示的版本不是最新版本时，返回需要更新到的目标版本。
+///
+/// 判据是“选择器里显示的版本”（用户挑选 → 已安装 → 最新），因此：
+/// 显示最新版本时不提示；显示已安装的旧版本、或用户挑选了旧版本时才提示更新。
+fn online_update_target(state: &VersionState) -> Option<&OnlineRelease> {
+    let newest = state.online_releases.first()?;
+    let displayed = state.effective_online_version()?;
+    (newest.version != displayed).then_some(newest)
+}
+
+/// 选择器右侧的“更新到最新”图标按钮。
+///
+/// 外观与左侧选择器完全对齐：同一套描边样式、相同内边距，并让图标与选择器文字同高，
+/// 这样整行读起来是“选择器 + 附属操作”，而不是突然冒出的第二个实心按钮。
+// 图标两侧的零宽占位与选择器文字同字号：只放图标会因图形行高与文字行高不同而矮一截。
+fn online_update_button(state: &VersionState) -> Option<Element<'_, VersionMessage>> {
+    let newest = online_update_target(state)?;
+    // 最新版本已经装在管理目录里（例如用户手动选回了旧版本）时直接切换，避免重复下载。
+    let message = if newest.installed {
+        VersionMessage::SwitchOnline(newest.version.clone())
+    } else {
+        VersionMessage::InstallOnline(newest.version.clone())
+    };
+    let label = format!("更新到最新版本 v{}", newest.version);
+    let line_anchor = || container(text(" ").size(13)).width(0);
+    Some(
+        tooltip(
+            button(
+                row![
+                    line_anchor(),
+                    icons::icon(Icon::ArrowUpCircle, 16, BLUE_600),
+                    line_anchor(),
+                ]
+                .spacing(0)
+                .align_y(Alignment::Center),
+            )
+            .on_press(message)
+            .padding([11, 14])
+            .style(button_style(ButtonVariant::Outline)),
+            container(
+                text(label)
+                    .size(10)
+                    .font(crate::core::typography::regular())
+                    .color(WHITE),
+            )
+            .padding([6, 9])
+            .style(tooltip_surface),
+            tooltip::Position::Bottom,
+        )
+        .gap(5)
+        .delay(iced::time::Duration::from_millis(350))
+        .into(),
+    )
 }
 
 fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
@@ -1477,7 +1625,7 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
         .iter()
         .fold(column![].width(Fill), |rows, release| {
             let selected =
-                state.selected_online_version.as_deref() == Some(release.version.as_str());
+                state.effective_online_version() == Some(release.version.as_str());
             let status = if release.installed { "已安装" } else { "" };
             let row_content = row![
                 button(
@@ -1494,17 +1642,7 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
                             .size(10)
                             .font(crate::core::typography::regular())
                             .style(crate::theme::muted_text_style),
-                        if release.mirror_available {
-                            text("镜像已同步")
-                                .size(10)
-                                .font(crate::core::typography::regular())
-                                .color(SUCCESS)
-                        } else {
-                            text("镜像未同步，将使用直连")
-                                .size(10)
-                                .font(crate::core::typography::regular())
-                                .color(Color::from_rgb8(190, 120, 20))
-                        },
+                        mirror_status_text(release.mirror),
                     ]
                     .spacing(4)
                     .width(Fill)
@@ -1712,17 +1850,7 @@ fn online_action_button<'a>(
 }
 
 fn online_release_status(release: &OnlineRelease) -> Element<'static, VersionMessage> {
-    let mirror = if release.mirror_available {
-        text("镜像已同步")
-            .size(10)
-            .font(crate::core::typography::regular())
-            .color(SUCCESS)
-    } else {
-        text("镜像未同步，将使用直连")
-            .size(10)
-            .font(crate::core::typography::regular())
-            .color(Color::from_rgb8(190, 120, 20))
-    };
+    let mirror = mirror_status_text(release.mirror);
     row![
         text(format!("发布于 {}", release.published_at))
             .size(10)
@@ -1733,6 +1861,19 @@ fn online_release_status(release: &OnlineRelease) -> Element<'static, VersionMes
     .spacing(12)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// 镜像同步状态文案；状态由网络层判定，文案颜色跟随状态变化。
+fn mirror_status_text(state: MirrorAvailability) -> iced::widget::Text<'static> {
+    let color = match state {
+        MirrorAvailability::Synced => SUCCESS,
+        MirrorAvailability::NotSynced => Color::from_rgb8(190, 120, 20),
+        MirrorAvailability::Official | MirrorAvailability::Unknown => INK_SUBTLE,
+    };
+    text(state.label())
+        .size(10)
+        .font(crate::core::typography::regular())
+        .color(color)
 }
 
 fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
@@ -2215,11 +2356,135 @@ mod tests {
                 staging: None,
                 last_sync: String::new(),
                 from_cache: false,
+                notify: false,
             });
             assert_eq!(state.is_online_installed(&version), installed);
             assert_eq!(state.current_source, Some(VersionSource::Local));
             assert_eq!(state.current_path.as_deref(), Some("/fixture/local"));
         }
+    }
+
+    #[test]
+    fn background_catalog_load_does_not_push_notice() {
+        let mut state = VersionState::default();
+        let releases = state.online_releases.clone();
+        state.update(VersionMessage::OnlineVersionsLoaded {
+            branch: super::TavernBranch::Release,
+            releases: releases.clone(),
+            staging: None,
+            last_sync: String::new(),
+            from_cache: false,
+            notify: false,
+        });
+        assert!(state.notice.is_none(), "后台刷新不应弹出提示");
+        assert_eq!(state.online_status, super::OnlineVersionsStatus::Ready);
+
+        state.update(VersionMessage::OnlineVersionsLoaded {
+            branch: super::TavernBranch::Release,
+            releases,
+            staging: None,
+            last_sync: String::new(),
+            from_cache: false,
+            notify: true,
+        });
+        assert!(state.notice.is_some(), "用户手动刷新应弹出提示");
+    }
+
+    #[test]
+    fn picker_follows_installed_release_and_falls_back_to_newest() {
+        let mut state = VersionState::default();
+        // 模拟服务端返回：在现有列表前面插入一个更新的版本。
+        let mut releases = vec![super::release(
+            "1.19.0",
+            "2026/09/15 02:05",
+            "2026/09/15 02:00",
+            "# SillyTavern 1.19.0\n新版本发布。",
+        )];
+        releases.extend(state.online_releases.clone());
+
+        state.update(VersionMessage::OnlineVersionsLoaded {
+            branch: super::TavernBranch::Release,
+            releases: releases.clone(),
+            staging: None,
+            last_sync: String::new(),
+            from_cache: false,
+            notify: false,
+        });
+        // 没有安装任何版本：选择器显示最新版本，且不钉住任何选择。
+        assert_eq!(state.selected_online_version, None);
+        assert_eq!(state.effective_online_version(), Some("1.19.0"));
+
+        // 已安装 1.18.0：选择器显示当前安装的版本，而不是最新版本。
+        state.sync_online_installation(Some(&crate::core::network::InstalledSillyTavern {
+            tag_name: Some("1.18.0".to_owned()),
+            branch: None,
+            head: "fixture".into(),
+        }));
+        assert_eq!(state.effective_online_version(), Some("1.18.0"));
+
+        // 用户主动挑选旧版本之后，刷新不得覆盖其选择。
+        state.update(VersionMessage::SelectOnlineVersion("1.17.0".to_owned()));
+        assert!(state.online_selection_explicit);
+        state.update(VersionMessage::OnlineVersionsLoaded {
+            branch: super::TavernBranch::Release,
+            releases: releases.clone(),
+            staging: None,
+            last_sync: String::new(),
+            from_cache: false,
+            notify: false,
+        });
+        assert_eq!(state.effective_online_version(), Some("1.17.0"));
+
+        // 选中的版本从列表消失后，回落到已安装版本。
+        let remaining = releases
+            .into_iter()
+            .filter(|release| release.version != "1.17.0")
+            .collect::<Vec<_>>();
+        state.update(VersionMessage::OnlineVersionsLoaded {
+            branch: super::TavernBranch::Release,
+            releases: remaining,
+            staging: None,
+            last_sync: String::new(),
+            from_cache: false,
+            notify: false,
+        });
+        assert_eq!(state.selected_online_version, None);
+        assert!(!state.online_selection_explicit);
+        assert_eq!(state.effective_online_version(), Some("1.18.0"));
+    }
+
+    #[test]
+    fn update_hint_follows_version_shown_in_picker() {
+        let mut state = VersionState::default();
+        // 列表为空时没有可更新的目标。
+        state.online_releases.clear();
+        assert!(super::online_update_target(&state).is_none());
+
+        // 未安装任何版本时选择器显示最新版本 → 不提示更新。
+        state = VersionState::default();
+        assert_eq!(state.effective_online_version(), Some("1.18.0"));
+        assert!(super::online_update_target(&state).is_none());
+
+        // 已安装的就是最新版本 → 不提示更新。
+        state.online_releases[0].installed = true;
+        assert!(super::online_update_target(&state).is_none());
+
+        // 已安装旧版本：选择器显示该旧版本，提示更新到最新版本。
+        state.online_releases[0].installed = false;
+        state.online_releases[1].installed = true;
+        assert_eq!(state.effective_online_version(), Some("1.17.0"));
+        assert_eq!(
+            super::online_update_target(&state).map(|release| release.version.as_str()),
+            Some("1.18.0")
+        );
+
+        // 最新版本已安装，但用户挑选了旧版本：仍然提示更新，目标可直接切换。
+        state.online_releases[1].installed = false;
+        state.online_releases[0].installed = true;
+        state.update(VersionMessage::SelectOnlineVersion("1.17.0".to_owned()));
+        let target = super::online_update_target(&state).expect("挑选旧版本时应提示更新");
+        assert_eq!(target.version, "1.18.0");
+        assert!(target.installed, "最新版本已安装时应直接切换而不是重新下载");
     }
 
     #[test]

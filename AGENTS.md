@@ -39,6 +39,7 @@ astra_ui文档：https://docs.rs/iced-astraui/0.0.1
 │   ├── config.yaml 全局统一酒馆配置文件
 ├── sillytavern 酒馆核心文件目录，在线酒馆实例
 ├── settings.json 配置文件
+├── download_channel_cache.json 自动下载渠道测速缓存（7 天有效，供“自动”渠道解析）
 
 缓存数据目录结构
 ~/Library/Caches/AstraBrew Launcher/

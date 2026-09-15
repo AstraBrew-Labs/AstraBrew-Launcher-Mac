@@ -337,6 +337,8 @@ pub struct Launcher {
     download_channel_test_cancel: Option<Arc<AtomicBool>>,
     /// 在线版本列表后台结果通道。
     version_catalog_receiver: Option<Receiver<Result<SillyTavernCatalog, String>>>,
+    /// 本次在线版本读取完成后是否提示；仅用户手动点击刷新时为 true。
+    version_catalog_notify: bool,
     /// 在线酒馆安装后台事件通道。
     version_install_receiver: Option<Receiver<SillyTavernInstallEvent>>,
     /// 在线酒馆安装取消信号。
@@ -390,6 +392,37 @@ pub struct Launcher {
     home_version_selector_open: bool,
 }
 
+/// 一次在线版本读取的请求来源。
+///
+/// 启动预取与下载渠道切换后的刷新都属于后台行为：既不切换加载态也不弹提示，
+/// 只有用户主动点击刷新才允许出现“在线版本列表已更新”的浮层。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VersionCatalogRequest {
+    /// 目录已经加载过时是否仍然重新请求。
+    force: bool,
+    /// 是否把版本页切换为加载态。
+    show_loading: bool,
+    /// 是否在完成后弹出提示。
+    notify: bool,
+}
+
+/// 把浮层叠加到页面之上；没有浮层时用一个不接收事件的占位元素占位。
+///
+/// 不能让某一层在“有/无”之间切换：顶级元素类型一旦变化，iced 会重建整棵控件树，
+/// 页面滚动位置、输入框状态都会丢失（表现为提示出现时设置页跳回顶部）。
+fn overlay_layer<'a>(
+    page: Element<'a, Message>,
+    layer: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let layer = layer.unwrap_or_else(|| {
+        iced::widget::space::Space::new()
+            .width(Fill)
+            .height(Fill)
+            .into()
+    });
+    iced::widget::stack![page, layer].into()
+}
+
 impl Launcher {
     pub fn new(
         settings_store: SettingsStore,
@@ -429,9 +462,10 @@ impl Launcher {
                 .ok()
                 .map(|duration| duration.as_secs())
                 .unwrap_or_default();
+            // 过期的结果也记录测速时间：设置页据此显示“缓存已过期”而不是“尚未测速”。
+            settings.download_channel_last_tested = Some(cache.tested_at);
             if cache.is_valid_at(now) {
                 settings.download_resolved_channel = Some(cache.resolved_channel);
-                settings.download_channel_last_tested = Some(cache.tested_at);
                 // 复用上次测速明细，打开设置时不需要再次请求网络。
                 settings.download_channel_test.results = cache.results;
             }
@@ -485,6 +519,7 @@ impl Launcher {
             download_channel_test_receiver: None,
             download_channel_test_cancel: None,
             version_catalog_receiver: None,
+            version_catalog_notify: false,
             version_install_receiver: None,
             version_install_cancel: None,
             extension_task_receiver: None,
@@ -525,6 +560,10 @@ impl Launcher {
         }
         // 应用启动即加载默认稳定版目录，避免用户必须进入页面后点击安装才能恢复状态。
         launcher.start_version_catalog_load(false);
+        // “自动”渠道缺少有效缓存时，启动后立刻在后台补一次测速，
+        // 否则版本列表会一直退化成官方直连，用户每次都要手动去设置页测速。
+        #[cfg(not(test))]
+        launcher.start_missing_download_channel_test();
         #[cfg(not(test))]
         launcher.load_local_instances();
         #[cfg(not(test))]
@@ -596,6 +635,8 @@ impl Launcher {
 
         let download_channel_timer = if self.settings.download_channel_test.running
             || self.settings.download_channel_test.done_at.is_some()
+            // 界面已提示超时但测速线程还在跑，仍需继续收结果并落盘。
+            || self.download_channel_test_receiver.is_some()
         {
             time::every(Duration::from_millis(100)).map(Message::DownloadChannelTestTick)
         } else {
@@ -975,10 +1016,16 @@ impl Launcher {
                     // 手动渠道切换只改变当前使用渠道，不覆盖自动模式的缓存结果。
                     // 这样用户之后切回“自动”时仍可复用原有缓存，而不会重复测速；
                     // “自动”按钮也会继续展示缓存对应的实际渠道。
-                    self.cancel_download_channel_test();
-                    self.settings.download_channel_test = DownloadChannelTestState::default();
+                    // 后台补测速仍在进行时不打断它：跑完会写入一份新的自动渠道缓存。
+                    if self.download_channel_test_receiver.is_none() {
+                        self.cancel_download_channel_test();
+                        self.settings.download_channel_test = DownloadChannelTestState::default();
+                    }
                     self.persist_preferences();
                 }
+                // 版本列表的“镜像已同步/未同步”按有效渠道判定，切换后必须重新判定，
+                // 否则列表会一直显示切换前那个渠道的同步状态。
+                self.refresh_version_catalog_for_channel_change();
             }
             Message::SettingsProxyModeSelected(mode) => {
                 self.settings.proxy_mode = mode;
@@ -1331,11 +1378,59 @@ impl Launcher {
     }
 
     /// 开始读取酒馆在线版本；版本页内部只负责发送 RefreshOnline，网络逻辑集中在应用层。
+    ///
+    /// 用于启动预取与页面导航（进入版本页、切分支、切页签）：会展示加载态，但不弹提示。
     fn start_version_catalog_load(&mut self, force: bool) {
-        if self.version_catalog_receiver.is_some() || (!force && self.versions.branch_loaded) {
+        self.spawn_version_catalog_load(VersionCatalogRequest {
+            force,
+            show_loading: true,
+            notify: false,
+        });
+    }
+
+    /// 用户主动点击刷新：展示加载态，并在完成后弹出“在线版本列表已更新”。
+    fn refresh_version_catalog_from_user(&mut self) {
+        self.spawn_version_catalog_load(VersionCatalogRequest {
+            force: true,
+            show_loading: true,
+            notify: true,
+        });
+    }
+
+    /// 后台读取版本目录：不切换加载态、完成后不提示。
+    ///
+    /// 用于启动预取和下载渠道变化后的镜像状态刷新，全程不打扰用户。
+    fn reload_version_catalog_in_background(&mut self, force: bool) {
+        self.spawn_version_catalog_load(VersionCatalogRequest {
+            force,
+            show_loading: false,
+            notify: false,
+        });
+    }
+
+    /// 下载渠道变化后重取版本目录，让镜像同步信息与当前有效渠道保持一致。
+    ///
+    /// 刷新期间保留当前列表：只有镜像同步状态需要更新，切回加载态会让列表闪一下。
+    /// 进行中的请求是按旧渠道判定的，结果已经失效，因此丢弃后按新渠道重新请求。
+    fn refresh_version_catalog_for_channel_change(&mut self) {
+        if self.version_catalog_receiver.is_none() && !self.versions.branch_loaded {
+            // 目录从未加载过：保持进入版本页时才加载的懒加载行为。
             return;
         }
-        self.versions.update(VersionMessage::RefreshOnline);
+        self.version_catalog_receiver = None;
+        self.reload_version_catalog_in_background(true);
+    }
+
+    /// 启动一次在线版本读取；`request` 决定是否展示加载态、完成后是否提示。
+    fn spawn_version_catalog_load(&mut self, request: VersionCatalogRequest) {
+        if self.version_catalog_receiver.is_some() || (!request.force && self.versions.branch_loaded)
+        {
+            return;
+        }
+        if request.show_loading {
+            self.versions.update(VersionMessage::RefreshOnline);
+        }
+        self.version_catalog_notify = request.notify;
         let (sender, receiver) = mpsc::channel();
         self.version_catalog_receiver = Some(receiver);
         let branch = self.versions.branch.name().to_owned();
@@ -1357,8 +1452,8 @@ impl Launcher {
         });
     }
 
-    /// 将网络层的版本模型转换为版本页面模型。
-    fn apply_version_catalog(&mut self, catalog: SillyTavernCatalog) {
+    /// 将网络层的版本模型转换为版本页面模型；`notify` 决定是否弹出“列表已更新”提示。
+    fn apply_version_catalog(&mut self, catalog: SillyTavernCatalog, notify: bool) {
         let installed = crate::core::network::installed_sillytavern_state();
         self.versions
             .set_online_instance_exists(installed.is_some());
@@ -1380,7 +1475,7 @@ impl Launcher {
                     body: release.body.clone(),
                     summary: release.body,
                     installed: is_installed,
-                    mirror_available: release.mirror_available,
+                    mirror: release.mirror,
                 }
             })
             .collect::<Vec<_>>();
@@ -1394,6 +1489,7 @@ impl Launcher {
             staging: catalog.staging,
             last_sync: format_version_sync_time(catalog.cached_at),
             from_cache: catalog.used_stale_cache,
+            notify,
         });
         self.versions.sync_online_installation(installed.as_ref());
         // 在线目录刷新不能覆盖用户刚刚切换的本地实例。
@@ -1440,7 +1536,8 @@ impl Launcher {
         }
         match &message {
             VersionMessage::RefreshOnline => {
-                self.start_version_catalog_load(true);
+                // 用户手动点击刷新：唯一需要提示的加载来源。
+                self.refresh_version_catalog_from_user();
                 return;
             }
             VersionMessage::SelectBranch(_branch) => {
@@ -1590,7 +1687,12 @@ impl Launcher {
             return;
         };
         match receiver.try_recv() {
-            Ok(Ok(catalog)) => self.apply_version_catalog(catalog),
+            Ok(Ok(catalog)) => {
+                // 提示策略跟随本次请求来源：后台刷新不打扰用户。
+                let notify = self.version_catalog_notify;
+                self.version_catalog_notify = false;
+                self.apply_version_catalog(catalog, notify);
+            }
             Ok(Err(error)) => self
                 .versions
                 .update(VersionMessage::OnlineVersionsFailed(error)),
@@ -1668,7 +1770,24 @@ impl Launcher {
         self.download_channel_test_receiver = None;
     }
 
+    /// 用户主动发起的测速，会弹出进度窗口。
     fn start_download_channel_test(&mut self) {
+        self.begin_download_channel_test(true);
+    }
+
+    /// 自动渠道缺少有效缓存时在后台补测速，不弹进度窗口，避免启动就抢占视线。
+    #[cfg(not(test))]
+    fn start_missing_download_channel_test(&mut self) {
+        if self.settings.download_channel != DownloadChannel::Auto
+            || self.settings.download_channel_cache_valid()
+        {
+            return;
+        }
+        self.begin_download_channel_test(false);
+    }
+
+    /// 启动一次下载渠道测速；`show_modal` 控制是否展示进度窗口。
+    fn begin_download_channel_test(&mut self, show_modal: bool) {
         if self.settings.download_channel_test.running {
             return;
         }
@@ -1686,7 +1805,7 @@ impl Launcher {
         self.download_channel_test_cancel = Some(cancel.clone());
         self.download_channel_test_receiver = Some(receiver);
         self.settings.download_channel_test = DownloadChannelTestState {
-            show: true,
+            show: show_modal,
             running: true,
             timed_out: false,
             all_failed: false,
@@ -1712,17 +1831,8 @@ impl Launcher {
     fn poll_download_channel_test(&mut self, now: Instant) {
         const TEST_TIMEOUT: Duration = Duration::from_secs(60);
         const AUTO_CLOSE_DELAY: Duration = Duration::from_secs(3);
-        if !self.settings.download_channel_test.running
-            && self
-                .settings
-                .download_channel_test
-                .done_at
-                .is_some_and(|done_at| now.duration_since(done_at) >= AUTO_CLOSE_DELAY)
-        {
-            self.settings.download_channel_test.show = false;
-            self.settings.download_channel_test.done_at = None;
-            return;
-        }
+        // 超时只改变界面提示，不再中断测速任务：克隆慢时任务往往还能正常完成，
+        // 提前取消会让这次结果彻底丢失，用户下次打开仍要重新测速。
         if self.settings.download_channel_test.running
             && self
                 .settings
@@ -1733,12 +1843,16 @@ impl Launcher {
             self.settings.download_channel_test.running = false;
             self.settings.download_channel_test.timed_out = true;
             self.settings.download_channel_test.done_at = Some(now);
-            if let Some(cancel) = &self.download_channel_test_cancel {
-                cancel.store(true, Ordering::Relaxed);
-            }
-            self.download_channel_test_cancel = None;
-            self.download_channel_test_receiver = None;
-            return;
+        }
+        if !self.settings.download_channel_test.running
+            && self
+                .settings
+                .download_channel_test
+                .done_at
+                .is_some_and(|done_at| now.duration_since(done_at) >= AUTO_CLOSE_DELAY)
+        {
+            self.settings.download_channel_test.show = false;
+            self.settings.download_channel_test.done_at = None;
         }
 
         let Some(receiver) = self.download_channel_test_receiver.take() else {
@@ -1776,21 +1890,24 @@ impl Launcher {
                     all_failed,
                 }) => {
                     self.settings.download_channel_test.running = false;
+                    self.settings.download_channel_test.timed_out = false;
                     self.settings.download_channel_test.done_at = Some(now);
                     self.settings.download_channel_test.all_failed = all_failed;
                     self.settings.download_channel_test.results = results.clone();
                     self.settings.download_resolved_channel = Some(selected);
                     self.settings.download_channel_last_tested = None;
-                    match crate::core::network::save_download_channel_cache(selected, &results) {
-                        Ok(cache) => {
+                    match crate::core::network::cache_download_channel_result(&results) {
+                        Ok(Some(cache)) => {
                             self.settings.download_channel_last_tested = Some(cache.tested_at);
                         }
+                        Ok(None) => {}
                         Err(error) => {
                             self.settings.save_error =
                                 Some(format!("无法保存下载渠道缓存：{error}"));
                         }
                     }
-                    self.download_channel_test_cancel = None;
+                    // “自动”解析出的渠道变了，版本列表的镜像同步状态要跟着更新。
+                    self.refresh_version_catalog_for_channel_change();
                     self.persist_preferences();
                     keep_receiver = false;
                     break;
@@ -1799,15 +1916,37 @@ impl Launcher {
                 Err(TryRecvError::Disconnected) => {
                     keep_receiver = false;
                     self.settings.download_channel_test.running = false;
-                    self.settings.download_channel_test.timed_out = true;
                     self.settings.download_channel_test.done_at = Some(now);
+                    // 任务异常结束：四个渠道都拿到结果时按正常完成处理，
+                    // 否则保留已完成的部分并提示本次没有跑完。
+                    if !self.persist_download_channel_probe() {
+                        self.settings.download_channel_test.timed_out = true;
+                    }
                     break;
                 }
             }
         }
         if keep_receiver {
             self.download_channel_test_receiver = Some(receiver);
+        } else {
+            self.download_channel_test_cancel = None;
         }
+    }
+
+    /// 把已经测完的全部渠道结果落盘，并让版本列表按新的有效渠道刷新。
+    ///
+    /// 结果不完整时 `cache_download_channel_result` 不会写入，原有缓存保持不变，
+    /// 因此返回值表示这次是否真的写入了一份可复用的结果。
+    fn persist_download_channel_probe(&mut self) -> bool {
+        let Ok(Some(cache)) = crate::core::network::cache_download_channel_result(
+            &self.settings.download_channel_test.results,
+        ) else {
+            return false;
+        };
+        self.settings.download_resolved_channel = Some(cache.resolved_channel);
+        self.settings.download_channel_last_tested = Some(cache.tested_at);
+        self.refresh_version_catalog_for_channel_change();
+        true
     }
 
     /// 保存当前配置后启动酒馆；配置仍在写入时由配置轮询自动续接。
@@ -3027,77 +3166,83 @@ impl Launcher {
         crate::lang::set_language(effective_language(self.settings.language));
         crate::core::typography::set_render_font(self.active_font);
         crate::core::typography::set_render_scale(self.settings.ui_scale);
-        let mut page = match self.screen {
+        let mut page: Element<'_, Message> = match self.screen {
             Screen::Init => self.init_view(),
             Screen::Main => self.main_view(),
         };
-        if let Some(modal) = crate::pages::versions::local::modal_view(&self.versions.local) {
-            page = iced::widget::stack![page, modal.map(Message::Version)].into();
-        }
-        if let Some(toast) = crate::pages::versions::local::toast_view(&self.versions.local) {
-            page = iced::widget::stack![
-                page,
+        page = overlay_layer(
+            page,
+            crate::pages::versions::local::modal_view(&self.versions.local)
+                .map(|modal| modal.map(Message::Version)),
+        );
+        page = overlay_layer(
+            page,
+            crate::pages::versions::local::toast_view(&self.versions.local).map(|toast| {
                 container(toast.map(Message::Version))
                     .width(Fill)
                     .align_x(Alignment::Center)
-            ]
-            .into();
-        }
-        if self.tavern.sync.close_prompt {
-            page = iced::widget::stack![
-                page,
+                    .into()
+            }),
+        );
+        page = overlay_layer(
+            page,
+            self.tavern.sync.close_prompt.then(|| {
                 crate::pages::tavern::sync::close_overlay(&self.tavern.sync).map(Message::Tavern)
-            ]
-            .into();
-        }
-        if self.nodejs_required_visible {
-            page =
-                iced::widget::stack![page, crate::pages::settings::nodejs_required_modal()].into();
-        }
-        if self.resources.workbench.is_open() {
-            page = iced::widget::stack![
-                page,
+            }),
+        );
+        page = overlay_layer(
+            page,
+            self.nodejs_required_visible
+                .then(crate::pages::settings::nodejs_required_modal),
+        );
+        page = overlay_layer(
+            page,
+            self.resources.workbench.is_open().then(|| {
                 crate::pages::resource_manage::workbench::view(&self.resources.workbench)
                     .map(|message| Message::Resources(ResourceManageMessage::Workbench(message)))
-            ]
-            .into();
-        }
-        if !self.global_notices.is_empty() {
-            let language = effective_language(self.settings.language);
-            let notices = self.global_notices.iter().fold(
-                column!().spacing(8).align_x(Alignment::End),
-                |column, notice| {
-                    let action = notice.notice.action.clone().map(|action| match action {
-                        TransientNoticeAction::RevealPath(path) => (
-                            t("webview.download.reveal", language),
-                            Message::RevealDownloadedFile(notice.id, path),
-                        ),
-                    });
-                    column.push(
-                        container(astra_ui::toast(
-                            t(notice.notice.title_key, language),
-                            &notice.notice.detail,
-                            notice.notice.variant,
-                            action,
-                            Message::DismissGlobalNotice(notice.id),
-                            Message::GlobalNoticeInteract,
-                        ))
-                        .max_width(680),
-                    )
-                },
-            );
-            page = iced::widget::stack![
-                page,
-                container(notices)
-                    .width(Fill)
-                    .height(Fill)
-                    .padding(16)
-                    .align_x(Alignment::End)
-                    .align_y(Alignment::Start)
-            ]
-            .into();
-        }
+            }),
+        );
+        page = overlay_layer(page, self.global_notice_layer());
         page
+    }
+
+    /// 构造全局提示浮层；没有提示时返回 `None`，由占位层保持控件树结构稳定。
+    fn global_notice_layer(&self) -> Option<Element<'_, Message>> {
+        if self.global_notices.is_empty() {
+            return None;
+        }
+        let language = effective_language(self.settings.language);
+        let notices = self.global_notices.iter().fold(
+            column!().spacing(8).align_x(Alignment::End),
+            |column, notice| {
+                let action = notice.notice.action.clone().map(|action| match action {
+                    TransientNoticeAction::RevealPath(path) => (
+                        t("webview.download.reveal", language),
+                        Message::RevealDownloadedFile(notice.id, path),
+                    ),
+                });
+                column.push(
+                    container(astra_ui::toast(
+                        t(notice.notice.title_key, language),
+                        &notice.notice.detail,
+                        notice.notice.variant,
+                        action,
+                        Message::DismissGlobalNotice(notice.id),
+                        Message::GlobalNoticeInteract,
+                    ))
+                    .max_width(680),
+                )
+            },
+        );
+        Some(
+            container(notices)
+                .width(Fill)
+                .height(Fill)
+                .padding(16)
+                .align_x(Alignment::End)
+                .align_y(Alignment::Start)
+                .into(),
+        )
     }
 
     /// 初始化流程视图（首次运行引导）。
@@ -3692,6 +3837,12 @@ mod tests {
                         error: None,
                     },
                     DownloadChannelTestResult {
+                        channel: DownloadChannel::Mirror3,
+                        success: true,
+                        latency_ms: Some(250),
+                        error: None,
+                    },
+                    DownloadChannelTestResult {
                         channel: DownloadChannel::Official,
                         success: true,
                         latency_ms: Some(300),
@@ -3707,7 +3858,8 @@ mod tests {
             launcher.settings.download_resolved_channel,
             Some(DownloadChannel::Mirror1)
         );
-        // 测试环境可能限制写入用户级 Caches 目录；运行时会在 macOS 用户目录中写入缓存。
+        // 四个渠道都有结果时才写入缓存；测试环境可能限制写入用户级数据目录，
+        // 运行时会在 macOS 用户目录中写入缓存，因此这里只校验界面状态。
         assert!(launcher.settings.download_channel_test.show);
         assert!(launcher.settings.download_channel_test.done_at.is_some());
 
@@ -3715,6 +3867,76 @@ mod tests {
             now + iced::time::Duration::from_secs(4),
         ));
         assert!(!launcher.settings.download_channel_test.show);
+    }
+
+    #[test]
+    fn switching_download_channel_reloads_loaded_version_catalog() {
+        let mut launcher = launcher();
+        // 目录从未加载过时保持懒加载：切换渠道不额外发起请求。
+        launcher.version_catalog_receiver = None;
+        launcher.versions.branch_loaded = false;
+        let _ = launcher.update(Message::SettingsDownloadChannelSelected(
+            DownloadChannel::Mirror2,
+        ));
+        assert_eq!(launcher.settings.download_channel, DownloadChannel::Mirror2);
+        assert!(launcher.version_catalog_receiver.is_none());
+
+        // 目录加载过之后切换渠道，必须重新判定镜像同步状态。
+        launcher.versions.branch_loaded = true;
+        let _ = launcher.update(Message::SettingsDownloadChannelSelected(
+            DownloadChannel::Mirror1,
+        ));
+        assert_eq!(launcher.settings.download_channel, DownloadChannel::Mirror1);
+        assert!(launcher.version_catalog_receiver.is_some());
+        launcher.version_catalog_receiver = None;
+    }
+
+    #[test]
+    fn only_user_refresh_notifies_version_catalog() {
+        use crate::pages::versions::VersionMessage;
+
+        let mut launcher = launcher();
+        launcher.version_catalog_receiver = None;
+        launcher.versions.branch_loaded = true;
+
+        // 后台刷新：下载渠道切换只更新列表，不弹提示。
+        let _ = launcher.update(Message::SettingsDownloadChannelSelected(
+            DownloadChannel::Mirror2,
+        ));
+        assert!(!launcher.version_catalog_notify);
+        launcher.version_catalog_receiver = None;
+
+        // 用户手动点击刷新：唯一会提示的来源。
+        let _ = launcher.update(Message::Version(VersionMessage::RefreshOnline));
+        assert!(launcher.version_catalog_notify);
+        launcher.version_catalog_receiver = None;
+    }
+
+    #[test]
+    fn timed_out_download_channel_probe_keeps_collecting_results() {
+        let mut launcher = launcher();
+        let (_sender, receiver) = std::sync::mpsc::channel();
+        let now = iced::time::Instant::now();
+        launcher.download_channel_test_receiver = Some(receiver);
+        launcher.download_channel_test_cancel = Some(std::sync::Arc::new(
+            std::sync::atomic::AtomicBool::new(false),
+        ));
+        launcher.settings.download_channel_test = DownloadChannelTestState {
+            show: true,
+            running: true,
+            started_at: Some(now),
+            ..DownloadChannelTestState::default()
+        };
+
+        let _ = launcher.update(Message::DownloadChannelTestTick(
+            now + iced::time::Duration::from_secs(61),
+        ));
+        // 超时只提示界面；任务与接收端都要保留，否则这次测速结果会彻底丢失。
+        assert!(launcher.settings.download_channel_test.timed_out);
+        assert!(launcher.download_channel_test_receiver.is_some());
+        assert!(launcher.download_channel_test_cancel.is_some());
+        launcher.download_channel_test_receiver = None;
+        launcher.download_channel_test_cancel = None;
     }
 
     #[test]

@@ -51,6 +51,8 @@ pub fn translate_owned(content: &str) -> String {
         "切换到此版本" => "Switch to This Version",
         "镜像已同步" => "Mirror synced",
         "镜像未同步，将使用直连" => "Mirror not synced; direct connection will be used",
+        "官方直连" => "Official direct connection",
+        "镜像状态未知" => "Mirror status unknown",
         "正在获取在线版本…" => "Fetching online versions…",
         "在线版本列表已更新。" => "Online version list updated.",
         "当前显示的是旧缓存版本。" => "Showing stale cached versions.",
@@ -133,10 +135,11 @@ pub fn translate_owned(content: &str) -> String {
         "酒馆下载渠道" => "Tavern Download Channel",
         "酒馆下载渠道测速" => "Tavern Download Channel Test",
         "自动测速缓存" => "Automatic Test Cache",
-        "测速结果缓存 7 天；缓存有效期内不会重复测速。" => {
-            "Test results are cached for 7 days; no repeat test is needed while valid."
+        "测速结果缓存 7 天；选择“自动”且缓存过期时会在启动后自动测速。" => {
+            "Test results are cached for 7 days; with Auto selected, an expired cache triggers a speed test after launch."
         }
         "缓存有效" => "Cache valid",
+        "缓存已过期" => "Cache expired",
         "尚未测速" => "Not tested",
         "测速中…" => "Testing…",
         "重新测速" => "Test Again",
@@ -224,8 +227,8 @@ pub fn translate_owned(content: &str) -> String {
         "测试失败" => "Test failed",
         "测试完成" => "Test complete",
         "正在测速下载渠道…" => "Testing download channels…",
-        "渠道测速超时，请稍后重试。" => {
-            "Download channel test timed out. Please try again later."
+        "测速耗时较长，已完成的渠道结果会保留，完成后自动生效。" => {
+            "The channel test is taking longer than expected; completed channel results are kept and take effect once finished."
         }
         "所有渠道测速失败，已回退到官方渠道。" => {
             "All channel tests failed; falling back to the official channel."
@@ -925,8 +928,8 @@ fn translate_dynamic(content: &str) -> String {
     if content == "正在测速下载渠道…" {
         return "Testing download channels…".into();
     }
-    if content == "渠道测速超时，请稍后重试。" {
-        return "Download channel test timed out. Please try again later.".into();
+    if content == "测速耗时较长，已完成的渠道结果会保留，完成后自动生效。" {
+        return "The channel test is taking longer than expected; completed channel results are kept and take effect once finished.".into();
     }
     if content == "所有渠道测速失败，已回退到官方渠道。" {
         return "All channel tests failed; falling back to the official channel.".into();
@@ -942,6 +945,9 @@ fn translate_dynamic(content: &str) -> String {
     }
     if let Some(value) = content.strip_prefix("测速成功 · ") {
         return format!("Test succeeded · {value}");
+    }
+    if let Some(version) = content.strip_prefix("更新到最新版本 v") {
+        return format!("Update to the latest version v{version}");
     }
     if content == "测速成功" {
         return "Test succeeded".into();
@@ -1155,6 +1161,10 @@ fn translate_local(key: &str) -> Option<&'static str> {
         "检测中…" => "Checking…",
         "安装中…" => "Installing…",
         "开始扫描" => "Start Scan",
+        "手动添加" => "Add Manually",
+        "可以扫描本机自动查找，也可以手动指定已有酒馆的 package.json。" => {
+            "Scan this Mac automatically, or point to an existing Tavern package.json."
+        }
         "正在加载本地实例…" => "Loading local instances…",
         _ => return None,
     })
