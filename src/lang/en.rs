@@ -491,7 +491,6 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "workbench.preset.direct_managed" => "Enabled states are stored directly in prompt entries.",
         "workbench.preset.add" => "Add prompt",
         "workbench.preset.adding" => "Adding…",
-        "workbench.preset.page" => "Page",
         "workbench.preset.items" => "prompts",
         "workbench.preset.partial" => "Partially enabled",
         "workbench.preset.marker" => "Structure marker",

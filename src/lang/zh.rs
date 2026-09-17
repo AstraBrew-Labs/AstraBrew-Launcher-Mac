@@ -119,7 +119,6 @@ pub fn translate(key: &'static str) -> &'static str {
         "workbench.preset.direct_managed" => "启用状态直接保存在 prompts 条目中。",
         "workbench.preset.add" => "新增条目",
         "workbench.preset.adding" => "正在新增…",
-        "workbench.preset.page" => "页码",
         "workbench.preset.items" => "个条目",
         "workbench.preset.partial" => "部分启用",
         "workbench.preset.marker" => "结构标记",

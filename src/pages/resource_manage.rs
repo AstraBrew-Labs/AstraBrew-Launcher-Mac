@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::UNIX_EPOCH;
+use std::time::{Instant, UNIX_EPOCH};
 
 use iced::widget::{
     button, column, container, image, markdown, mouse_area, row, scrollable, space, stack,
@@ -36,6 +36,8 @@ const CHARACTER_THUMB_HEIGHT: f32 = 70.0;
 const CHAT_MESSAGE_LIMIT: usize = 300;
 // 预设详情按旧版的 2×2 分页展示，避免一次性布局大量提示词卡片。
 const PRESET_PROMPTS_PER_PAGE: usize = 4;
+/// 右下角悬浮分页栏滑出 / 收起的动画时长。
+const PRESET_PAGER_SLIDE_SECONDS: f32 = 0.18;
 /// 「依赖酒馆助手」为真时的强调色；为假时改用中性灰，避免与提示词指标抢视觉。
 const TAVERN_HELPER_ACCENT: Color = Color::from_rgb8(142, 68, 220);
 
@@ -211,6 +213,10 @@ pub enum ResourceManageMessage {
     PresetDetailLoaded(u64, usize, Result<Vec<PresetPrompt>, String>),
     /// 跳转到预设提示词结构的指定页；页索引从 0 开始。
     PresetDetailGoToPage(usize),
+    /// 鼠标进入 / 离开右下角悬浮分页栏。
+    PresetPagerHover(bool),
+    /// 推进悬浮分页栏的滑出 / 收起动画。
+    PresetPagerTick,
     RequestDelete,
     ConfirmDelete,
     CancelDelete,
@@ -220,6 +226,14 @@ pub enum ResourceManageMessage {
     Workbench(WorkbenchMessage),
     /// 点击对话预览里 Markdown 渲染出的链接。
     OpenMarkdownLink(String),
+}
+
+/// 悬浮分页栏进行中的滑动动画。
+#[derive(Debug, Clone, Copy)]
+struct PagerSlide {
+    from: f32,
+    to: f32,
+    started_at: Instant,
 }
 
 #[derive(Debug)]
@@ -239,6 +253,10 @@ pub struct ResourceManageState {
     pub selected_chat: Option<(usize, usize)>,
     pub selected_preset: Option<usize>,
     pub preset_detail_page: usize,
+    /// 悬浮分页栏的滑出进度：0 = 收起（只露出拉手），1 = 完全滑出。
+    preset_pager_progress: f32,
+    /// 进行中的滑动动画；为空表示进度已经稳定在目标值。
+    preset_pager_slide: Option<PagerSlide>,
     pub preset_detail_loading: bool,
     pub preset_detail_error: Option<String>,
     preset_load_request_id: u64,
@@ -272,6 +290,8 @@ impl Default for ResourceManageState {
             selected_chat: None,
             selected_preset: None,
             preset_detail_page: 0,
+            preset_pager_progress: 0.0,
+            preset_pager_slide: None,
             preset_detail_loading: false,
             preset_detail_error: None,
             preset_load_request_id: 0,
@@ -441,6 +461,14 @@ impl ResourceManageState {
                 self.open_external_link(&url);
                 Task::none()
             }
+            ResourceManageMessage::PresetPagerHover(open) => {
+                self.set_pager_open(open);
+                Task::none()
+            }
+            ResourceManageMessage::PresetPagerTick => {
+                self.advance_pager_slide();
+                Task::none()
+            }
         };
 
         // 顶部标签始终展示预设数量；即使当前停留在其他资源页，也要保证预设扫描已启动。
@@ -523,23 +551,73 @@ impl ResourceManageState {
     }
 
     /// 选择预设时只异步读取当前预设的完整提示词内容，避免切换详情阻塞界面。
+    /// 右下角悬浮分页栏是否正在滑动，用于决定是否订阅按帧推进。
+    pub fn pager_animating(&self) -> bool {
+        self.preset_pager_slide.is_some()
+    }
+
+    /// 请求悬浮分页栏滑出 / 收起；重复请求同一个目标不会重置动画。
+    fn set_pager_open(&mut self, open: bool) {
+        let to = if open { 1.0 } else { 0.0 };
+        if self.preset_pager_progress == to && self.preset_pager_slide.is_none() {
+            return;
+        }
+        if let Some(slide) = self.preset_pager_slide
+            && slide.to == to
+        {
+            return;
+        }
+        self.preset_pager_slide = Some(PagerSlide {
+            from: self.preset_pager_progress,
+            to,
+            started_at: Instant::now(),
+        });
+    }
+
+    /// 按帧推进滑动动画；进度到位后立刻停止订阅。
+    fn advance_pager_slide(&mut self) {
+        let Some(slide) = self.preset_pager_slide else {
+            return;
+        };
+        let elapsed = slide.started_at.elapsed().as_secs_f32();
+        let progress = (elapsed / PRESET_PAGER_SLIDE_SECONDS).clamp(0.0, 1.0);
+        // 缓出，滑到位时更自然。
+        let eased = 1.0 - (1.0 - progress) * (1.0 - progress);
+        self.preset_pager_progress = slide.from + (slide.to - slide.from) * eased;
+        if progress >= 1.0 {
+            self.preset_pager_progress = slide.to;
+            self.preset_pager_slide = None;
+        }
+    }
+
+    /// 回到收起状态；切换预设时调用，避免沿用上一个预设的展开状态。
+    fn reset_pager(&mut self) {
+        self.preset_pager_progress = 0.0;
+        self.preset_pager_slide = None;
+    }
+
     fn select_preset(&mut self, index: usize) -> Task<ResourceManageMessage> {
-        let Some(preset) = self.presets.get(index) else {
+        // 先取出后面要用的字段，避免持有 presets 的借用时再修改状态。
+        let Some((prompts_loaded, path)) = self
+            .presets
+            .get(index)
+            .map(|preset| (preset.prompts_loaded, preset.filepath.clone()))
+        else {
             return Task::none();
         };
 
         self.selected_preset = Some(index);
         self.pending_delete = None;
         self.preset_detail_page = 0;
+        self.reset_pager();
         self.preset_detail_error = None;
         self.preset_detail_request_id = self.preset_detail_request_id.wrapping_add(1);
 
-        if preset.prompts_loaded {
+        if prompts_loaded {
             self.preset_detail_loading = false;
             return Task::none();
         }
 
-        let path = preset.filepath.clone();
         let request_id = self.preset_detail_request_id;
         self.preset_detail_loading = true;
 
@@ -643,6 +721,7 @@ impl ResourceManageState {
         self.selected_chat = None;
         self.selected_preset = None;
         self.preset_detail_page = 0;
+        self.reset_pager();
         self.preset_detail_loading = false;
         self.preset_detail_error = None;
         self.presets_loaded = false;
@@ -2218,7 +2297,11 @@ fn resource_detail<'a>(
                 } else if let Some(error) = state.preset_detail_error.as_deref() {
                     preset_detail_error(preset, error)
                 } else {
-                    preset_detail(preset, state.preset_detail_page)
+                    preset_detail(
+                        preset,
+                        state.preset_detail_page,
+                        state.preset_pager_progress,
+                    )
                 }
             }),
     };
@@ -2555,7 +2638,11 @@ fn preset_detail_error<'a>(
     .into()
 }
 
-fn preset_detail(item: &PresetInfo, detail_page: usize) -> Element<'_, ResourceManageMessage> {
+fn preset_detail(
+    item: &PresetInfo,
+    detail_page: usize,
+    pager_progress: f32,
+) -> Element<'_, ResourceManageMessage> {
     let page_count = item.prompt_count.div_ceil(PRESET_PROMPTS_PER_PAGE);
     let current_page = detail_page.min(page_count.saturating_sub(1));
     let mut content = column![
@@ -2640,148 +2727,35 @@ fn preset_detail(item: &PresetInfo, detail_page: usize) -> Element<'_, ResourceM
     if item.prompt_count == 0 {
         content = content.push(inline_empty("这个预设中没有可识别的 prompts 数组。"));
     } else {
-        if page_count > 1 {
-            content = content.push(preset_pagination(current_page, page_count));
-        }
-
         let start = current_page * PRESET_PROMPTS_PER_PAGE;
         let end = (start + PRESET_PROMPTS_PER_PAGE).min(item.prompts.len());
         for (index, prompt) in item.prompts[start..end].iter().enumerate() {
             content = content.push(prompt_card(start + index, prompt));
         }
     }
-    column![
-        detail_header(
-            Icon::SlidersHorizontal,
-            &item.name,
-            format!("{} · {}", item.filename, format_size(item.file_size)),
+    // 分页栏悬浮在右下角：滑到列表底部也能直接翻页，收起时只留一条拉手不挡内容。
+    // 它和内容同属普通层，弹窗等上层浮层依旧会盖住它，不需要额外处理层级。
+    stack![
+        column![
+            detail_header(
+                Icon::SlidersHorizontal,
+                &item.name,
+                format!("{} · {}", item.filename, format_size(item.file_size)),
+            ),
+            scrollable(container(content).padding(14)).height(Fill),
+        ]
+        .height(Fill),
+        crate::pages::pager::floating(
+            current_page,
+            page_count,
+            pager_progress,
+            ResourceManageMessage::PresetDetailGoToPage,
+            ResourceManageMessage::PresetPagerHover,
         ),
-        scrollable(container(content).padding(14)).height(Fill),
     ]
-    .height(Fill)
-    .into()
-}
-
-/// 提示词结构分页栏的一项。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PresetPageItem {
-    Page(usize),
-    Ellipsis,
-}
-
-/// 分页栏最多直接铺开的页数；超过后改为「首页 … 当前页附近 … 末页」。
-const PRESET_PAGE_WINDOW_LIMIT: usize = 7;
-
-/// 页码按钮尺寸，与工作台分页控件保持同一档。
-const PRESET_PAGE_BUTTON_SIZE: f32 = 30.0;
-
-/// 提示词结构分页栏：可直接跳到任意页，两端保留上一页 / 下一页。
-///
-/// `current_page` 使用从 0 开始的页索引，对外展示为从 1 开始的页码。
-fn preset_pagination(current_page: usize, page_count: usize) -> Element<'_, ResourceManageMessage> {
-    let current = (current_page + 1).min(page_count).max(1);
-    let mut items = vec![preset_page_step(
-        Icon::ChevronLeft,
-        "上一页",
-        (current > 1).then(|| ResourceManageMessage::PresetDetailGoToPage(current - 2)),
-    )];
-    for item in preset_page_items(current, page_count) {
-        items.push(match item {
-            PresetPageItem::Page(page) => preset_page_number(page, page == current),
-            PresetPageItem::Ellipsis => container(crate::theme::muted_icon(Icon::Ellipsis, 15))
-                .width(PRESET_PAGE_BUTTON_SIZE)
-                .height(PRESET_PAGE_BUTTON_SIZE)
-                .align_x(Alignment::Center)
-                .align_y(Alignment::Center)
-                .into(),
-        });
-    }
-    items.push(preset_page_step(
-        Icon::ChevronRight,
-        "下一页",
-        (current < page_count).then(|| ResourceManageMessage::PresetDetailGoToPage(current)),
-    ));
-    container(row(items).spacing(4).align_y(Alignment::Center))
-        .width(Fill)
-        .align_x(Alignment::Center)
-        .into()
-}
-
-/// 页码按钮：当前页用主色实心且不可点击，其余为可跳转的描边页码。
-fn preset_page_number(page: usize, active: bool) -> Element<'static, ResourceManageMessage> {
-    let label = container(
-        text(page.to_string())
-            .size(12)
-            .font(crate::core::typography::medium()),
-    )
     .width(Fill)
     .height(Fill)
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center);
-    let control = button(label)
-        .width(PRESET_PAGE_BUTTON_SIZE)
-        .height(PRESET_PAGE_BUTTON_SIZE)
-        .padding(0)
-        .style(button_style(if active {
-            ButtonVariant::Primary
-        } else {
-            ButtonVariant::Outline
-        }));
-    if active {
-        control.into()
-    } else {
-        control
-            .on_press(ResourceManageMessage::PresetDetailGoToPage(page - 1))
-            .into()
-    }
-}
-
-/// 上一页 / 下一页按钮；`target` 为 `None` 时按钮自动进入禁用态。
-fn preset_page_step(
-    icon: Icon,
-    label: &'static str,
-    target: Option<ResourceManageMessage>,
-) -> Element<'static, ResourceManageMessage> {
-    let content = button(
-        row![
-            icons::icon(
-                icon,
-                14,
-                if target.is_some() { BLUE_600 } else { INK_MUTED },
-            ),
-            text(label).size(12).font(crate::core::typography::medium()),
-        ]
-        .spacing(6)
-        .align_y(Alignment::Center),
-    )
-    .padding([6, 10])
-    .style(button_style(ButtonVariant::Outline));
-    match target {
-        Some(message) => content.on_press(message).into(),
-        None => content.into(),
-    }
-}
-
-/// 生成分页页码序列；页数超过窗口上限时，首尾各固定一页并用省略号连接当前页附近。
-fn preset_page_items(current: usize, page_count: usize) -> Vec<PresetPageItem> {
-    let total = page_count.max(1);
-    let current = current.clamp(1, total);
-    if total <= PRESET_PAGE_WINDOW_LIMIT {
-        return (1..=total).map(PresetPageItem::Page).collect();
-    }
-
-    let mut items = vec![PresetPageItem::Page(1)];
-    if current > 3 {
-        items.push(PresetPageItem::Ellipsis);
-    }
-    let start = current.saturating_sub(1).max(2);
-    let end = current.saturating_add(1).min(total - 1);
-    items.extend((start..=end).map(PresetPageItem::Page));
-    if current < total.saturating_sub(2) {
-        items.push(PresetPageItem::Ellipsis);
-    }
-    items.push(PresetPageItem::Page(total));
-    items
+    .into()
 }
 
 fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, ResourceManageMessage> {
@@ -3514,5 +3488,88 @@ mod tests {
         let _task = state.update(ResourceManageMessage::SearchChanged("Astra".into()));
 
         assert!(state.presets_loading);
+    }
+
+    #[test]
+    fn preset_pager_slide_requests_are_coalesced() {
+        let mut state = ResourceManageState::default();
+        assert!(!state.pager_animating());
+
+        state.set_pager_open(true);
+        let slide = state.preset_pager_slide.expect("悬停应启动滑动动画");
+        assert_eq!(slide.to, 1.0);
+        assert!(state.pager_animating());
+
+        // 同一个目标的重复请求不能把动画重新从起点拉起。
+        state.set_pager_open(true);
+        assert_eq!(
+            state.preset_pager_slide.unwrap().started_at,
+            slide.started_at
+        );
+    }
+
+    #[test]
+    fn preset_pager_reverse_slide_starts_from_current_progress() {
+        let mut state = ResourceManageState::default();
+        state.set_pager_open(true);
+        // 模拟滑出进行到一半时指针又移开了。
+        state.preset_pager_progress = 0.4;
+        state.set_pager_open(false);
+
+        let slide = state.preset_pager_slide.expect("反向动画应存在");
+        assert_eq!(slide.from, 0.4, "反向动画必须从当前进度出发，否则会跳变");
+        assert_eq!(slide.to, 0.0);
+    }
+
+    #[test]
+    fn preset_pager_slide_finishes_at_target_and_stops() {
+        let mut state = ResourceManageState::default();
+        for (from, to) in [(0.0, 1.0), (1.0, 0.0)] {
+            state.set_pager_open(to == 1.0);
+            // 直接构造一个已经到期的动画帧，验证推进后停在目标值并解除订阅。
+            state.preset_pager_slide = Some(PagerSlide {
+                from,
+                to,
+                started_at: Instant::now() - std::time::Duration::from_secs(1),
+            });
+            state.advance_pager_slide();
+            assert_eq!(state.preset_pager_progress, to);
+            assert!(!state.pager_animating(), "到位后不应继续订阅每帧推进");
+        }
+
+        state.set_pager_open(true);
+        state.reset_pager();
+        assert_eq!(state.preset_pager_progress, 0.0);
+        assert!(!state.pager_animating(), "切换预设后应回到收起状态");
+    }
+
+    #[test]
+    fn preset_page_jump_clamps_into_range() {
+        let mut state = ResourceManageState::default();
+        state.presets = vec![PresetInfo {
+            filename: "fixture.json".into(),
+            filepath: PathBuf::from("/tmp/fixture.json"),
+            name: "fixture".into(),
+            source: String::new(),
+            model: String::new(),
+            max_context: 0,
+            max_tokens: 0,
+            stream: false,
+            // 9 条提示词按每页 4 条切成 3 页。
+            prompt_count: 9,
+            enabled_prompt_count: 0,
+            prompts: Vec::new(),
+            has_spreset: false,
+            requires_tavern_helper: false,
+            file_size: 0,
+            modified_secs: 0,
+            prompts_loaded: true,
+        }];
+        state.selected_preset = Some(0);
+
+        let _task = state.update(ResourceManageMessage::PresetDetailGoToPage(1));
+        assert_eq!(state.preset_detail_page, 1);
+        let _task = state.update(ResourceManageMessage::PresetDetailGoToPage(99));
+        assert_eq!(state.preset_detail_page, 2, "越界页码应被夹到末页");
     }
 }

@@ -17,6 +17,7 @@ pub(crate) mod console;
 pub(crate) mod extensions;
 pub(crate) mod markdown_doc;
 pub(crate) mod notice;
+pub(crate) mod pager;
 pub(crate) mod resource_manage;
 pub(crate) mod settings;
 pub(crate) mod tavern;

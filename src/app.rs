@@ -683,6 +683,14 @@ impl Launcher {
             Subscription::none()
         };
 
+        // 资源管理页的右下角悬浮分页栏只在滑动动画期间按帧推进。
+        let resource_pager_timer = if self.resources.pager_animating() {
+            time::every(Duration::from_millis(16))
+                .map(|_| Message::Resources(ResourceManageMessage::PresetPagerTick))
+        } else {
+            Subscription::none()
+        };
+
         let config_timer = if self.config_needs_tick() {
             time::every(Duration::from_millis(50)).map(|_| Message::TavernConfigTick)
         } else {
@@ -706,6 +714,7 @@ impl Launcher {
             version_install_timer,
             extension_timer,
             global_notice_timer,
+            resource_pager_timer,
             window_events,
             system_theme,
         ])

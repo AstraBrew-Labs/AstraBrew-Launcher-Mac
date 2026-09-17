@@ -2208,50 +2208,38 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
     });
 
     let page_count = form.page_count();
-    // 禁用按钮也可能构建消息，因此分页索引必须使用检查算术，不能预先执行 0 - 1。
-    let previous_page = form
-        .current_page
-        .checked_sub(1)
-        .map(WorkbenchMessage::PresetPageChanged);
-    let next_page = form
-        .current_page
-        .checked_add(1)
-        .filter(|page| *page < page_count)
-        .map(WorkbenchMessage::PresetPageChanged);
-    let pager = container(
+    // 只有一页时不展示分页栏，但保留底栏与条目计数，避免卡片区域高度跳动。
+    let pager: Element<'_, WorkbenchMessage> = if page_count > 1 {
+        crate::pages::pager::pagination(
+            form.current_page,
+            page_count,
+            WorkbenchMessage::PresetPageChanged,
+        )
+    } else {
+        space::horizontal().width(Length::Shrink).into()
+    };
+    let status_bar = container(
         row![
-            button(icons::icon(Icon::ChevronLeft, 16, BLUE_600))
-                .on_press_maybe(previous_page)
-                .width(34)
-                .height(30)
-                .style(button_style(ButtonVariant::Secondary)),
             text(format!(
-                "{} {} / {} · {} {}",
-                t("workbench.preset.page", language),
-                form.current_page.saturating_add(1),
-                page_count,
+                "{} {}",
                 form.prompts.len(),
                 t("workbench.preset.items", language),
             ))
             .size(11)
             .style(crate::theme::muted_text_style),
-            button(icons::icon(Icon::ChevronRight, 16, BLUE_600))
-                .on_press_maybe(next_page)
-                .width(34)
-                .height(30)
-                .style(button_style(ButtonVariant::Secondary)),
+            space::horizontal(),
+            pager,
         ]
-        .spacing(10)
         .align_y(Alignment::Center),
     )
     .width(Fill)
     .padding([8, 16])
-    .align_x(Alignment::Center);
+    .align_y(Alignment::Center);
 
     column![
         toolbar,
         scrollable(container(cards).padding([0, 16])).height(Fill),
-        pager,
+        status_bar,
     ]
     .height(Fill)
     .into()
