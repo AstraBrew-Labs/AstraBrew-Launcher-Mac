@@ -566,7 +566,11 @@ impl VersionState {
                 }
             }
             VersionMessage::CloseReleaseLog => self.release_log_version = None,
-            VersionMessage::MarkdownLinkClicked(_uri) => {}
+            VersionMessage::MarkdownLinkClicked(uri) => {
+                if let Err(error) = super::markdown_doc::open_link(&uri) {
+                    self.notice = Some(TransientNotice::danger("notice.operation_failed", error));
+                }
+            }
             VersionMessage::InstallOnline(version) => self.begin_online_install(version),
             VersionMessage::InstallBranch(branch) => self.begin_branch_install(branch),
             VersionMessage::SwitchOnline(version) => {
@@ -915,7 +919,10 @@ fn online_instance_path() -> String {
 }
 
 /// 渲染版本管理页面。
-pub fn versions_view(state: &VersionState) -> Element<'_, VersionMessage> {
+pub fn versions_view<'a>(
+    state: &'a VersionState,
+    theme: &Theme,
+) -> Element<'a, VersionMessage> {
     let tabs = row![
         tab_button(
             "本地实例",
@@ -965,7 +972,7 @@ pub fn versions_view(state: &VersionState) -> Element<'_, VersionMessage> {
                 .into();
         }
         if state.release_log_version.is_some() {
-            page = stack![page, release_log_modal(state)]
+            page = stack![page, release_log_modal(state, theme)]
                 .width(Fill)
                 .height(Fill)
                 .into();
@@ -1729,17 +1736,24 @@ fn selector_row_style(theme: &Theme, active: bool, status: button::Status) -> bu
     }
 }
 
-fn release_log_modal(state: &VersionState) -> Element<'_, VersionMessage> {
+fn release_log_modal<'a>(
+    state: &'a VersionState,
+    theme: &Theme,
+) -> Element<'a, VersionMessage> {
     let title = state.release_log_version.as_deref().unwrap_or("版本");
-    let body: Element<'_, VersionMessage> = if state.markdown_items.is_empty() {
+    let body: Element<'a, VersionMessage> = if state.markdown_items.is_empty() {
         text("该版本没有更新日志。")
             .size(12)
             .font(crate::core::typography::regular())
             .into()
     } else {
-        markdown::view(&state.markdown_items, Theme::Dark)
-            .map(VersionMessage::MarkdownLinkClicked)
-            .into()
+        // 更新日志的正文比对话气泡大一号，便于阅读。
+        super::markdown_doc::view(
+            &state.markdown_items,
+            theme,
+            13.0,
+            VersionMessage::MarkdownLinkClicked,
+        )
     };
     let panel = container(
         column![

@@ -145,6 +145,19 @@ pub fn inside_online(path: &Path, online: &Path) -> bool {
         .any(|ancestor| same_directory(ancestor, online))
 }
 
+/// 实例本体是否已经从磁盘上消失：目录或 `package.json` 明确「找不到」。
+///
+/// 只有 `NotFound` 才判定为已删除；权限不足、IO 错误一律返回 false，
+/// 避免把暂时读不到的实例从列表里误删。`package.json` 被单独删除时目录里已经没有
+/// 酒馆实例，同样视为失效。
+pub fn instance_missing(root: &Path) -> bool {
+    not_found(&root.join("package.json")) || not_found(root)
+}
+
+fn not_found(path: &Path) -> bool {
+    matches!(fs::metadata(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
+}
+
 pub fn inspect_package(package: &Path, online: &Path) -> Result<LocalInstance, LocalError> {
     let invalid = || {
         LocalError::new("选择的不是酒馆实例，请重新选择。", "")
@@ -360,6 +373,20 @@ mod tests {
         fs::write(&path, "{").unwrap();
         assert!(load(&path, &fixture.0.join("online")).is_err());
     }
+    #[test]
+    fn missing_instance_is_detected_only_when_files_are_gone() {
+        let fixture = Fixture::new();
+        let root = fixture.0.join("instance");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("package.json"), r#"{"name":"sillytavern"}"#).unwrap();
+        assert!(!instance_missing(&root));
+        fs::remove_file(root.join("package.json")).unwrap();
+        assert!(instance_missing(&root), "清单被删除后应判定为失效实例");
+        fs::write(root.join("package.json"), r#"{"name":"sillytavern"}"#).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert!(instance_missing(&root), "目录被删除后应判定为失效实例");
+    }
+
     #[test]
     fn failed_atomic_save_preserves_existing_file() {
         let fixture = Fixture::new();

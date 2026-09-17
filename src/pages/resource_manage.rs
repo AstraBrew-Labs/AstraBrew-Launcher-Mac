@@ -9,8 +9,8 @@ use std::process::Command;
 use std::time::UNIX_EPOCH;
 
 use iced::widget::{
-    button, column, container, image, mouse_area, row, scrollable, space, stack, text_input,
-    tooltip,
+    button, column, container, image, markdown, mouse_area, row, scrollable, space, stack,
+    text_input, tooltip,
 };
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Task, Theme};
 use lucide_icons::Icon;
@@ -153,6 +153,11 @@ pub struct ChatMessage {
     pub is_user: bool,
     pub send_date: String,
     pub content: String,
+    /// 加载时解析一次的 Markdown 结构。
+    ///
+    /// 对话预览最多展示 [`CHAT_MESSAGE_LIMIT`] 条消息，如果每帧都重新解析正文，
+    /// 会把 pulldown-cmark 的开销压到渲染路径上，因此这里预解析并随消息一起持有。
+    markdown: Vec<markdown::Item>,
 }
 
 pub(crate) use crate::core::library::PresetPrompt;
@@ -213,6 +218,8 @@ pub enum ResourceManageMessage {
     DeleteModalInteract,
     OpenWorkbench,
     Workbench(WorkbenchMessage),
+    /// 点击对话预览里 Markdown 渲染出的链接。
+    OpenMarkdownLink(String),
 }
 
 #[derive(Debug)]
@@ -435,6 +442,10 @@ impl ResourceManageState {
                     self.restore_selection_path();
                 }
                 task.map(ResourceManageMessage::Workbench)
+            }
+            ResourceManageMessage::OpenMarkdownLink(url) => {
+                self.open_external_link(&url);
+                Task::none()
             }
         };
 
@@ -718,6 +729,13 @@ impl ResourceManageState {
                     format!("无法打开资源目录：{error}"),
                 ));
             }
+        }
+    }
+
+    /// 用系统默认浏览器打开对话预览中的链接。
+    fn open_external_link(&mut self, url: &str) {
+        if let Err(error) = super::markdown_doc::open_link(url) {
+            self.notice = Some(TransientNotice::danger("notice.operation_failed", error));
         }
     }
 
@@ -1064,6 +1082,8 @@ fn load_chat_messages(path: &Path) -> Vec<ChatMessage> {
                 .or_else(|| value.get("message"))
                 .and_then(|value| value.as_str())?
                 .to_owned();
+            // 消息正文在加载阶段解析成 Markdown 结构，供对话预览直接渲染。
+            let markdown = markdown::parse(&content).collect();
             Some(ChatMessage {
                 name: string_value(&value, "name"),
                 is_user: value
@@ -1072,6 +1092,7 @@ fn load_chat_messages(path: &Path) -> Vec<ChatMessage> {
                     .unwrap_or(false),
                 send_date: string_value(&value, "send_date"),
                 content,
+                markdown,
             })
         })
         .collect::<Vec<_>>();
@@ -1179,7 +1200,10 @@ fn truncate(value: &str, length: usize) -> String {
     }
 }
 
-pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
+pub fn resource_manage_view<'a>(
+    state: &'a ResourceManageState,
+    theme: &Theme,
+) -> Element<'a, ResourceManageMessage> {
     // 资源管理页头部只保留标题，避免重复展示全局数据路径卡片。
     let header = row![column![
         row![
@@ -1370,7 +1394,7 @@ pub fn resource_manage_view(state: &ResourceManageState) -> Element<'_, Resource
             "请先在版本管理中切换到一个本地 SillyTavern 实例，或在设置中启用全局数据。",
         )
     } else {
-        row![resource_list(state), resource_detail(state)]
+        row![resource_list(state), resource_detail(state, theme)]
             .spacing(14)
             .height(Fill)
             .into()
@@ -2170,7 +2194,10 @@ fn list_scroll<'a>(
         .into()
 }
 
-fn resource_detail(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
+fn resource_detail<'a>(
+    state: &'a ResourceManageState,
+    theme: &Theme,
+) -> Element<'a, ResourceManageMessage> {
     let content = match state.tab {
         ResourceTab::Characters => state
             .selected_character
@@ -2185,7 +2212,7 @@ fn resource_detail(state: &ResourceManageState) -> Element<'_, ResourceManageMes
                 group
                     .files
                     .get(file)
-                    .map(|item| chat_detail(group, item, state))
+                    .map(|item| chat_detail(group, item, state, theme))
             })
         }),
         ResourceTab::Presets => state
@@ -2414,6 +2441,7 @@ fn chat_detail<'a>(
     group: &'a ChatGroup,
     file: &'a ChatFileInfo,
     state: &'a ResourceManageState,
+    theme: &Theme,
 ) -> Element<'a, ResourceManageMessage> {
     let mut messages = column![
         row![
@@ -2453,7 +2481,7 @@ fn chat_detail<'a>(
         messages = messages.push(inline_empty("此文件没有可识别的聊天消息。"));
     } else {
         for message in &state.chat_messages {
-            messages = messages.push(chat_bubble(message));
+            messages = messages.push(chat_bubble(message, theme));
         }
     }
     column![
@@ -2847,11 +2875,27 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
     .into()
 }
 
-fn chat_bubble(message: &ChatMessage) -> Element<'_, ResourceManageMessage> {
+fn chat_bubble<'a>(message: &'a ChatMessage, theme: &Theme) -> Element<'a, ResourceManageMessage> {
     let accent = if message.is_user {
         BLUE_600
     } else {
         Color::from_rgb8(142, 68, 220)
+    };
+    // 解析结果为空（例如整条消息只有被忽略的 HTML 标签）时退回原文，避免气泡完全空白。
+    let body: Element<'a, ResourceManageMessage> = if message.markdown.is_empty() {
+        text(&message.content)
+            .size(12)
+            .font(crate::core::typography::regular())
+            .style(crate::theme::text_style)
+            .into()
+    } else {
+        // 正文字号与气泡内的原纯文本保持一致（12px）。
+        super::markdown_doc::view(
+            &message.markdown,
+            theme,
+            12.0,
+            ResourceManageMessage::OpenMarkdownLink,
+        )
     };
     container(
         column![
@@ -2881,10 +2925,7 @@ fn chat_bubble(message: &ChatMessage) -> Element<'_, ResourceManageMessage> {
             ]
             .spacing(6)
             .align_y(Alignment::Center),
-            text(&message.content)
-                .size(12)
-                .font(crate::core::typography::regular())
-                .style(crate::theme::text_style),
+            body,
         ]
         .spacing(6),
     )

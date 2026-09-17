@@ -779,7 +779,8 @@ impl Launcher {
                 }
                 if page == Page::Extensions {
                     self.sync_extension_target();
-                    self.start_extension_scan();
+                    // 进入扩展页属于自动刷新，静默扫描，不弹提示。
+                    self.start_extension_scan(false);
                 }
                 if page == Page::Resources {
                     self.resources.configure(&self.settings, &self.versions);
@@ -2814,7 +2815,8 @@ impl Launcher {
                 Task::none()
             }
             ExtensionAction::Refresh => {
-                self.start_extension_scan();
+                // 只有用户点击刷新按钮才需要扫描结果提示。
+                self.start_extension_scan(true);
                 Task::none()
             }
             ExtensionAction::CancelTask => {
@@ -2965,14 +2967,18 @@ impl Launcher {
         });
     }
 
-    fn start_extension_scan(&mut self) {
+    /// 启动一次扩展扫描。
+    ///
+    /// `notify` 为 true 时扫描结束后展示「已刷新」提示；进入页面与操作后的
+    /// 自动重扫都传 false，让自动刷新保持静默。
+    fn start_extension_scan(&mut self, notify: bool) {
         if self.extension_task_receiver.is_some() {
             return;
         }
         let Some(instance_path) = self.extensions.target_path.clone() else {
             return;
         };
-        self.extensions.begin_scan();
+        self.extensions.begin_scan(notify);
         self.launch_extension_worker(move |sender, _cancel| {
             let result = crate::core::extensions::scan_extensions(&instance_path);
             let _ = sender.send(ExtensionEvent::ScanFinished(result));
@@ -3050,7 +3056,8 @@ impl Launcher {
                 ));
             }
             if refresh {
-                self.start_extension_scan();
+                // 操作完成后的重扫属于自动刷新，静默更新列表。
+                self.start_extension_scan(false);
             }
         } else {
             self.extension_task_receiver = Some(receiver);
@@ -3263,10 +3270,13 @@ impl Launcher {
 
     /// 主界面视图：左侧导航栏 + 右侧内容区。
     fn main_view(&self) -> Element<'_, Message> {
+        // 主题只在少数需要具体颜色的控件里用到（例如对话预览的 Markdown），因此按帧求值传入。
+        let theme = self.theme();
         row![
             sidebar::sidebar(self.page, &self.versions),
             pages::page_view(
                 self.page,
+                &theme,
                 &self.settings,
                 &self.tavern,
                 &self.versions,

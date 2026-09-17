@@ -32,6 +32,7 @@ pub fn translate(key: &'static str) -> &'static str {
         "webview.download.reveal" => "在访达中显示",
         "webview.download.reveal_failed" => "无法在访达中显示文件",
         "notice.refresh_complete" => "刷新完成",
+        "notice.local_instances_removed" => "已移除失效的本地实例",
         "notice.refresh_warning" => "刷新未完全成功",
         "notice.operation_complete" => "操作完成",
         "notice.operation_failed" => "操作失败",

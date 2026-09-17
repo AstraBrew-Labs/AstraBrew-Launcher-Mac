@@ -15,6 +15,7 @@ use crate::lang::text;
 use crate::theme::button_style;
 pub(crate) mod console;
 pub(crate) mod extensions;
+pub(crate) mod markdown_doc;
 pub(crate) mod notice;
 pub(crate) mod resource_manage;
 pub(crate) mod settings;
@@ -94,6 +95,7 @@ impl Page {
 /// 设置页和酒馆配置页分发到真实视图，其余页面居中显示开发中说明。
 pub fn page_view<'a>(
     page: Page,
+    theme: &Theme,
     settings: &'a SettingsState,
     tavern: &'a TavernState,
     versions: &'a VersionState,
@@ -112,9 +114,9 @@ pub fn page_view<'a>(
         ),
         Page::Settings => settings_view(settings, console.status.is_transitioning() || console.is_running()),
         Page::TavernConfig => tavern_view(tavern).map(Message::Tavern),
-        Page::Version => versions_view(versions).map(Message::Version),
+        Page::Version => versions_view(versions, theme).map(Message::Version),
         Page::Extensions => extensions_view(extensions).map(Message::Extensions),
-        Page::Resources => resource_manage_view(resources).map(Message::Resources),
+        Page::Resources => resource_manage_view(resources, theme).map(Message::Resources),
         Page::Console => console_view(console),
     }
 }

@@ -14,6 +14,7 @@ use crate::core::local_instances::{
     self as service, DependencyStatus, LocalError, LocalErrorKind, LocalInstance, dependencies,
     find_scan, scan::ScanEvent,
 };
+use crate::pages::notice::TransientNotice;
 use crate::pages::versions::{
     VersionMessage, VersionSource,
     local::{LocalInstallState, ScanPhase, ScanState, append_log},
@@ -319,6 +320,54 @@ impl Launcher {
         self.versions.local.report(&error);
     }
 
+    /// 移除磁盘上已经不存在的本地实例，并用全局提醒告知用户。
+    ///
+    /// 只在明确「找不到」时移除（见 `service::instance_missing`），正在安装依赖的实例保持
+    /// 不动，避免打断正在写入该目录的安装流程；当前实例被删除时一并取消选择，
+    /// 否则启动与资源绑定会一直指向一个空目录。
+    fn prune_missing_local_instances(&mut self) {
+        let removed: Vec<String> = self
+            .versions
+            .local_instances
+            .iter()
+            .filter(|instance| {
+                instance.dependencies != DependencyStatus::Installing
+                    && service::instance_missing(Path::new(&instance.path))
+            })
+            .map(|instance| instance.path.clone())
+            .collect();
+        if removed.is_empty() {
+            return;
+        }
+        self.versions
+            .local_instances
+            .retain(|instance| !removed.contains(&instance.path));
+        for path in &removed {
+            self.local_runtime.check_ids.remove(path);
+        }
+        if let Some((pending, _)) = self.local_runtime.switch_intent.as_ref()
+            && removed.contains(pending)
+        {
+            self.local_runtime.switch_intent = None;
+        }
+        let cleared_current = self.versions.current_source == Some(VersionSource::Local)
+            && self
+                .versions
+                .current_path
+                .as_deref()
+                .is_some_and(|path| removed.iter().any(|item| item == path));
+        if cleared_current {
+            self.versions.current_source = None;
+            self.versions.current_path = None;
+            self.versions.current_version = None;
+        }
+        self.queue_local_save();
+        self.push_global_notice(TransientNotice::warning(
+            "notice.local_instances_removed",
+            format_removed_instances(&removed, cleared_current),
+        ));
+    }
+
     fn add_local_instance(&mut self, instance: LocalInstance) -> bool {
         if self.versions.local_instances.iter().any(|other| {
             other.path == instance.path
@@ -492,6 +541,8 @@ impl Launcher {
                     match result {
                         Ok(instances) => {
                             self.versions.local_instances = instances;
+                            // 列表里的实例可能已经在启动器之外被删除或移动。
+                            self.prune_missing_local_instances();
                             let paths: Vec<_> = self
                                 .versions
                                 .local_instances
@@ -582,6 +633,8 @@ impl Launcher {
                                     "",
                                     report.partial,
                                 );
+                                // 扫描是用户主动刷新列表的时机，顺手清理已经被删除的实例。
+                                self.prune_missing_local_instances();
                             }
                             Err(error) => self.handle_scan_failure(error),
                         },
@@ -696,6 +749,53 @@ impl Launcher {
     }
 }
 
+/// 失效实例的提醒文案。
+///
+/// 路径与语言无关，句子按当前界面语言生成，避免英文界面出现中文整句。
+fn format_removed_instances(paths: &[String], cleared_current: bool) -> String {
+    // Toast 宽度固定，路径太多时只列前几条。
+    const MAX_LISTED: usize = 3;
+    match crate::lang::current_language() {
+        crate::lang::Language::Chinese => {
+            let listed = paths
+                .iter()
+                .take(MAX_LISTED)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("、");
+            let more = if paths.len() > MAX_LISTED {
+                format!("…（共 {} 个）", paths.len())
+            } else {
+                String::new()
+            };
+            let mut text = format!("实例目录已不存在，已从列表移除：{listed}{more}");
+            if cleared_current {
+                text.push_str("当前使用的实例也已取消选择。");
+            }
+            text
+        }
+        crate::lang::Language::English => {
+            let listed = paths
+                .iter()
+                .take(MAX_LISTED)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = if paths.len() > MAX_LISTED {
+                format!(" … ({} in total)", paths.len())
+            } else {
+                String::new()
+            };
+            let prefix = "Instance folders no longer exist and were removed:";
+            let mut text = format!("{prefix} {listed}{more}");
+            if cleared_current {
+                text.push_str(" The current instance was cleared as well.");
+            }
+            text
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,6 +877,74 @@ mod tests {
         app.local_runtime.tx.send(event).unwrap();
         app.poll_local_instances();
     }
+    /// 建立带 package.json 的临时实例目录，用于区分「存在」与「已删除」。
+    fn present_instance_dir() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "astra-local-prune-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"name":"sillytavern"}"#).unwrap();
+        root
+    }
+
+    #[test]
+    fn missing_instances_are_pruned_and_reported() {
+        let mut app = launcher();
+        let present = present_instance_dir();
+        app.versions.local_instances = vec![
+            instance("/astrabrew-test-missing-instance", DependencyStatus::Ready),
+            instance(&present.to_string_lossy(), DependencyStatus::Ready),
+        ];
+        app.prune_missing_local_instances();
+        assert_eq!(
+            app.versions.local_instances.len(),
+            1,
+            "不存在的实例应被移除"
+        );
+        assert_eq!(
+            app.versions.local_instances[0].path,
+            present.to_string_lossy()
+        );
+        assert_eq!(app.global_notices.len(), 1, "移除失效实例后应弹出全局提醒");
+        let _ = std::fs::remove_dir_all(&present);
+    }
+
+    #[test]
+    fn pruning_the_current_instance_clears_the_selection() {
+        let mut app = launcher();
+        let missing = "/astrabrew-test-missing-current";
+        app.versions.local_instances = vec![instance(missing, DependencyStatus::Ready)];
+        app.versions.current_source = Some(VersionSource::Local);
+        app.versions.current_path = Some(missing.into());
+        app.versions.current_version = Some("1".into());
+        app.prune_missing_local_instances();
+        assert!(app.versions.local_instances.is_empty());
+        assert!(
+            app.versions.current_path.is_none(),
+            "当前实例消失后应取消选择"
+        );
+        assert!(app.versions.current_source.is_none());
+        assert!(app.global_notices.len() == 1);
+    }
+
+    #[test]
+    fn installing_instances_are_never_pruned() {
+        let mut app = launcher();
+        app.versions.local_instances = vec![instance(
+            "/astrabrew-test-installing",
+            DependencyStatus::Installing,
+        )];
+        app.prune_missing_local_instances();
+        assert_eq!(
+            app.versions.local_instances.len(),
+            1,
+            "安装中的实例不应被移除"
+        );
+        assert!(app.global_notices.is_empty());
+    }
+
     #[test]
     fn cancelled_picker_and_invalid_import_do_not_add_instances() {
         let mut app = launcher();

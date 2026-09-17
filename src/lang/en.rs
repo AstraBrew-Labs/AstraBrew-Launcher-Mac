@@ -392,6 +392,7 @@ fn translate_key(key: &str) -> Option<&'static str> {
         "webview.download.reveal" => "Show in Finder",
         "webview.download.reveal_failed" => "Could not reveal the file in Finder",
         "notice.refresh_complete" => "Refresh Complete",
+        "notice.local_instances_removed" => "Removed Missing Local Instances",
         "notice.refresh_warning" => "Refresh Partially Failed",
         "notice.operation_complete" => "Operation Complete",
         "notice.operation_failed" => "Operation Failed",

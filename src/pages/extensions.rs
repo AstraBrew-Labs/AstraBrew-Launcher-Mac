@@ -100,6 +100,11 @@ pub struct ExtensionsState {
     error: Option<ExtensionError>,
     task_running: bool,
     confirmation: Option<PendingConfirmation>,
+    /// 本次扫描结束后是否展示「已刷新」提示。
+    ///
+    /// 进入扩展页、安装/删除等操作后的自动重扫都走这里置 false 的静默路径，
+    /// 只有用户点击刷新按钮才会弹出提示，避免自动刷新和操作提示反复打断浏览。
+    scan_notify: bool,
 }
 
 impl Default for ExtensionsState {
@@ -116,6 +121,7 @@ impl Default for ExtensionsState {
             error: None,
             task_running: false,
             confirmation: None,
+            scan_notify: false,
         }
     }
 }
@@ -207,6 +213,7 @@ impl ExtensionsState {
             self.status = LoadStatus::Idle;
             self.error = None;
             self.notice = None;
+            self.scan_notify = false;
             self.install = InstallDialogState::default();
             self.confirmation = None;
         } else {
@@ -216,11 +223,16 @@ impl ExtensionsState {
         changed
     }
 
-    pub fn begin_scan(&mut self) {
+    /// 标记一次扩展扫描开始。
+    ///
+    /// `notify` 决定扫描结束后是否展示「已刷新」提示：只有用户主动刷新才传 true，
+    /// 进入页面、操作完成后的自动重扫一律静默。
+    pub fn begin_scan(&mut self, notify: bool) {
         if self.target_path.is_some() {
             self.status = LoadStatus::Loading;
             self.error = None;
             self.task_running = true;
+            self.scan_notify = notify;
         }
     }
 
@@ -307,7 +319,7 @@ impl ExtensionsState {
             }
             ExtensionsMessage::Refresh => {
                 if self.target_path.is_some() && !self.task_running {
-                    self.begin_scan();
+                    self.begin_scan(true);
                     ExtensionAction::Refresh
                 } else {
                     ExtensionAction::None
@@ -564,12 +576,16 @@ impl ExtensionsState {
         let refresh = match event {
             ExtensionEvent::ScanFinished(result) => {
                 self.status = if result.is_ok() { LoadStatus::Ready } else { LoadStatus::Error };
+                // 自动刷新不弹提示，只有用户主动刷新才展示扫描结果。
+                let notify = std::mem::take(&mut self.scan_notify);
                 match result {
                     Ok(extensions) => {
-                        self.notice = Some(TransientNotice::info(
-                            "notice.refresh_complete",
-                            format_count_notice(extensions.len()),
-                        ));
+                        if notify {
+                            self.notice = Some(TransientNotice::info(
+                                "notice.refresh_complete",
+                                format_count_notice(extensions.len()),
+                            ));
+                        }
                         self.extensions = extensions;
                         self.error = None;
                     }
@@ -1655,3 +1671,44 @@ fn switch_thumb(_theme: &Theme) -> container::Style {
     container::Style { background: Some(Background::Color(WHITE)), border: Border { radius: 8.0.into(), ..Border::default() }, ..container::Style::default() }
 }
 fn switch_button_style(_theme: &Theme, _status: button::Status) -> button::Style { button::Style::default() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bound_state() -> ExtensionsState {
+        let mut state = ExtensionsState::default();
+        state.target_path = Some(PathBuf::from("/tmp/astrabrew-extensions-test"));
+        state
+    }
+
+    #[test]
+    fn automatic_scan_finish_stays_silent() {
+        let mut state = bound_state();
+        state.begin_scan(false);
+        let refresh = state.apply_event(ExtensionEvent::ScanFinished(Ok(Vec::new())));
+        assert!(state.notice.is_none(), "自动刷新不应弹出扫描完成提示");
+        assert_eq!(state.status, LoadStatus::Ready);
+        assert!(!refresh, "扫描结束不应再触发重扫");
+    }
+
+    #[test]
+    fn manual_scan_finish_reports_result() {
+        let mut state = bound_state();
+        state.begin_scan(true);
+        state.apply_event(ExtensionEvent::ScanFinished(Ok(Vec::new())));
+        assert!(state.notice.is_some(), "手动刷新应弹出扫描完成提示");
+    }
+
+    #[test]
+    fn scan_notify_flag_does_not_leak_to_next_scan() {
+        let mut state = bound_state();
+        state.begin_scan(true);
+        state.apply_event(ExtensionEvent::ScanFinished(Ok(Vec::new())));
+        state.take_notice();
+        // 手动刷新之后的自动重扫必须回到静默。
+        state.begin_scan(false);
+        state.apply_event(ExtensionEvent::ScanFinished(Ok(Vec::new())));
+        assert!(state.notice.is_none(), "提示标志不得沿用到下一次自动扫描");
+    }
+}
