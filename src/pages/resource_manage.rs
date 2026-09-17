@@ -209,8 +209,8 @@ pub enum ResourceManageMessage {
     SelectPreset(usize),
     PresetsLoaded(u64, Result<Vec<PresetInfo>, String>),
     PresetDetailLoaded(u64, usize, Result<Vec<PresetPrompt>, String>),
-    PresetDetailPreviousPage,
-    PresetDetailNextPage,
+    /// 跳转到预设提示词结构的指定页；页索引从 0 开始。
+    PresetDetailGoToPage(usize),
     RequestDelete,
     ConfirmDelete,
     CancelDelete,
@@ -404,18 +404,12 @@ impl ResourceManageState {
                 self.apply_preset_detail_loaded(request_id, index, result);
                 Task::none()
             }
-            ResourceManageMessage::PresetDetailPreviousPage => {
-                self.preset_detail_page = self.preset_detail_page.saturating_sub(1);
-                Task::none()
-            }
-            ResourceManageMessage::PresetDetailNextPage => {
+            ResourceManageMessage::PresetDetailGoToPage(page) => {
                 if let Some(index) = self.selected_preset
                     && let Some(preset) = self.presets.get(index)
                 {
                     let page_count = preset.prompt_count.div_ceil(PRESET_PROMPTS_PER_PAGE);
-                    if self.preset_detail_page + 1 < page_count {
-                        self.preset_detail_page += 1;
-                    }
+                    self.preset_detail_page = page.min(page_count.saturating_sub(1));
                 }
                 Task::none()
             }
@@ -2647,25 +2641,7 @@ fn preset_detail(item: &PresetInfo, detail_page: usize) -> Element<'_, ResourceM
         content = content.push(inline_empty("这个预设中没有可识别的 prompts 数组。"));
     } else {
         if page_count > 1 {
-            content = content.push(
-                row![
-                    button(text("上一页").size(12))
-                        .on_press(ResourceManageMessage::PresetDetailPreviousPage)
-                        .padding([6, 10])
-                        .style(button_style(ButtonVariant::Secondary)),
-                    space::horizontal(),
-                    text(preset_page_label(current_page + 1, page_count))
-                        .size(12)
-                        .font(crate::core::typography::medium())
-                        .style(crate::theme::muted_text_style),
-                    space::horizontal(),
-                    button(text("下一页").size(12))
-                        .on_press(ResourceManageMessage::PresetDetailNextPage)
-                        .padding([6, 10])
-                        .style(button_style(ButtonVariant::Secondary)),
-                ]
-                .align_y(Alignment::Center),
-            );
+            content = content.push(preset_pagination(current_page, page_count));
         }
 
         let start = current_page * PRESET_PROMPTS_PER_PAGE;
@@ -2686,11 +2662,126 @@ fn preset_detail(item: &PresetInfo, detail_page: usize) -> Element<'_, ResourceM
     .into()
 }
 
-fn preset_page_label(page: usize, total: usize) -> String {
-    match crate::lang::current_language() {
-        crate::lang::Language::Chinese => format!("第 {page} / {total} 页"),
-        crate::lang::Language::English => format!("Page {page} / {total}"),
+/// 提示词结构分页栏的一项。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PresetPageItem {
+    Page(usize),
+    Ellipsis,
+}
+
+/// 分页栏最多直接铺开的页数；超过后改为「首页 … 当前页附近 … 末页」。
+const PRESET_PAGE_WINDOW_LIMIT: usize = 7;
+
+/// 页码按钮尺寸，与工作台分页控件保持同一档。
+const PRESET_PAGE_BUTTON_SIZE: f32 = 30.0;
+
+/// 提示词结构分页栏：可直接跳到任意页，两端保留上一页 / 下一页。
+///
+/// `current_page` 使用从 0 开始的页索引，对外展示为从 1 开始的页码。
+fn preset_pagination(current_page: usize, page_count: usize) -> Element<'_, ResourceManageMessage> {
+    let current = (current_page + 1).min(page_count).max(1);
+    let mut items = vec![preset_page_step(
+        Icon::ChevronLeft,
+        "上一页",
+        (current > 1).then(|| ResourceManageMessage::PresetDetailGoToPage(current - 2)),
+    )];
+    for item in preset_page_items(current, page_count) {
+        items.push(match item {
+            PresetPageItem::Page(page) => preset_page_number(page, page == current),
+            PresetPageItem::Ellipsis => container(crate::theme::muted_icon(Icon::Ellipsis, 15))
+                .width(PRESET_PAGE_BUTTON_SIZE)
+                .height(PRESET_PAGE_BUTTON_SIZE)
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center)
+                .into(),
+        });
     }
+    items.push(preset_page_step(
+        Icon::ChevronRight,
+        "下一页",
+        (current < page_count).then(|| ResourceManageMessage::PresetDetailGoToPage(current)),
+    ));
+    container(row(items).spacing(4).align_y(Alignment::Center))
+        .width(Fill)
+        .align_x(Alignment::Center)
+        .into()
+}
+
+/// 页码按钮：当前页用主色实心且不可点击，其余为可跳转的描边页码。
+fn preset_page_number(page: usize, active: bool) -> Element<'static, ResourceManageMessage> {
+    let label = container(
+        text(page.to_string())
+            .size(12)
+            .font(crate::core::typography::medium()),
+    )
+    .width(Fill)
+    .height(Fill)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center);
+    let control = button(label)
+        .width(PRESET_PAGE_BUTTON_SIZE)
+        .height(PRESET_PAGE_BUTTON_SIZE)
+        .padding(0)
+        .style(button_style(if active {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Outline
+        }));
+    if active {
+        control.into()
+    } else {
+        control
+            .on_press(ResourceManageMessage::PresetDetailGoToPage(page - 1))
+            .into()
+    }
+}
+
+/// 上一页 / 下一页按钮；`target` 为 `None` 时按钮自动进入禁用态。
+fn preset_page_step(
+    icon: Icon,
+    label: &'static str,
+    target: Option<ResourceManageMessage>,
+) -> Element<'static, ResourceManageMessage> {
+    let content = button(
+        row![
+            icons::icon(
+                icon,
+                14,
+                if target.is_some() { BLUE_600 } else { INK_MUTED },
+            ),
+            text(label).size(12).font(crate::core::typography::medium()),
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .padding([6, 10])
+    .style(button_style(ButtonVariant::Outline));
+    match target {
+        Some(message) => content.on_press(message).into(),
+        None => content.into(),
+    }
+}
+
+/// 生成分页页码序列；页数超过窗口上限时，首尾各固定一页并用省略号连接当前页附近。
+fn preset_page_items(current: usize, page_count: usize) -> Vec<PresetPageItem> {
+    let total = page_count.max(1);
+    let current = current.clamp(1, total);
+    if total <= PRESET_PAGE_WINDOW_LIMIT {
+        return (1..=total).map(PresetPageItem::Page).collect();
+    }
+
+    let mut items = vec![PresetPageItem::Page(1)];
+    if current > 3 {
+        items.push(PresetPageItem::Ellipsis);
+    }
+    let start = current.saturating_sub(1).max(2);
+    let end = current.saturating_add(1).min(total - 1);
+    items.extend((start..=end).map(PresetPageItem::Page));
+    if current < total.saturating_sub(2) {
+        items.push(PresetPageItem::Ellipsis);
+    }
+    items.push(PresetPageItem::Page(total));
+    items
 }
 
 fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, ResourceManageMessage> {
