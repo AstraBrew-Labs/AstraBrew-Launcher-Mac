@@ -1,3 +1,5 @@
+use crate::lang::t;
+use crate::lang::tf;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -279,7 +281,7 @@ pub fn run_brew_install(
     let child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            send_failure(sender, format!("无法启动 brew install {package}：{error}"));
+            send_failure(sender, tf("env.brew_start_failed", &[("package", &package), ("error", &error)]));
             return;
         }
     };
@@ -395,7 +397,7 @@ fn run_logged_command(
     let status = match status {
         Ok(status) => status,
         Err(error) => {
-            send_failure(tx_final, format!("等待安装进程结束失败：{error}"));
+            send_failure(tx_final, tf("env.wait_install_failed", &[("error", &error)]));
             return;
         }
     };
@@ -416,10 +418,10 @@ fn run_logged_command(
         let code = status
             .code()
             .map(|code| code.to_string())
-            .unwrap_or_else(|| "未知".to_owned());
+            .unwrap_or_else(|| t("resources.unknown").to_owned());
         send_failure(
             tx_final,
-            format!("命令执行失败（退出码：{code}），请查看上方日志。"),
+            tf("env.command_failed", &[("code", &code)]),
         );
         return;
     }
@@ -433,7 +435,7 @@ fn run_logged_command(
     } else {
         send_failure(
             tx_final,
-            format!("命令已完成，但未检测到 {detect_target} 版本，请确认安装是否成功。"),
+            tf("env.command_done_not_detected", &[("target", &detect_target)]),
         );
     }
 }
@@ -508,7 +510,7 @@ pub fn run_npm_install_global(
         Err(error) => {
             send_failure(
                 sender,
-                format!("无法启动 npm install -g {package}：{error}"),
+                tf("env.npm_start_failed", &[("package", &package), ("error", &error)]),
             );
             return;
         }

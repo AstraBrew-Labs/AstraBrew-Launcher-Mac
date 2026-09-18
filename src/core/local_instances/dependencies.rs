@@ -53,17 +53,17 @@ pub fn capture(
             LocalError::new("environment.nodejs_required.error", "")
                 .with_kind(LocalErrorKind::MissingNodeJs)
         } else {
-            LocalError::new("无法启动本地实例任务。", error)
+            LocalError::new("local.task.start_failed", error)
         }
     })?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| LocalError::new("无法读取任务输出。", "stdout"))?;
+        .ok_or_else(|| LocalError::new("local.task.read_output_failed", "stdout"))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| LocalError::new("无法读取任务输出。", "stderr"))?;
+        .ok_or_else(|| LocalError::new("local.task.read_output_failed", "stderr"))?;
     let out = std::thread::spawn(move || read_pipe(stdout));
     let err = std::thread::spawn(move || read_pipe(stderr));
     let writer = input.and_then(|input| {
@@ -79,9 +79,9 @@ pub fn capture(
             let _ = child.wait();
             break Err(LocalError::new(
                 if cancel.load(Ordering::Relaxed) {
-                    "本地实例任务已取消。"
+                    "local.task.cancelled"
                 } else {
-                    "本地实例任务超时。"
+                    "local.task.timeout"
                 },
                 "",
             )
@@ -97,27 +97,27 @@ pub fn capture(
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                break Err(LocalError::new("无法读取任务输出。", e));
+                break Err(LocalError::new("local.task.read_output_failed", e));
             }
         }
     };
     let stdout = out
         .join()
-        .map_err(|_| LocalError::new("无法读取任务输出。", "stdout worker"))?
-        .map_err(|e| LocalError::new("无法读取任务输出。", e))?;
+        .map_err(|_| LocalError::new("local.task.read_output_failed", "stdout worker"))?
+        .map_err(|e| LocalError::new("local.task.read_output_failed", e))?;
     let stderr = err
         .join()
-        .map_err(|_| LocalError::new("无法读取任务输出。", "stderr worker"))?
-        .map_err(|e| LocalError::new("无法读取任务输出。", e))?;
+        .map_err(|_| LocalError::new("local.task.read_output_failed", "stderr worker"))?
+        .map_err(|e| LocalError::new("local.task.read_output_failed", e))?;
     if let Some(writer) = writer {
         writer
             .join()
-            .map_err(|_| LocalError::new("无法读取任务输出。", "stdin worker"))?
-            .map_err(|e| LocalError::new("无法读取任务输出。", e))?;
+            .map_err(|_| LocalError::new("local.task.read_output_failed", "stdin worker"))?
+            .map_err(|e| LocalError::new("local.task.read_output_failed", e))?;
     }
     let status = status?;
     if stdout.len() > LIMIT || stderr.len() > LIMIT {
-        return Err(LocalError::new("任务输出过大，无法确认结果。", ""));
+        return Err(LocalError::new("local.task.output_too_large", ""));
     }
     Ok(CommandOutput {
         status,
@@ -158,11 +158,11 @@ fn analyze_tree(tree: &Value, success: bool) -> Result<DependencyStatus, LocalEr
             .and_then(Value::as_str)
             .is_some_and(|name| name.eq_ignore_ascii_case("sillytavern"))
     {
-        return Err(LocalError::new("无法解析运行依赖检测结果。", tree));
+        return Err(LocalError::new("local.deps.parse_failed", tree));
     }
     if let Some(error) = tree.get("error") {
         if error.get("code").and_then(Value::as_str) != Some("ELSPROBLEMS") {
-            return Err(LocalError::new("运行依赖检测失败。", error));
+            return Err(LocalError::new("local.deps.check_failed", error));
         }
     }
     let mut problems = Vec::new();
@@ -174,7 +174,7 @@ fn analyze_tree(tree: &Value, success: bool) -> Result<DependencyStatus, LocalEr
         return Ok(DependencyStatus::Incomplete);
     }
     if problems.iter().any(|p| !p.starts_with("extraneous:")) || (!success && problems.is_empty()) {
-        return Err(LocalError::new("运行依赖检测失败。", problems.join("\n")));
+        return Err(LocalError::new("local.deps.check_failed", problems.join("\n")));
     }
     Ok(DependencyStatus::Ready)
 }
@@ -201,7 +201,7 @@ pub fn check(path: &Path, cancel: &AtomicBool) -> Result<DependencyStatus, Local
     let output = capture(command, None, Duration::from_secs(60), cancel)?;
     let tree: Value = serde_json::from_slice(&output.stdout).map_err(|error| {
         LocalError::new(
-            "无法解析运行依赖检测结果。",
+            "local.deps.parse_failed",
             format!("{error}\n{}", String::from_utf8_lossy(&output.stderr)),
         )
     })?;
@@ -221,10 +221,10 @@ pub fn install(
         let mut probe = node_command(tool);
         probe.arg("--version");
         let output = capture(probe, None, Duration::from_secs(15), cancel)
-            .map_err(|error| LocalError::new("请先安装可用的 Node.js 和 npm。", error.detail))?;
+            .map_err(|error| LocalError::new("local.deps.need_nodejs", error.detail))?;
         if !output.status.success() {
             return Err(LocalError::new(
-                "请先安装可用的 Node.js 和 npm。",
+                "local.deps.need_nodejs",
                 String::from_utf8_lossy(&output.stderr),
             ));
         }
@@ -236,10 +236,10 @@ pub fn install(
     }
     crate::core::network::configure_npm_proxy(&mut command, proxy_mode, proxy_host);
     crate::core::network::run_logged_command(command, cancel, log)
-        .map_err(|error| LocalError::new("安装依赖失败，请查看日志后重试。", error))?;
+        .map_err(|error| LocalError::new("local.deps.install_failed", error))?;
     let status = check(path, cancel)?;
     if status != DependencyStatus::Ready {
-        return Err(LocalError::new("安装已结束，但运行依赖仍不完整。", ""));
+        return Err(LocalError::new("local.deps.incomplete_after_install", ""));
     }
     Ok(status)
 }

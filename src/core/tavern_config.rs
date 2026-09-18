@@ -219,7 +219,7 @@ impl ConfigError {
             } else {
                 ErrorKind::Io
             },
-            "无法读写酒馆配置文件。",
+            "tavern.error.config_io",
             format!("{}: {error}", path.display()),
         )
     }
@@ -235,18 +235,18 @@ pub struct Snapshot {
 
 fn parse(text: &str) -> Result<(YamlFile, Mapping), ConfigError> {
     let file = YamlFile::from_str(text).map_err(|_| {
-        ConfigError::new(ErrorKind::Invalid, "配置 YAML 无效，请修复文件后重试。", "")
+        ConfigError::new(ErrorKind::Invalid, "tavern.error.yaml_invalid", "")
     })?;
     let docs: Vec<_> = file.documents().collect();
     if docs.len() != 1 {
         return Err(ConfigError::new(
             ErrorKind::Invalid,
-            "配置必须包含一个 YAML 映射文档。",
+            "tavern.error.not_mapping",
             "",
         ));
     }
     let root = docs[0].as_mapping().ok_or_else(|| {
-        ConfigError::new(ErrorKind::Invalid, "配置必须包含一个 YAML 映射文档。", "")
+        ConfigError::new(ErrorKind::Invalid, "tavern.error.not_mapping", "")
     })?;
     validate_keys(&YamlNode::Mapping(root.clone()))?;
     Ok((file, root))
@@ -258,13 +258,13 @@ fn validate_keys(node: &YamlNode) -> Result<(), ConfigError> {
             let key = key
                 .as_scalar()
                 .ok_or_else(|| {
-                    ConfigError::new(ErrorKind::Invalid, "配置键必须是文本且不能重复。", "")
+                    ConfigError::new(ErrorKind::Invalid, "tavern.error.key_must_be_text", "")
                 })?
                 .as_string();
             if !seen.insert(key) {
                 return Err(ConfigError::new(
                     ErrorKind::Invalid,
-                    "配置键必须是文本且不能重复。",
+                    "tavern.error.key_must_be_text",
                     "",
                 ));
             }
@@ -279,7 +279,7 @@ fn validate_keys(node: &YamlNode) -> Result<(), ConfigError> {
 }
 
 fn raw_value(node: &YamlNode) -> Result<Value, ConfigError> {
-    let error = || ConfigError::new(ErrorKind::Invalid, "此配置字段的 YAML 类型不受支持。", "");
+    let error = || ConfigError::new(ErrorKind::Invalid, "tavern.error.unsupported_yaml_type", "");
     match node {
         YamlNode::Scalar(scalar) => Ok(if scalar.is_null() {
             Value::Null
@@ -311,7 +311,7 @@ fn get_at(root: &Mapping, path: &str) -> Result<Option<YamlNode>, ConfigError> {
         } else {
             return Err(ConfigError::new(
                 ErrorKind::Invalid,
-                "配置字段的父级类型不正确。",
+                "tavern.error.parent_type_invalid",
                 path,
             ));
         };
@@ -365,7 +365,7 @@ fn value_node(value: &Value) -> Result<YamlNode, ConfigError> {
     let (_, mapping) = parse(&text)?;
     mapping
         .get("value")
-        .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "无法构造 YAML 配置值。", ""))
+        .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "tavern.error.build_value_failed", ""))
 }
 fn set_at(
     root: &Mapping,
@@ -403,16 +403,16 @@ fn set_at(
                 }
             }
             current = mapping.get(*part).ok_or_else(|| {
-                ConfigError::new(ErrorKind::Invalid, "无法构造 YAML 配置值。", field.path)
+                ConfigError::new(ErrorKind::Invalid, "tavern.error.build_value_failed", field.path)
             })?;
         } else if let Some(sequence) = current.as_sequence() {
             let index: usize = part.parse().map_err(|_| {
-                ConfigError::new(ErrorKind::Invalid, "配置字段的父级类型不正确。", field.path)
+                ConfigError::new(ErrorKind::Invalid, "tavern.error.parent_type_invalid", field.path)
             })?;
             if !last {
                 return Err(ConfigError::new(
                     ErrorKind::Invalid,
-                    "配置字段的父级类型不正确。",
+                    "tavern.error.parent_type_invalid",
                     field.path,
                 ));
             }
@@ -424,7 +424,7 @@ fn set_at(
         } else {
             return Err(ConfigError::new(
                 ErrorKind::Invalid,
-                "配置字段的父级类型不正确。",
+                "tavern.error.parent_type_invalid",
                 field.path,
             ));
         }
@@ -456,7 +456,7 @@ pub fn save(
     if disk.physical_path != base_path {
         return Err(ConfigError::new(
             ErrorKind::Changed,
-            "配置目标已变化，请重新加载。",
+            "tavern.error.target_changed",
             context.path.display(),
         ));
     }
@@ -465,7 +465,7 @@ pub fn save(
     let mut conflicts = Vec::new();
     for patch in patches {
         let field = schema::field(&patch.key)
-            .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "未知配置字段。", &patch.key))?;
+            .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "tavern.error.unknown_field", &patch.key))?;
         let current = disk.raw.get(&patch.key).cloned().flatten();
         if current != patch.expected && current.as_ref() != Some(&patch.value) {
             conflicts.push((patch.key.clone(), patch.revision));
@@ -509,7 +509,7 @@ fn check_unchanged(context: &Context, expected: &Snapshot) -> Result<(), ConfigE
     {
         return Err(ConfigError::new(
             ErrorKind::Changed,
-            "配置文件已被外部修改。",
+            "tavern.error.externally_modified",
             context.path.display(),
         ));
     }
@@ -577,21 +577,21 @@ pub fn template(
     }
     urls.push(url.into());
     let client = crate::core::network::build_client(&options.proxy_mode, &options.proxy_host)
-        .map_err(|_| ConfigError::new(ErrorKind::Template, "无法创建配置模板下载请求。", ""))?;
+        .map_err(|_| ConfigError::new(ErrorKind::Template, "tavern.error.template_request", ""))?;
     for url in urls {
         let result = (|| -> Result<String, ConfigError> {
             let mut response = client
                 .get(url)
                 .send()
                 .and_then(reqwest::blocking::Response::error_for_status)
-                .map_err(|_| ConfigError::new(ErrorKind::Template, "下载配置模板失败。", ""))?;
+                .map_err(|_| ConfigError::new(ErrorKind::Template, "tavern.error.template_download", ""))?;
             let total = response.content_length();
             let mut bytes = Vec::new();
             let mut buffer = [0; 8192];
             loop {
                 let n = response
                     .read(&mut buffer)
-                    .map_err(|_| ConfigError::new(ErrorKind::Template, "下载配置模板失败。", ""))?;
+                    .map_err(|_| ConfigError::new(ErrorKind::Template, "tavern.error.template_download", ""))?;
                 if n == 0 {
                     break;
                 }
@@ -599,14 +599,14 @@ pub fn template(
                 if bytes.len() > 8 * 1024 * 1024 {
                     return Err(ConfigError::new(
                         ErrorKind::Template,
-                        "配置模板下载内容异常。",
+                        "tavern.error.template_content_invalid",
                         "",
                     ));
                 }
                 progress(bytes.len() as u64, total);
             }
             let text = String::from_utf8(bytes)
-                .map_err(|_| ConfigError::new(ErrorKind::Template, "配置模板下载内容异常。", ""))?;
+                .map_err(|_| ConfigError::new(ErrorKind::Template, "tavern.error.template_content_invalid", ""))?;
             snapshot(text.clone(), cache.clone(), defaults)?;
             Ok(text)
         })();
@@ -618,7 +618,7 @@ pub fn template(
     }
     Err(ConfigError::new(
         ErrorKind::Template,
-        "所有配置模板下载地址均失败。",
+        "tavern.error.template_all_failed",
         "",
     ))
 }
@@ -627,7 +627,7 @@ pub fn template(
 fn create_new(path: &Path, text: &str) -> Result<(), ConfigError> {
     let parent = path
         .parent()
-        .ok_or_else(|| ConfigError::new(ErrorKind::Io, "配置目标路径无效。", ""))?;
+        .ok_or_else(|| ConfigError::new(ErrorKind::Io, "tavern.error.target_path_invalid", ""))?;
     fs::create_dir_all(parent).map_err(|e| ConfigError::io(parent, e))?;
     let temp = temporary(path, "creating");
     let result = (|| {
@@ -644,7 +644,7 @@ fn create_new(path: &Path, text: &str) -> Result<(), ConfigError> {
             if error.kind() == io::ErrorKind::AlreadyExists {
                 ConfigError::new(
                     ErrorKind::Changed,
-                    "配置文件已存在，已停止覆盖。",
+                    "tavern.error.config_exists",
                     path.display(),
                 )
             } else {
@@ -678,7 +678,7 @@ fn normalize_text_whitelist(
     let normalized_value = Value::Array(normalized.into_iter().map(Value::String).collect());
     if loaded.raw.get("whitelist").and_then(Option::as_ref) != Some(&normalized_value) {
         let field = schema::field("whitelist")
-            .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "未知配置字段。", "whitelist"))?;
+            .ok_or_else(|| ConfigError::new(ErrorKind::Invalid, "tavern.error.unknown_field", "whitelist"))?;
         set_at(&root, field, &normalized_value, defaults)?;
     }
     Ok(file.to_string())
@@ -822,7 +822,7 @@ pub fn import(
     {
         return Err(ConfigError::new(
             ErrorKind::Changed,
-            "导入源文件已变化，请重新确认。",
+            "tavern.error.import_source_changed",
             preview.source.display(),
         ));
     }
@@ -842,7 +842,7 @@ pub fn reveal(context: &Context) -> Result<(), ConfigError> {
     if !status.success() {
         return Err(ConfigError::new(
             ErrorKind::Io,
-            "无法在 Finder 中定位配置文件。",
+            "tavern.error.reveal_failed",
             context.path.display(),
         ));
     }

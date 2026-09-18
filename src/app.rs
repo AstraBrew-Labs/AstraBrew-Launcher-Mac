@@ -34,7 +34,7 @@ use crate::core::typography::{FontChoice, SystemFontCatalog};
 use crate::core::tavern_process::{
     TavernDataMode as ProcessDataMode, TavernLaunchMode, TavernLaunchSpec,
 };
-use crate::lang::{effective_language, t, text};
+use crate::lang::{effective_language, raw, t, t_in, text, tf};
 use crate::pages::Page;
 use crate::pages::console::{ConsoleAction, ConsoleMessage, ConsoleState, ConsoleStatus, NetworkMode};
 use crate::pages::extensions::{ExtensionAction, ExtensionsMessage, ExtensionsState};
@@ -91,23 +91,23 @@ struct InitStep {
 /// 初始化步骤清单（按执行顺序排列）
 const INIT_STEPS: [InitStep; 4] = [
     InitStep {
-        name: "数据目录",
+        name: "app.path.data",
         path: "~/Library/Application Support/AstraBrew Launcher",
         threshold: 25.0,
     },
     InitStep {
-        name: "缓存目录",
+        name: "app.path.caches",
         path: "~/Library/Caches/AstraBrew Launcher",
         threshold: 50.0,
     },
     InitStep {
-        name: "日志目录",
+        name: "app.path.logs",
         path: "~/Library/Logs/AstraBrew Launcher",
         threshold: 75.0,
     },
     InitStep {
-        name: "核心文件",
-        path: "SillyTavern 核心运行文件",
+        name: "app.path.core",
+        path: "app.path.core.detail",
         threshold: 100.0,
     },
 ];
@@ -133,6 +133,24 @@ struct WindowProfile {
 ///
 /// 宽高比 ≥ 1.5 视为宽屏（含 16:9 与 MacBook 的 16:10），采用 16:9 档位；
 /// 否则按 4:3 档位处理。无法获取显示器尺寸时默认按宽屏处理（最常用情况）。
+/// 把安装子进程通过 `__NOTICE__:` 上报的进度键转成当前语言文案。
+///
+/// 子进程只能传字符串，无法携带编译期的 `&'static str`，因此在这里集中做一次
+/// 「协议值 → 静态键」的映射；认不出的取值原样返回，便于排查协议不一致。
+fn environment_notice_text(value: &str) -> String {
+    let key = match value {
+        "environment.install.nodejs_keg_ready" => Some("environment.install.nodejs_keg_ready"),
+        "environment.install.pm2.preparing" => Some("environment.install.pm2.preparing"),
+        "environment.install.pm2.installing" => Some("environment.install.pm2.installing"),
+        "environment.install.pm2.verifying" => Some("environment.install.pm2.verifying"),
+        _ => None,
+    };
+    match key {
+        Some(key) => t(key).to_owned(),
+        None => value.to_owned(),
+    }
+}
+
 fn window_profile(monitor: Option<Size>) -> WindowProfile {
     let widescreen = monitor
         .map(|size| size.width / size.height.max(1.0) >= 1.5)
@@ -585,7 +603,7 @@ impl Launcher {
     }
 
     pub fn title(&self) -> String {
-        t("星酿启动器", effective_language(self.settings.language)).to_owned()
+        t_in("app.title", effective_language(self.settings.language)).to_owned()
     }
 
     pub fn theme(&self) -> Theme {
@@ -892,10 +910,7 @@ impl Launcher {
                     Ok(bytes) if !bytes.is_empty() => bytes,
                     Ok(_) | Err(_) => {
                         self.finish_font_load_failure(
-                            t(
-                                "settings.interface.font.read_error",
-                                effective_language(self.settings.language),
-                            )
+                            t_in("settings.interface.font.read_error", effective_language(self.settings.language))
                             .to_owned(),
                         );
                         return Task::none();
@@ -924,10 +939,7 @@ impl Launcher {
                 if self.font_load_pending == 0 {
                     if self.font_load_failed {
                         self.finish_font_load_failure(
-                            t(
-                                "settings.interface.font.render_error",
-                                effective_language(self.settings.language),
-                            )
+                            t_in("settings.interface.font.render_error", effective_language(self.settings.language))
                             .to_owned(),
                         );
                     } else {
@@ -952,9 +964,20 @@ impl Launcher {
             }
             Message::SettingsAutoStart(enabled) => {
                 match crate::core::auto_launch::set_auto_launch(enabled) {
-                    Ok(()) => {
-                        self.settings.auto_start = enabled;
+                    Ok(outcome) => {
+                        // 以系统真实状态回填开关，避免「界面显示已启用但实际没生效」。
+                        self.settings.auto_start =
+                            crate::core::auto_launch::is_auto_launch_enabled();
                         self.persist_preferences();
+                        if matches!(
+                            outcome,
+                            crate::core::auto_launch::AutoLaunchOutcome::NeedsApproval
+                        ) {
+                            self.push_global_notice(TransientNotice::warning(
+                                "notice.settings_updated",
+                                "autolaunch.register_approval",
+                            ));
+                        }
                     }
                     Err(error) => {
                         self.settings.auto_start =
@@ -1189,7 +1212,7 @@ impl Launcher {
                 self.persist_preferences();
                 self.push_global_notice(TransientNotice::success(
                     "notice.settings_updated",
-                    "已恢复默认设置",
+                    "app.defaults_restored",
                 ));
             }
             Message::Tavern(message) => return self.handle_tavern_config_message(message),
@@ -1288,7 +1311,7 @@ impl Launcher {
                 if self.local_has_pending_save() {
                     self.versions
                         .local
-                        .notify("正在保存本地实例，请稍后关闭。", "", false);
+                        .notify("app.notice.saving_local", "", false);
                     return Task::none();
                 }
                 if self.console.status != ConsoleStatus::Stopped
@@ -1533,13 +1556,13 @@ impl Launcher {
                 | VersionMessage::SwitchOnline(_)
         ) {
             if self.versions.local.loading {
-                self.versions.local.notify("正在加载本地实例…", "", false);
+                self.versions.local.notify("versions.local.loading", "", false);
                 return;
             }
             if self.versions.local.install.running || self.versions.install_task.running {
                 self.versions
                     .local
-                    .notify("已有安装任务正在执行，请稍后再试。", "", true);
+                    .notify("app.notice.install_running", "", true);
                 return;
             }
             self.invalidate_local_switch();
@@ -1619,7 +1642,7 @@ impl Launcher {
         if version != "staging" && release.is_none() {
             self.versions
                 .local
-                .notify("未找到要切换的在线版本，请刷新列表。", version, true);
+                .notify("app.notice.version_missing", version, true);
             return;
         }
         self.versions.sync_online_installation(installed);
@@ -1711,7 +1734,7 @@ impl Launcher {
                 self.version_catalog_receiver = Some(receiver);
             }
             Err(TryRecvError::Disconnected) => self.versions.update(
-                VersionMessage::OnlineVersionsFailed("版本任务已中断".to_owned()),
+                VersionMessage::OnlineVersionsFailed(t("app.version_task_interrupted").to_owned()),
             ),
         }
     }
@@ -1739,7 +1762,7 @@ impl Launcher {
                 }
                 SillyTavernInstallEvent::Cancelled => {
                     self.versions
-                        .update(VersionMessage::InstallFailed("安装已取消".to_owned()));
+                        .update(VersionMessage::InstallFailed(t("network.install.cancelled").to_owned()));
                     keep = false;
                 }
                 SillyTavernInstallEvent::Completed(result) => {
@@ -1913,7 +1936,7 @@ impl Launcher {
                         Ok(None) => {}
                         Err(error) => {
                             self.settings.save_error =
-                                Some(format!("无法保存下载渠道缓存：{error}"));
+                                Some(tf("app.channel_cache.save_failed", &[("error", &error)]));
                         }
                     }
                     // “自动”解析出的渠道变了，版本列表的镜像同步状态要跟着更新。
@@ -1927,7 +1950,7 @@ impl Launcher {
                     keep_receiver = false;
                     self.settings.download_channel_test.running = false;
                     self.settings.download_channel_test.done_at = Some(now);
-                    // 任务异常结束：四个渠道都拿到结果时按正常完成处理，
+                    // 任务异常结束：全部固定渠道都拿到结果时按正常完成处理，
                     // 否则保留已完成的部分并提示本次没有跑完。
                     if !self.persist_download_channel_probe() {
                         self.settings.download_channel_test.timed_out = true;
@@ -1984,7 +2007,7 @@ impl Launcher {
             self.desktop_webview_load_deadline = None;
         }
         let Some(instance_path) = self.versions.current_path.as_deref() else {
-            self.console.add_error("尚未选择酒馆实例，请先前往版本管理选择。");
+            self.console.add_error("app.console.no_instance");
             return;
         };
         if self.versions.current_source == Some(VersionSource::Local) {
@@ -1995,7 +2018,7 @@ impl Launcher {
                 .find(|instance| instance.path == instance_path)
                 .map(|instance| &instance.dependencies);
             if dependency != Some(&DependencyStatus::Ready) {
-                self.console.add_error("当前本地实例的 npm 依赖尚未就绪，请先在版本管理中完成检测或安装。");
+                self.console.add_error("app.console.deps_missing");
                 return;
             }
         }
@@ -2046,7 +2069,7 @@ impl Launcher {
     /// 根据当前模式在浏览器或原生 WebView 中打开酒馆。
     fn open_console_server(&mut self) {
         let Some(url) = self.console.server_url.clone() else {
-            self.console.add_error("酒馆访问地址尚未就绪。");
+            self.console.add_error("access.address_not_ready");
             return;
         };
         if self.console.active_launch_mode == Some(TavernLaunchMode::Desktop) {
@@ -2079,7 +2102,7 @@ impl Launcher {
             BrowserType::Unknown | BrowserType::System => {}
         }
         if let Err(error) = command.arg(&url).spawn() {
-            self.console.add_error(format!("无法打开酒馆：{error}"));
+            self.console.add_error(tf("app.console.open_failed", &[("error", &error)]));
         }
     }
 
@@ -2105,15 +2128,19 @@ impl Launcher {
                 self.desktop_webview_suppressed = true;
                 self.console.add_error_log(format!(
                     "{} {error}",
-                    t("console.webview.failed", effective_language(self.settings.language))
+                    t_in("console.webview.failed", effective_language(self.settings.language))
                 ));
             }
         }
     }
 
-    fn push_global_notice(&mut self, mut notice: TransientNotice) {
-        // 页面只提交语义文案，入队时按当前界面语言固化，保证 Toast 生命周期内借用稳定。
-        notice.detail = crate::lang::display_label(&notice.detail);
+    fn push_global_notice(&mut self, notice: TransientNotice) {
+        // 正文可能是文案键或运行时文本，入队前解析一次。
+        let notice = TransientNotice {
+            detail: crate::lang::resolve(&notice.detail),
+            ..notice
+        };
+        // 正文在页面侧已按当前语言渲染完成，这里只负责去重与计时。
         let now = Instant::now();
         if let Some(existing) = self.global_notices.iter_mut().find(|existing| {
             existing.notice.title_key == notice.title_key
@@ -2151,10 +2178,7 @@ impl Launcher {
                         let detail = path.display().to_string();
                         self.console.add_success(format!(
                             "{} {detail}",
-                            t(
-                                "webview.download.saved",
-                                effective_language(self.settings.language),
-                            )
+                            t_in("webview.download.saved", effective_language(self.settings.language))
                         ));
                         self.push_global_notice(
                             TransientNotice::success("webview.download.saved", detail)
@@ -2164,10 +2188,7 @@ impl Launcher {
                     WebViewDownloadEvent::Failed(error) => {
                         self.console.add_error_log(format!(
                             "{} {error}",
-                            t(
-                                "webview.download.failed",
-                                effective_language(self.settings.language),
-                            )
+                            t_in("webview.download.failed", effective_language(self.settings.language))
                         ));
                         self.push_global_notice(TransientNotice::danger(
                             "webview.download.failed",
@@ -2193,17 +2214,11 @@ impl Launcher {
                 self.desktop_webview_retry_at = None;
                 self.desktop_webview_load_deadline = None;
                 if self.settings.auto_stop_tavern_on_window_close && self.console.is_running() {
-                    self.console.add_system(t(
-                        "console.webview.closed_stopping",
-                        effective_language(self.settings.language),
-                    ));
+                    self.console.add_system(t_in("console.webview.closed_stopping", effective_language(self.settings.language)));
                     let _ = self.console.update(ConsoleMessage::Stop);
                 } else {
                     self.desktop_webview_suppressed = true;
-                    self.console.add_system(t(
-                        "console.webview.closed_running",
-                        effective_language(self.settings.language),
-                    ));
+                    self.console.add_system(t_in("console.webview.closed_running", effective_language(self.settings.language)));
                 }
             }
 
@@ -2224,10 +2239,7 @@ impl Launcher {
                     WebViewEvent::Ready(url) => {
                         if url.starts_with("http://") || url.starts_with("https://") {
                             if !self.desktop_webview_ready {
-                                self.console.add_success(t(
-                                    "console.webview.ready",
-                                    effective_language(self.settings.language),
-                                ));
+                                self.console.add_success(t_in("console.webview.ready", effective_language(self.settings.language)));
                             }
                             self.desktop_webview_ready = true;
                             self.desktop_webview_retry_count = 0;
@@ -2239,10 +2251,7 @@ impl Launcher {
                             self.desktop_webview_load_deadline = None;
                             self.queue_desktop_webview_retry(format!(
                                 "{} {url}",
-                                t(
-                                    "console.webview.blank_page",
-                                    effective_language(self.settings.language),
-                                )
+                                t_in("console.webview.blank_page", effective_language(self.settings.language))
                             ));
                         }
                     }
@@ -2255,10 +2264,7 @@ impl Launcher {
                         self.desktop_webview_ready = false;
                         self.desktop_webview_load_deadline = None;
                         self.queue_desktop_webview_retry(
-                            t(
-                                "console.webview.process_terminated",
-                                effective_language(self.settings.language),
-                            )
+                            t_in("console.webview.process_terminated", effective_language(self.settings.language))
                             .to_owned(),
                         );
                     }
@@ -2271,10 +2277,7 @@ impl Launcher {
             {
                 self.desktop_webview_load_deadline = None;
                 self.queue_desktop_webview_retry(
-                    t(
-                        "console.webview.timeout",
-                        effective_language(self.settings.language),
-                    )
+                    t_in("console.webview.timeout", effective_language(self.settings.language))
                     .to_owned(),
                 );
             }
@@ -2290,7 +2293,7 @@ impl Launcher {
                 let result = self
                     .desktop_webview
                     .as_mut()
-                    .ok_or_else(|| "WebView 窗口不存在。".to_owned())
+                    .ok_or_else(|| t("app.webview.window_missing").to_owned())
                     .and_then(|webview| webview.reload(use_loopback));
                 if let Err(error) = result {
                     self.desktop_webview_load_deadline = None;
@@ -2335,7 +2338,7 @@ impl Launcher {
             self.desktop_webview_retry_at = Some(Instant::now() + delay);
             self.console.add_warning(format!(
                 "{} ({}/2)：{}",
-                t("console.webview.retrying", language),
+                t_in("console.webview.retrying", language),
                 self.desktop_webview_retry_count,
                 error
             ));
@@ -2343,7 +2346,7 @@ impl Launcher {
             self.desktop_webview_retry_at = None;
             self.console.add_error_log(format!(
                 "{} {error}",
-                t("console.webview.failed", language)
+                t_in("console.webview.failed", language)
             ));
         }
     }
@@ -2396,9 +2399,9 @@ impl Launcher {
                 .map(|(address, _)| address),
         };
         let mode_label = match self.settings.proxy_mode {
-            ProxyMode::None => "直连".to_owned(),
-            ProxyMode::System => "系统代理".to_owned(),
-            ProxyMode::Custom => "自定义代理".to_owned(),
+            ProxyMode::None => t("settings.proxy.direct").to_owned(),
+            ProxyMode::System => t("app.proxy.system").to_owned(),
+            ProxyMode::Custom => t("settings.proxy_mode.custom").to_owned(),
         };
 
         if let Some(cancel) = &self.github_test_cancel {
@@ -2429,17 +2432,18 @@ impl Launcher {
             download_bytes_per_second: 0,
             download_percentage: None,
             live_items: [
-                ("raw", "文件访问"),
-                ("repo", "仓库访问"),
-                ("homepage", "首页访问"),
-                ("api", "API 访问"),
-                ("clone", "仓库克隆"),
-                ("speed", "下载速度"),
+                ("raw", "network.test.raw"),
+                ("repo", "network.test.repo"),
+                ("homepage", "network.test.homepage"),
+                ("api", "network.test.api"),
+                ("clone", "network.test.clone"),
+                ("speed", "network.test.download_speed"),
             ]
             .into_iter()
             .map(|(key, name)| GithubLiveItem {
                 key: key.to_owned(),
-                name: name.to_owned(),
+                // name 是文案键，构造时按当前语言固化（渲染端不做二次翻译）。
+                name: t(name).to_owned(),
                 status: GithubLiveItemStatus::Running,
                 result: None,
             })
@@ -2472,7 +2476,7 @@ impl Launcher {
             self.settings.github_test.running = false;
             self.settings.github_test.timed_out = true;
             self.settings.github_test.results = Some(crate::core::network::timeout_results());
-            self.settings.github_test.error = Some("GitHub 连接测试超过 60 秒。".to_owned());
+            self.settings.github_test.error = Some(t("app.github_test.timeout").to_owned());
             if let Some(cancel) = &self.github_test_cancel {
                 cancel.store(true, Ordering::Relaxed);
             }
@@ -2541,7 +2545,7 @@ impl Launcher {
                         self.settings.github_test.running = false;
                         self.settings.github_test.results = None;
                         self.settings.github_test.error =
-                            Some("GitHub 测试进程意外结束。".to_owned());
+                            Some(t("app.github_test.crashed").to_owned());
                         self.settings.github_test.started_at = None;
                     }
                     break;
@@ -2662,7 +2666,7 @@ impl Launcher {
             self.settings
                 .environment_task
                 .log
-                .push_str("⏰ 安装超时，请稍后重试。");
+                .push_str(t("app.install.timeout"));
             return;
         }
 
@@ -2696,7 +2700,7 @@ impl Launcher {
                         self.settings
                             .environment_task
                             .log
-                            .push_str("✅ 安装完成，3 秒后自动关闭");
+                            .push_str(t("app.install.done"));
                         self.settings.environment_task.done_at = Some(now);
                         keep_receiver = false;
                         self.environment_task_cancel = None;
@@ -2704,7 +2708,7 @@ impl Launcher {
                     }
                     Ok(line) => {
                         if let Some(key) = line.strip_prefix("__NOTICE__:") {
-                            let notice = crate::lang::display_label(key);
+                            let notice = environment_notice_text(key);
                             if !self.settings.environment_task.log.is_empty() {
                                 self.settings.environment_task.log.push('\n');
                             }
@@ -2744,7 +2748,7 @@ impl Launcher {
                             self.settings
                                 .environment_task
                                 .log
-                                .push_str("\n安装进程意外结束，请关闭窗口后重试。");
+                                .push_str(&format!("\n{}", t("app.install.crashed")));
                         }
                         self.environment_task_cancel = None;
                         break;
@@ -3233,13 +3237,13 @@ impl Launcher {
             |column, notice| {
                 let action = notice.notice.action.clone().map(|action| match action {
                     TransientNoticeAction::RevealPath(path) => (
-                        t("webview.download.reveal", language),
+                        t_in("webview.download.reveal", language),
                         Message::RevealDownloadedFile(notice.id, path),
                     ),
                 });
                 column.push(
                     container(astra_ui::toast(
-                        t(notice.notice.title_key, language),
+                        t_in(notice.notice.title_key, language),
                         &notice.notice.detail,
                         notice.notice.variant,
                         action,
@@ -3323,11 +3327,11 @@ impl Launcher {
     fn init_card(&self) -> Element<'_, Message> {
         let (title, description) = match self.stage {
             InitStage::Welcome => (
-                "欢迎使用 AstraBrew Launcher",
-                "首次运行需要初始化运行环境，请点击下方按钮开始。",
+                "app.init.welcome_title",
+                "app.init.welcome_hint",
             ),
-            InitStage::Initializing => ("正在初始化", "正在准备运行环境，请勿关闭应用。"),
-            InitStage::Complete => ("初始化完成", "运行环境已准备就绪，可以开始使用。"),
+            InitStage::Initializing => ("app.init.stage.initializing", "app.init.stage.initializing_hint"),
+            InitStage::Complete => ("app.init.stage.complete", "app.init.stage.complete_hint"),
         };
 
         let header = column![
@@ -3378,9 +3382,9 @@ impl Launcher {
     /// 渲染单条步骤行：状态图标 + 名称与说明 + 状态标签
     fn step_row(&self, step: &InitStep, status: StepStatus) -> Element<'_, Message> {
         let (icon, color, label) = match status {
-            StepStatus::Done => (Icon::CircleCheck, SUCCESS, "完成"),
-            StepStatus::Running => (Icon::Loader, CYAN_500, "进行中"),
-            StepStatus::Pending => (Icon::Circle, INK_SUBTLE, "等待"),
+            StepStatus::Done => (Icon::CircleCheck, SUCCESS, "app.init.step.done"),
+            StepStatus::Running => (Icon::Loader, CYAN_500, "app.init.step.running"),
+            StepStatus::Pending => (Icon::Circle, INK_SUBTLE, "app.init.step.pending"),
         };
 
         row![
@@ -3392,7 +3396,8 @@ impl Launcher {
                 .style(tag_style(color)),
             column![
                 text(step.name).size(13).font(crate::core::typography::medium()),
-                text(step.path)
+                // 多数条目是真实路径，核心文件那条是文案键，统一过一遍 resolve。
+                raw(crate::lang::resolve(step.path))
                     .size(11)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -3416,11 +3421,11 @@ impl Launcher {
 
         column![
             row![
-                text("初始化进度")
+                text("app.init.progress")
                     .size(12)
                     .font(crate::core::typography::medium()),
                 space::horizontal(),
-                text(format!("{value:.0}%"))
+                raw(format!("{value:.0}%"))
                     .size(12)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
@@ -3436,18 +3441,18 @@ impl Launcher {
     fn status_alert(&self) -> Element<'_, Message> {
         let alert = match self.stage {
             InitStage::Welcome => crate::theme::alert(
-                "准备就绪",
-                "点击下方按钮开始初始化运行环境。",
+                "app.init.ready_title",
+                "app.init.ready_hint",
                 AlertKind::Info,
             ),
             InitStage::Initializing => crate::theme::alert(
-                "正在初始化",
-                "初始化过程中请保持应用运行，完成后会自动进入就绪状态。",
+                "app.init.stage.initializing",
+                "app.init.keep_running",
                 AlertKind::Info,
             ),
             InitStage::Complete => crate::theme::alert(
-                "初始化完成",
-                "运行环境已准备完毕，可以开始使用 AstraBrew Launcher。",
+                "app.init.stage.complete",
+                "app.init.finished_hint",
                 AlertKind::Success,
             ),
         };
@@ -3459,23 +3464,23 @@ impl Launcher {
         match self.stage {
             InitStage::Welcome => row![
                 space::horizontal(),
-                self.primary_button("开始初始化", Message::StartInitialization),
+                self.primary_button("app.init.start", Message::StartInitialization),
             ]
             .spacing(10)
             .width(Fill)
             .into(),
             InitStage::Initializing => row![
                 space::horizontal(),
-                self.disabled_button("初始化中…"),
-                self.outline_button("取消", Message::CancelInitialization),
+                self.disabled_button("app.init.running"),
+                self.outline_button("tavern.sync.import.cancel", Message::CancelInitialization),
             ]
             .spacing(10)
             .width(Fill)
             .into(),
             InitStage::Complete => row![
                 space::horizontal(),
-                self.primary_button("开始使用", Message::FinishInitialization),
-                self.outline_button("重新初始化", Message::CancelInitialization),
+                self.primary_button("app.init.start_using", Message::FinishInitialization),
+                self.outline_button("app.init.restart", Message::CancelInitialization),
             ]
             .spacing(10)
             .width(Fill)
@@ -3515,7 +3520,7 @@ impl Launcher {
 
 fn format_version_sync_time(timestamp: u64) -> String {
     if timestamp == 0 {
-        return "未知".to_owned();
+        return t("resources.unknown").to_owned();
     }
     // macOS 自带 date，使用本地时间显示缓存写入时间，不会触发网络请求。
     std::process::Command::new("date")
@@ -3856,12 +3861,6 @@ mod tests {
                         error: None,
                     },
                     DownloadChannelTestResult {
-                        channel: DownloadChannel::Mirror3,
-                        success: true,
-                        latency_ms: Some(250),
-                        error: None,
-                    },
-                    DownloadChannelTestResult {
                         channel: DownloadChannel::Official,
                         success: true,
                         latency_ms: Some(300),
@@ -3877,7 +3876,7 @@ mod tests {
             launcher.settings.download_resolved_channel,
             Some(DownloadChannel::Mirror1)
         );
-        // 四个渠道都有结果时才写入缓存；测试环境可能限制写入用户级数据目录，
+        // 全部固定渠道都有结果时才写入缓存；测试环境可能限制写入用户级数据目录，
         // 运行时会在 macOS 用户目录中写入缓存，因此这里只校验界面状态。
         assert!(launcher.settings.download_channel_test.show);
         assert!(launcher.settings.download_channel_test.done_at.is_some());

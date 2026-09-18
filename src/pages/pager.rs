@@ -4,6 +4,7 @@
 //! 可直接跳到任意页。样式走项目自己的 `crate::theme::button_style`，不使用 astra_ui
 //! 自带的分页组件（它的翻页标签是硬编码英文，配色也是固定浅色常量）。
 
+use crate::lang::text;
 use iced::widget::{button, container, mouse_area, row, scrollable, space};
 use iced::{
     Alignment, Background, Border, Color, Element, Fill, Length, Padding, Shadow, Theme, Vector,
@@ -12,7 +13,7 @@ use lucide_icons::Icon;
 
 use astra_ui::{ButtonVariant, WHITE};
 
-use crate::lang::text;
+use crate::lang::raw;
 use crate::theme::button_style;
 
 /// 分页栏最多直接铺开的页数；超过后改为「首页 … 当前页附近 … 末页」。
@@ -58,7 +59,7 @@ pub fn pagination<'a, Message: Clone + 'a>(
     let displayed = current + 1;
     let mut items = vec![page_step(
         Icon::ChevronLeft,
-        "上一页",
+        "common.previous",
         (current > 0).then(|| on_page(current - 1)),
     )];
     for item in page_items(displayed, total) {
@@ -76,7 +77,7 @@ pub fn pagination<'a, Message: Clone + 'a>(
     }
     items.push(page_step(
         Icon::ChevronRight,
-        "下一页",
+        "common.next",
         (current + 1 < total).then(|| on_page(current + 1)),
     ));
     row(items).spacing(4).align_y(Alignment::Center).into()
@@ -192,7 +193,7 @@ fn floating_surface(theme: &Theme) -> container::Style {
 /// 比直接露出「下一页」按钮更像一个拉手。
 fn page_indicator<'a, Message: Clone + 'a>(page: usize, total: usize) -> Element<'a, Message> {
     container(
-        text(format!("{page}/{total}"))
+        raw(format!("{page}/{total}"))
             .size(11)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -209,7 +210,7 @@ fn page_indicator<'a, Message: Clone + 'a>(page: usize, total: usize) -> Element
 /// 用容器而不是按钮：iced 会把没有 `on_press` 的按钮判为禁用态并淡化主色。
 fn active_page_number<'a, Message: Clone + 'a>(page: usize) -> Element<'a, Message> {
     container(
-        text(page.to_string())
+        raw(page.to_string())
             .size(12)
             .font(crate::core::typography::medium())
             .color(WHITE),
@@ -226,7 +227,7 @@ fn active_page_number<'a, Message: Clone + 'a>(page: usize) -> Element<'a, Messa
 fn page_number<'a, Message: Clone + 'a>(page: usize, on_press: Message) -> Element<'a, Message> {
     button(
         container(
-            text(page.to_string())
+            raw(page.to_string())
                 .size(12)
                 .font(crate::core::typography::medium()),
         )

@@ -15,6 +15,8 @@
 //! - **WKScriptMessageHandler**：接收 JS 发送的 blob 导出数据（`window.webkit.messageHandlers.fileDownloader`），
 //!   解码 base64 后自动保存到配置的导出目录
 
+use crate::lang::t;
+use crate::lang::tf;
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::LazyLock;
@@ -198,21 +200,21 @@ define_class!(
             let completion = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
                 if !error.is_null() {
                     let description = unsafe { (&*error).localizedDescription().to_string() };
-                    let _ = events.send(WebViewEvent::Failed(format!(
-                        "页面状态检查失败：{description}"
-                    )));
+                    let _ = events.send(WebViewEvent::Failed(
+                        tf("webview.inspect_failed", &[("description", &description)]),
+                    ));
                     return;
                 }
                 if result.is_null() {
                     let _ = events.send(WebViewEvent::Failed(
-                        "页面状态检查没有返回结果。".to_owned(),
+                        t("webview.inspect_empty").to_owned(),
                     ));
                     return;
                 }
                 let object = unsafe { &*result };
                 let Some(value) = object.downcast_ref::<NSString>() else {
                     let _ = events.send(WebViewEvent::Failed(
-                        "页面状态检查返回了未知格式。".to_owned(),
+                        t("webview.inspect_bad_format").to_owned(),
                     ));
                     return;
                 };
@@ -240,9 +242,9 @@ define_class!(
                         )));
                     }
                     Err(error) => {
-                        let _ = events.send(WebViewEvent::Failed(format!(
-                            "无法解析页面状态：{error}"
-                        )));
+                        let _ = events.send(WebViewEvent::Failed(
+                            tf("webview.inspect_parse_failed", &[("error", &error)]),
+                        ));
                     }
                 }
             });
@@ -452,7 +454,7 @@ unsafe fn handle_file_download(message: &WKScriptMessage) {
             .map(|value| value.to_string())
             .unwrap_or_default();
         if base64.is_empty() {
-            push_download_event(WebViewDownloadEvent::Failed("下载数据为空。".to_owned()));
+            push_download_event(WebViewDownloadEvent::Failed(t("webview.download.empty").to_owned()));
             return;
         }
 
@@ -463,16 +465,16 @@ unsafe fn handle_file_download(message: &WKScriptMessage) {
         );
         let Some(data) = data else {
             push_download_event(WebViewDownloadEvent::Failed(
-                "下载文件数据损坏。".to_owned(),
+                t("webview.download.corrupted").to_owned(),
             ));
             return;
         };
 
         let directory = EXPORT_PATH.lock().unwrap().clone();
         if let Err(error) = std::fs::create_dir_all(&directory) {
-            push_download_event(WebViewDownloadEvent::Failed(format!(
-                "无法创建下载目录 {}：{error}",
-                directory.display()
+            push_download_event(WebViewDownloadEvent::Failed(tf(
+                "webview.download.create_dir_failed",
+                &[("path", &directory.display().to_string()), ("error", &error)]
             )));
             return;
         }
@@ -481,10 +483,7 @@ unsafe fn handle_file_download(message: &WKScriptMessage) {
         if data.writeToFile_atomically(&NSString::from_str(&save_path.to_string_lossy()), true) {
             push_download_event(WebViewDownloadEvent::Saved(save_path));
         } else {
-            push_download_event(WebViewDownloadEvent::Failed(format!(
-                "无法写入下载文件：{}",
-                save_path.display()
-            )));
+            push_download_event(WebViewDownloadEvent::Failed(tf("webview.download.write_failed", &[("path", &save_path.display())])));
         }
     }
 }
@@ -776,15 +775,23 @@ impl DesktopWebView {
             "}",
             "if(bad.length){",
             "t.value='';",
-            "alert('以下文件类型不被允许：\\n'+bad.join('\\n')+'\\n\\n允许的类型：'+acc)",
-            "}",
-            "},true)",
-            "})()"
-        );
+        )
+        .to_owned()
+            + format!(
+                "alert('{}'+bad.join('\\n')+'\\n\\n{}'+acc)",
+                crate::lang::t("webview.file_type_rejected_prefix"),
+                crate::lang::t("webview.file_type_allowed_prefix"),
+            )
+            .as_str()
+            + concat!(
+                "}",
+                "},true)",
+                "})()"
+            );
         let file_filter_script = unsafe {
             WKUserScript::initWithSource_injectionTime_forMainFrameOnly(
                 WKUserScript::alloc(mtm),
-                &NSString::from_str(file_input_filter_js),
+                &NSString::from_str(&file_input_filter_js),
                 WKUserScriptInjectionTime::AtDocumentStart,
                 true,
             )
@@ -900,19 +907,19 @@ impl DesktopWebView {
 
 fn validate_webview_url(url: &str) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err(format!("WebView 地址协议无效：{url}"));
+        return Err(tf("webview.url_scheme_invalid", &[("url", &url)]));
     }
     NSURL::URLWithString(&NSString::from_str(url))
         .map(|_| ())
-        .ok_or_else(|| format!("WebView 地址无效：{url}"))
+        .ok_or_else(|| tf("webview.url_invalid", &[("url", &url)]))
 }
 
 fn load_webview_url(webview: &WKWebView, url: &str) -> Result<Retained<WKNavigation>, String> {
     let nsurl = NSURL::URLWithString(&NSString::from_str(url))
-        .ok_or_else(|| format!("WebView 地址无效：{url}"))?;
+        .ok_or_else(|| tf("webview.url_invalid", &[("url", &url)]))?;
     let request = NSURLRequest::requestWithURL(&nsurl);
     unsafe { webview.loadRequest(&request) }
-        .ok_or_else(|| format!("WebView 无法创建导航请求：{url}"))
+        .ok_or_else(|| tf("webview.navigation_request_failed", &[("url", &url)]))
 }
 
 fn loopback_fallback_url(url: &str) -> String {

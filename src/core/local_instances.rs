@@ -11,6 +11,12 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// 无法从 `package.json` 解析出版本号时使用的数据哨兵。
+///
+/// 这是**数据**而不是界面文案：展示层比较该常量后改用 `versions.unknown_version`
+/// 文案键渲染，避免把显示文本写进数据层。
+pub const UNKNOWN_VERSION: &str = "local.unknown_version";
+
 /// 运行依赖必须经过实际检测，不能从 node_modules 是否存在推断完整性。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DependencyStatus {
@@ -69,7 +75,7 @@ impl LocalError {
     }
 
     pub fn cancelled() -> Self {
-        Self::new("扫描已取消。", "").with_kind(LocalErrorKind::Cancelled)
+        Self::new("local.scan.cancelled", "").with_kind(LocalErrorKind::Cancelled)
     }
 
     pub fn io(message: &'static str, path: &Path, error: io::Error) -> Self {
@@ -160,7 +166,7 @@ fn not_found(path: &Path) -> bool {
 
 pub fn inspect_package(package: &Path, online: &Path) -> Result<LocalInstance, LocalError> {
     let invalid = || {
-        LocalError::new("选择的不是酒馆实例，请重新选择。", "")
+        LocalError::new("local.instance.invalid", "")
             .with_kind(LocalErrorKind::InvalidInstance)
     };
     if package.file_name().and_then(|name| name.to_str()) != Some("package.json") {
@@ -173,11 +179,11 @@ pub fn inspect_package(package: &Path, online: &Path) -> Result<LocalInstance, L
     // 优先识别在线目录，即使其 package.json 正处于下载或更新阶段。
     if inside_online(root, online) || inside_online(original_root, online) {
         return Err(
-            LocalError::new("请不要添加在线实例。", "").with_kind(LocalErrorKind::OnlineInstance)
+            LocalError::new("local.instance.online_rejected", "").with_kind(LocalErrorKind::OnlineInstance)
         );
     }
     let bytes =
-        fs::read(package).map_err(|error| LocalError::io("无法读取实例文件。", package, error))?;
+        fs::read(package).map_err(|error| LocalError::io("local.instance.read_failed", package, error))?;
     let document: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
     if !document
         .get("name")
@@ -191,7 +197,7 @@ pub fn inspect_package(package: &Path, online: &Path) -> Result<LocalInstance, L
             .get("version")
             .and_then(|v| v.as_str())
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or("未知版本")
+            .unwrap_or(UNKNOWN_VERSION)
             .to_owned(),
         path: normalized_path(root).to_string_lossy().into_owned(),
         dependencies: DependencyStatus::Checking,
@@ -213,15 +219,15 @@ pub fn load(path: &Path, online: &Path) -> Result<Vec<LocalInstance>, LocalError
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(LocalError::new("无法加载本地实例列表。", error)),
+        Err(error) => return Err(LocalError::new("local.list.load_failed", error)),
     };
     let stored: Vec<StoredInstance> = serde_json::from_slice(&bytes)
-        .map_err(|error| LocalError::new("本地实例列表损坏，已停止覆盖原文件。", error))?;
+        .map_err(|error| LocalError::new("local.list.corrupted", error))?;
     let mut instances: Vec<LocalInstance> = Vec::new();
     for item in stored {
         if item.path.trim().is_empty() || !normalized_path(Path::new(&item.path)).is_absolute() {
             return Err(LocalError::new(
-                "本地实例列表损坏，已停止覆盖原文件。",
+                "local.list.corrupted",
                 &item.path,
             ));
         }
@@ -238,7 +244,7 @@ pub fn load(path: &Path, online: &Path) -> Result<Vec<LocalInstance>, LocalError
             Ok(instance) => instance,
             Err(error) => LocalInstance {
                 version: if item.version.is_empty() {
-                    "未知版本".into()
+                    UNKNOWN_VERSION.into()
                 } else {
                     item.version
                 },
@@ -327,7 +333,7 @@ mod tests {
         let online = fixture.0.join("online");
         for name in ["sillytavern", "SillyTavern", "SILLYTAVERN"] {
             let path = fixture.package(&format!(r#"{{"name":"{name}"}}"#));
-            assert_eq!(inspect_package(&path, &online).unwrap().version, "未知版本");
+            assert_eq!(inspect_package(&path, &online).unwrap().version, UNKNOWN_VERSION);
         }
         for content in [
             "{}",
@@ -410,7 +416,7 @@ mod tests {
             inspect_package(&local.join("package.json"), &online)
                 .unwrap_err()
                 .message,
-            "请不要添加在线实例。"
+            "local.instance.online_rejected"
         );
     }
     #[test]

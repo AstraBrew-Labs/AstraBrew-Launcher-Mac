@@ -3,6 +3,8 @@
 //! 页面层只传入资源类型、源文件和目标目录；本模块保证校验与写入使用同一份字节，
 //! 并通过同目录临时文件和原子重命名避免留下半成品。
 
+use crate::lang::t;
+use crate::lang::tf;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
@@ -59,7 +61,7 @@ pub(crate) enum ResourceFormat {
 
 impl ResourceFormat {
     /// 返回适合界面展示的稳定格式名称。
-    pub(crate) const fn label(self) -> &'static str {
+    pub(crate) const fn label_key(self) -> &'static str {
         match self {
             Self::CharacterCardV1 => "Character Card V1",
             Self::CharacterCardV2 => "Character Card V2",
@@ -263,7 +265,7 @@ pub(crate) fn validate_path(
             ValidationCode::ReadFailed,
             "",
             "resources.validation.read_failed",
-            "所选路径不是普通文件。",
+            "resources.validation.detail.not_regular_file",
         )]);
     }
     if metadata.len() > kind.byte_limit() as u64 {
@@ -348,7 +350,7 @@ pub(crate) fn import_batch(
                     ValidationCode::ReadFailed,
                     "",
                     "resources.validation.read_failed",
-                    "源文件缺少有效文件名。",
+                    "resources.validation.detail.source_no_filename",
                 )]),
             });
             continue;
@@ -363,7 +365,7 @@ pub(crate) fn import_batch(
                     ValidationCode::TargetConflict,
                     "",
                     "resources.validation.target_conflict",
-                    "同名资源已经存在。",
+                    "resources.validation.detail.target_conflict_exists",
                 )]),
             });
             continue;
@@ -407,7 +409,7 @@ fn validate_extension(kind: ResourceKind, file_name: &OsStr) -> Result<(), Vec<V
             ValidationCode::InvalidExtension,
             "",
             "resources.validation.invalid_extension",
-            format!("仅支持 .{} 文件。", kind.expected_extension()),
+            tf("resources.validation.detail.extension_only", &[("extension", &kind.expected_extension())]),
         )])
     }
 }
@@ -417,9 +419,9 @@ fn file_too_large_issue(kind: ResourceKind, actual: u64) -> ValidationIssue {
         ValidationCode::FileTooLarge,
         "",
         "resources.validation.file_too_large",
-        format!(
-            "文件大小为 {actual} 字节，上限为 {} 字节。",
-            kind.byte_limit()
+        tf(
+            "library.file_too_large",
+            &[("actual", &actual), ("limit", &kind.byte_limit())]
         ),
     )
 }
@@ -430,7 +432,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
             ValidationCode::InvalidPng,
             "",
             "resources.validation.invalid_png",
-            "文件签名不是 PNG。",
+            "resources.validation.detail.png_signature",
         )]);
     }
 
@@ -483,7 +485,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
                 ValidationCode::FileTooLarge,
                 "metadata",
                 "resources.validation.file_too_large",
-                "解压后的角色卡元数据超过 16 MiB。",
+                "library.metadata_too_large",
             )]);
         }
         candidates.push((chunk.keyword.clone(), text));
@@ -513,7 +515,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
                 ValidationCode::FileTooLarge,
                 "metadata",
                 "resources.validation.file_too_large",
-                "解压后的角色卡元数据超过 16 MiB。",
+                "library.metadata_too_large",
             )]);
         }
         candidates.push((chunk.keyword.clone(), text));
@@ -523,7 +525,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
             ValidationCode::MissingMetadata,
             "metadata",
             "resources.validation.missing_metadata",
-            "PNG 中没有文本元数据块。",
+            "resources.validation.detail.no_text_chunk",
         )]);
     }
 
@@ -536,7 +538,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
             ValidationCode::MissingMetadata,
             "metadata",
             "resources.validation.missing_metadata",
-            "PNG 文本块中没有可解析的角色卡 JSON。",
+            "resources.validation.detail.no_parsable_json",
         )]);
     };
     let mut issues = Vec::new();
@@ -546,7 +548,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
         .get("data")
         .is_some_and(|value| !value.is_object() && !value.is_null())
     {
-        issues.push(invalid_type("data", "角色卡 data 必须是对象。"));
+        issues.push(invalid_type("data", "resources.validation.detail.data_must_be_object"));
     }
     validate_character_world_types(object, "", &mut issues);
     let format = detect_character_format(object, keyword)?;
@@ -584,7 +586,7 @@ fn validate_character(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validatio
             ValidationCode::MissingField,
             "data.name",
             "resources.validation.missing_field",
-            "角色名称不能为空。",
+            "resources.validation.detail.name_required",
         ));
     }
 
@@ -640,7 +642,7 @@ fn detect_character_format(
             ValidationCode::UnrecognizedVersion,
             "spec_version",
             "resources.validation.unrecognized_version",
-            format!("无法识别 spec={spec:?}, spec_version={version:?}。"),
+            tf("library.spec_unrecognized", &[("spec", &format!("{spec:?}")), ("version", &format!("{version:?}"))]),
         )]);
     }
     if object.get("data").is_some() {
@@ -660,7 +662,7 @@ fn validate_world_book(bytes: Vec<u8>) -> Result<ValidatedResource, Vec<Validati
         return Err(issues);
     }
     let display_name = if world.name.trim().is_empty() {
-        "未命名世界书".to_owned()
+        t("library.world_book.untitled").to_owned()
     } else {
         world.name.clone()
     };
@@ -695,7 +697,7 @@ fn validate_world_object(
                 ValidationCode::MissingField,
                 entries_path,
                 "resources.validation.missing_field",
-                "世界书缺少 entries。",
+                "resources.validation.detail.world_missing_entries",
             ));
         }
         return None;
@@ -712,7 +714,7 @@ fn validate_world_object(
             .map(|(key, value)| (key.clone(), value))
             .collect(),
         _ => {
-            issues.push(invalid_type(&entries_path, "entries 必须是数组或对象。"));
+            issues.push(invalid_type(&entries_path, "resources.validation.detail.entries_array_or_object"));
             return None;
         }
     };
@@ -721,7 +723,7 @@ fn validate_world_object(
             ValidationCode::EmptyEntries,
             entries_path,
             "resources.validation.empty_entries",
-            "世界书至少需要一个条目。",
+            "resources.validation.detail.world_at_least_one",
         ));
         return None;
     }
@@ -746,7 +748,7 @@ fn validate_world_entry(
     issues: &mut Vec<ValidationIssue>,
 ) -> Option<WorldEntry> {
     let Some(object) = value.as_object() else {
-        issues.push(invalid_type(path, "世界书条目必须是对象。"));
+        issues.push(invalid_type(path, "resources.validation.detail.entry_must_be_object"));
         return None;
     };
     validate_optional_strings(object, &["content", "comment", "name"], path, issues);
@@ -816,7 +818,7 @@ fn validate_preset(
                     ValidationCode::EmptyEntries,
                     "prompts",
                     "resources.validation.empty_entries",
-                    "预设 prompts 不能为空数组。",
+                    "resources.validation.detail.prompts_not_empty",
                 ));
             }
             items
@@ -826,7 +828,7 @@ fn validate_preset(
                 .collect()
         }
         Some(_) => {
-            issues.push(invalid_type("prompts", "prompts 必须是数组。"));
+            issues.push(invalid_type("prompts", "library.prompts_must_be_array"));
             Vec::new()
         }
         None => Vec::new(),
@@ -837,7 +839,7 @@ fn validate_preset(
     let mut requires_tavern_helper = false;
     if let Some(extensions) = root.get("extensions") {
         let Some(extensions) = extensions.as_object() else {
-            issues.push(invalid_type("extensions", "extensions 必须是对象。"));
+            issues.push(invalid_type("extensions", "library.extensions_must_be_object"));
             return Err(issues);
         };
         for key in extensions.keys() {
@@ -863,7 +865,7 @@ fn validate_preset(
             ValidationCode::MissingField,
             "",
             "resources.validation.unrecognized_resource",
-            "JSON 中没有可识别的预设字段。",
+            "resources.validation.detail.no_recognized_preset",
         ));
     }
     if !issues.is_empty() {
@@ -915,7 +917,7 @@ fn validate_preset_prompt(
 ) -> Option<PresetPrompt> {
     let path = format!("prompts[{index}]");
     let Some(object) = value.as_object() else {
-        issues.push(invalid_type(&path, "提示词条目必须是对象。"));
+        issues.push(invalid_type(&path, "resources.validation.detail.prompt_must_be_object"));
         return None;
     };
     validate_optional_strings(
@@ -935,12 +937,12 @@ fn validate_preset_prompt(
             (
                 "name",
                 pick_string(object, &["name", "identifier"]),
-                "普通提示词必须包含 name 或 identifier。",
+                "resources.validation.detail.prompt_needs_name",
             ),
             (
                 "role",
                 pick_string(object, &["role"]),
-                "普通提示词必须包含 role。",
+                "resources.validation.detail.prompt_needs_role",
             ),
         ] {
             if value.trim().is_empty() {
@@ -957,7 +959,7 @@ fn validate_preset_prompt(
                 ValidationCode::MissingField,
                 join_path(&path, "content"),
                 "resources.validation.missing_field",
-                "普通提示词必须包含 content。",
+                "resources.validation.detail.prompt_needs_content",
             ));
         }
     }
@@ -1020,7 +1022,7 @@ fn parse_json_object(bytes: &[u8]) -> Result<Map<String, Value>, Vec<ValidationI
             ValidationCode::InvalidJson,
             "",
             "resources.validation.invalid_json_root",
-            "JSON 根节点必须是对象。",
+            "library.json_root_must_be_object",
         )]
     })
 }
@@ -1124,7 +1126,7 @@ fn validate_character_world_types(
         {
             issues.push(invalid_type(
                 &join_path(prefix, key),
-                "角色卡内嵌世界书必须是对象。",
+                "resources.validation.detail.world_embed_must_be_object",
             ));
         }
     }
@@ -1143,7 +1145,7 @@ fn validate_optional_strings(
         {
             issues.push(invalid_type(
                 &join_path(prefix, field),
-                "字段必须是字符串。",
+                "resources.validation.detail.field_must_be_string",
             ));
         }
     }
@@ -1161,7 +1163,7 @@ fn validate_string_array(
                 .as_array()
                 .is_some_and(|items| items.iter().any(|item| !item.is_string())))
     {
-        issues.push(invalid_type(path, "字段必须是字符串数组。"));
+        issues.push(invalid_type(path, "resources.validation.detail.field_must_be_string_array"));
     }
 }
 
@@ -1188,7 +1190,7 @@ fn validate_optional_bool(
     {
         issues.push(invalid_type(
             &join_path(prefix, field),
-            "字段必须是布尔值。",
+            "resources.validation.detail.field_must_be_bool",
         ));
     }
 }
@@ -1205,7 +1207,7 @@ fn validate_number(
     {
         issues.push(invalid_type(
             &join_path(prefix, field),
-            "字段必须是有限数值。",
+            "resources.validation.detail.field_must_be_number",
         ));
     }
 }
@@ -1222,7 +1224,7 @@ fn validate_number_or_string(
     {
         issues.push(invalid_type(
             &join_path(prefix, field),
-            "字段必须是数值或字符串。",
+            "resources.validation.detail.field_must_be_number_or_string",
         ));
     }
 }

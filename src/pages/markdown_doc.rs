@@ -9,6 +9,8 @@
 //! 这里集中提供「按可用宽度换行」的渲染策略与主题感知的渲染参数，
 //! 调用方只需给出基准字号和链接点击要产生的消息。
 
+use crate::lang::t;
+use crate::lang::tf;
 use iced::widget::{container, markdown, rich_text};
 use iced::{Background, Border, Color, Element, Fill, Font, Padding, Theme};
 
@@ -81,13 +83,13 @@ pub fn open_link(url: &str) -> Result<(), String> {
     let trimmed = url.trim();
     let lowered = trimmed.to_ascii_lowercase();
     if !lowered.starts_with("http://") && !lowered.starts_with("https://") {
-        return Err("仅支持打开 http/https 链接。".into());
+        return Err(t("markdown.only_http").to_owned());
     }
     std::process::Command::new("open")
         .arg(trimmed)
         .spawn()
         .map(|_| ())
-        .map_err(|error| format!("无法调用系统打开链接：{error}"))
+        .map_err(|error| tf("markdown.open_failed", &[("error", &error)]))
 }
 
 /// 让段落与标题按可用宽度换行的渲染策略。

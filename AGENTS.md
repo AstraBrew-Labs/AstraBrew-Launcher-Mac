@@ -61,6 +61,32 @@ astra_ui文档：https://docs.rs/iced-astraui/0.0.1
 要支持中文和英文的国际化适配，用n18n的规范，用 键值对 的方式来实现多语言切换，比如：“settings.title”:"设置"。
 src
  - lang
-  - zh.rs 中文
-  - en.rs 英文
-  - lang.rs 多语言模块
+  - zh.rs 中文（键 → 中文；另导出 KEYS 供一致性测试）
+  - en.rs 英文（键 → 英文，键集合必须与 zh.rs 一致）
+  - lang.rs 多语言引擎（t / tf / t_in / text / textf / raw / resolve）
+
+### 硬规则（写代码时必须遵守）
+
+1. **界面代码只写键，不写具体文案**。键命名 `<域>.<语义>`，如 `settings.title`、
+   `extensions.error.clone_failed`、`tavern.field.port.hint`。
+2. **内容进入不翻译的显示端之前，必须已经是翻译好的值**。不翻译的显示端只有这几类：
+   - `crate::lang::raw(x)`（专给运行时数据：路径、版本号、日志行）
+   - 原生 `iced::widget::text(x)`
+   - `text_input(placeholder, ...)` 的第一个参数
+   键要么交给 `text()/t()/tf()`，要么在**字符串进入通道那一刻**用 `resolve()` 或 `t().to_owned()` 固化。
+3. **`resolve(x)` 只在通道入口调用一次**（错误入 state、日志入队、Toast 入队），
+   不要放进每帧渲染路径——键清单是线性查找。
+4. **辅助函数按语义定签名**：收键的用 `&'static str` + 内部 `text()`；
+   收运行时数据的用 `String`/`&str` + 内部 `raw`。让编译器参与分类。
+5. **不要用显示文案做判断条件**（如 `if label == "更新"`、`error == "安装已取消"`）——
+   键化后必然失效。改用常量、枚举或显式参数。
+6. **`from_key` / `normalize_*` 里的中文是历史值兼容别名**，属于数据不是文案，必须保留。
+
+### 排查「界面显示出翻译键」
+
+```sh
+ASTRA_I18N_AUDIT=1 cargo run     # 逐个操作界面，raw() 收到文案键会打印告警
+```
+默认关闭。出现告警说明某处把键交给了不翻译的显示端，按上面第 2 条修。
+
+更完整的排查步骤见技能 `iced-i18n-key-display-audit`。

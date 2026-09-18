@@ -1,5 +1,8 @@
 //! 网络相关功能：系统代理读取、GitHub 多地址连通性与下载测试。
 
+use crate::lang::t;
+use crate::lang::tf;
+use crate::lang::resolve;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,7 +24,6 @@ pub enum DownloadChannel {
     Auto,
     Mirror1,
     Mirror2,
-    Mirror3,
     Official,
 }
 
@@ -31,28 +33,25 @@ impl DownloadChannel {
             Self::Auto => "auto",
             Self::Mirror1 => "mirror1",
             Self::Mirror2 => "mirror2",
-            Self::Mirror3 => "mirror3",
             Self::Official => "official",
         }
     }
 
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Auto => "自动",
-            Self::Mirror1 => "镜像 1",
-            Self::Mirror2 => "镜像 2",
-            Self::Mirror3 => "镜像 3",
-            Self::Official => "官方",
+            Self::Auto => "channel.auto",
+            Self::Mirror1 => "channel.mirror1",
+            Self::Mirror2 => "channel.mirror2",
+            Self::Official => "channel.official",
         }
     }
 
-    pub const fn description(self) -> &'static str {
+    pub const fn hint_key(self) -> &'static str {
         match self {
-            Self::Auto => "自动选择速度最快且可用的下载渠道。",
-            Self::Mirror1 => "官方仓库的镜像，国内速度比较快，但版本同步会晚一些。",
-            Self::Mirror2 => "官方仓库的备用镜像，国内速度较快，但版本同步会晚一些。",
-            Self::Mirror3 => "官方仓库的备用镜像，国内速度较快，但版本同步会慢很多。",
-            Self::Official => "官方仓库直连，国内速度较慢，但版本更新最快。",
+            Self::Auto => "channel.auto.hint",
+            Self::Mirror1 => "channel.mirror1.hint",
+            Self::Mirror2 => "channel.mirror2.hint",
+            Self::Official => "channel.official.hint",
         }
     }
 
@@ -61,7 +60,6 @@ impl DownloadChannel {
             Self::Auto => "https://github.com/sillyTavern/SillyTavern",
             Self::Mirror1 => "https://gitee.com/AstraBrew-Labs/SillyTavern",
             Self::Mirror2 => "https://gitcode.com/GitHub_Trending/si/SillyTavern",
-            Self::Mirror3 => "https://cnb.cool/AstraBrew-Labs/SillyTavern",
             Self::Official => "https://github.com/sillyTavern/SillyTavern",
         }
     }
@@ -71,33 +69,33 @@ impl DownloadChannel {
             Self::Auto => Self::Official.clone_url(),
             Self::Mirror1 => "https://gitee.com/AstraBrew-Labs/SillyTavern.git",
             Self::Mirror2 => "https://gitcode.com/GitHub_Trending/si/SillyTavern.git",
-            Self::Mirror3 => "https://cnb.cool/AstraBrew-Labs/SillyTavern.git",
             Self::Official => GITHUB_CLONE_URL,
         }
     }
 
-    pub const fn fixed_channels() -> [Self; 4] {
-        [Self::Mirror1, Self::Mirror2, Self::Mirror3, Self::Official]
+    pub const fn fixed_channels() -> [Self; 3] {
+        [Self::Mirror1, Self::Mirror2, Self::Official]
     }
 
     pub fn from_key(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "mirror1" | "mirror_1" | "镜像1" | "镜像 1" => Self::Mirror1,
             "mirror2" | "mirror_2" | "镜像2" | "镜像 2" => Self::Mirror2,
-            "mirror3" | "mirror_3" | "镜像3" | "镜像 3" => Self::Mirror3,
+            // 历史设置里的 mirror3 已下线，回落到“自动”重新测速，而不是钉死某个渠道。
             "official" | "官方" => Self::Official,
             _ => Self::Auto,
         }
     }
 
-    pub fn display_label(self, resolved: Option<Self>) -> String {
+    /// 「自动」渠道解析出具体渠道后用于展示的键。
+    ///
+    /// 界面侧用 [`crate::lang::text`] 渲染该键，避免在非渲染路径上固化语言。
+    pub const fn resolved_label_key(self, resolved: Option<Self>) -> &'static str {
         match (self, resolved) {
-            (Self::Auto, Some(channel)) if channel != Self::Auto => format!(
-                "{}（{}）",
-                crate::lang::display_label(self.label()),
-                crate::lang::display_label(channel.label())
-            ),
-            _ => crate::lang::display_label(self.label()),
+            (Self::Auto, Some(Self::Mirror1)) => "channel.auto.resolved.mirror1",
+            (Self::Auto, Some(Self::Mirror2)) => "channel.auto.resolved.mirror2",
+            (Self::Auto, Some(Self::Official)) => "channel.auto.resolved.official",
+            _ => self.label_key(),
         }
     }
 }
@@ -259,7 +257,7 @@ pub fn save_download_channel_cache(
 
 /// 用已经完成的测速结果写入自动渠道缓存。
 ///
-/// 只有四个固定渠道都拿到结果、且至少有一个渠道成功时才会写入：
+/// 只有全部固定渠道都拿到结果、且至少有一个渠道成功时才会写入：
 /// - 结果不完整说明测速被中断，按已完成渠道写入会把非最优渠道锁定 7 天；
 /// - 全部失败通常是临时的网络问题，写入后“自动”会长期退化成官方直连。
 ///
@@ -658,7 +656,7 @@ fn parse_system_proxy_output(text: &str) -> ParsedSystemProxy {
 fn normalize_proxy_url(proxy: &str) -> Result<String, &'static str> {
     let proxy = proxy.trim();
     if proxy.is_empty() {
-        return Err("自定义代理地址不能为空。");
+        return Err("network.proxy_empty");
     }
     if proxy.starts_with("http://")
         || proxy.starts_with("https://")
@@ -712,12 +710,12 @@ pub(crate) fn build_client(
         .user_agent("AstraBrew-Launcher-macOS");
     if let Some(proxy_url) = selected_proxy_url(proxy_mode, proxy_host)? {
         let proxy = reqwest::Proxy::all(&proxy_url)
-            .map_err(|error| format!("代理地址格式无效：{error}"))?;
+            .map_err(|error| tf("network.test.proxy_format_invalid", &[("error", &error)]))?;
         builder = builder.proxy(proxy);
     }
     builder
         .build()
-        .map_err(|error| format!("构建网络客户端失败：{error}"))
+        .map_err(|error| tf("network.test.client_build_failed", &[("error", &error)]))
 }
 
 /// 单个 GitHub 测试结果。
@@ -764,24 +762,24 @@ fn test_urls(include_api: bool) -> Vec<(String, String, String)> {
     let mut urls = vec![
         (
             "raw".to_owned(),
-            "文件访问".to_owned(),
+            t("network.test.raw").to_owned(),
             "https://raw.githubusercontent.com/SillyTavern/SillyTavern/release/start.sh".to_owned(),
         ),
         (
             "repo".to_owned(),
-            "仓库访问".to_owned(),
+            t("network.test.repo").to_owned(),
             "https://github.com/SillyTavern/SillyTavern".to_owned(),
         ),
         (
             "homepage".to_owned(),
-            "首页访问".to_owned(),
+            t("network.test.homepage").to_owned(),
             "https://www.github.com".to_owned(),
         ),
     ];
     if include_api {
         urls.push((
             "api".to_owned(),
-            "API 访问".to_owned(),
+            t("network.test.api").to_owned(),
             "https://api.github.com/repos/SillyTavern/SillyTavern/releases".to_owned(),
         ));
     }
@@ -814,14 +812,13 @@ fn download_url(channel: DownloadChannel) -> &'static str {
         DownloadChannel::Mirror2 => {
             "https://gitcode.com/GitHub_Trending/si/SillyTavern/archive/refs/tags/1.18.0.tar.gz"
         }
-        DownloadChannel::Mirror3 => {
-            "https://cnb.cool/AstraBrew-Labs/SillyTavern/archive/refs/tags/1.18.0.tar.gz"
-        }
         DownloadChannel::Auto | DownloadChannel::Official => GITHUB_DOWNLOAD_URL,
     }
 }
 
 fn failed_results(error: &str, include_api: bool) -> Vec<GithubMultiTestItem> {
+    // error 是文案键（超时 / 未完成），解析一次后随每个测试项展示。
+    let error = resolve(error);
     let mut items = test_urls(include_api)
         .into_iter()
         .map(|(key, name, _)| GithubMultiTestItem {
@@ -829,24 +826,24 @@ fn failed_results(error: &str, include_api: bool) -> Vec<GithubMultiTestItem> {
             name,
             success: false,
             latency_ms: None,
-            error: Some(error.to_owned()),
+            error: Some(error.clone()),
             warning: None,
         })
         .collect::<Vec<_>>();
     items.push(GithubMultiTestItem {
         key: "clone".to_owned(),
-        name: "仓库克隆".to_owned(),
+        name: t("network.test.clone").to_owned(),
         success: false,
         latency_ms: None,
-        error: Some(error.to_owned()),
+        error: Some(error.clone()),
         warning: None,
     });
     items.push(GithubMultiTestItem {
         key: "speed".to_owned(),
-        name: "下载速度".to_owned(),
+        name: t("network.test.download_speed").to_owned(),
         success: false,
         latency_ms: None,
-        error: Some(error.to_owned()),
+        error: Some(error.clone()),
         warning: None,
     });
     items
@@ -875,7 +872,7 @@ pub fn test_github_multi(
             GithubTestEvent::Completed(results) => Some(results),
             _ => None,
         })
-        .unwrap_or_else(|| failed_results("测试未能完成。", include_api))
+        .unwrap_or_else(|| failed_results("network.test.incomplete", include_api))
 }
 
 /// 在后台线程中执行完整 GitHub 测试，并通过事件发送实时进度。
@@ -1006,20 +1003,20 @@ fn test_http_endpoint(
                     let status_code = status.as_u16();
                     if status_code == 403 || status_code == 404 {
                         success = true;
-                        warning = Some(format!("加速地址可用，但该资源无法加速 ({status_code})"));
+                        warning = Some(tf("network.test.accelerator_unusable_code", &[("status_code", &status_code)]));
                     } else {
                         let mut body = String::new();
                         let _ = response.read_to_string(&mut body);
                         let lower = body.to_lowercase();
                         if lower.contains("invalid input") || lower.contains("无效输入") {
                             success = true;
-                            warning = Some("加速地址可用，但该资源无法加速".to_owned());
+                            warning = Some(t("network.test.accelerator_unusable").to_owned());
                         } else {
-                            error = Some(format!("HTTP {status}（加速地址：{accelerate_url}）"));
+                            error = Some(tf("network.test.http_status_with_proxy", &[("status", &status), ("url", &accelerate_url)]));
                         }
                     }
                 } else {
-                    error = Some(format!("HTTP {status}"));
+                    error = Some(tf("network.test.http_status", &[("status", &status)]));
                 }
             }
 
@@ -1037,7 +1034,7 @@ fn test_http_endpoint(
             name: name.to_owned(),
             success: false,
             latency_ms: None,
-            error: Some(format!("连接失败：{error}")),
+            error: Some(tf("network.test.connection_failed", &[("error", &error)])),
             warning: None,
         },
     }
@@ -1084,7 +1081,8 @@ fn test_git_clone(
     cancel: &Arc<AtomicBool>,
 ) -> GithubMultiTestItem {
     let key = "clone";
-    let name = "仓库克隆";
+    // 项名会直接上屏（设置页的实时测试列表），构造时就按当前语言固化。
+    let name = t("network.test.clone");
     emit(
         sender,
         GithubTestEvent::ItemStarted {
@@ -1104,7 +1102,7 @@ fn test_git_clone(
             name: name.to_owned(),
             success: false,
             latency_ms: None,
-            error: Some(format!("无法创建临时目录：{error}")),
+            error: Some(tf("network.test.temp_dir_failed", &[("error", &error)])),
             warning: None,
         };
     }
@@ -1130,7 +1128,7 @@ fn test_git_clone(
                 name: name.to_owned(),
                 success: false,
                 latency_ms: None,
-                error: Some(format!("无法启动 git：{error}")),
+                error: Some(tf("network.test.git_start_failed", &[("error", &error)])),
                 warning: None,
             };
         }
@@ -1168,7 +1166,7 @@ fn test_git_clone(
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(40)),
             Err(error) => {
-                last_message = Some(format!("等待 git clone 状态失败：{error}"));
+                last_message = Some(tf("network.test.clone_wait_failed", &[("error", &error)]));
                 break;
             }
         }
@@ -1208,7 +1206,7 @@ fn test_git_clone(
             success: false,
             latency_ms: Some(elapsed),
             error: Some(last_message.unwrap_or_else(|| {
-                format!("git clone 失败（退出码：{}）", status.code().unwrap_or(-1))
+                tf("network.test.clone_failed", &[("code", &status.code().unwrap_or(-1))])
             })),
             warning: None,
         },
@@ -1217,7 +1215,7 @@ fn test_git_clone(
             name: name.to_owned(),
             success: false,
             latency_ms: Some(elapsed),
-            error: Some(format!("等待 git clone 结束失败：{error}")),
+            error: Some(tf("network.test.clone_wait_failed", &[("error", &error)])),
             warning: None,
         },
     };
@@ -1395,7 +1393,7 @@ fn test_download_channel_clone(
             channel,
             success: false,
             latency_ms: None,
-            error: Some(format!("无法创建临时目录：{error}")),
+            error: Some(tf("network.test.temp_dir_failed", &[("error", &error)])),
         };
     }
 
@@ -1418,7 +1416,7 @@ fn test_download_channel_clone(
                 channel,
                 success: false,
                 latency_ms: None,
-                error: Some(format!("无法启动 git：{error}")),
+                error: Some(tf("network.test.git_start_failed", &[("error", &error)])),
             };
         }
     };
@@ -1434,7 +1432,7 @@ fn test_download_channel_clone(
                 channel,
                 success: false,
                 latency_ms: None,
-                error: Some("测速已取消".to_owned()),
+                error: Some(t("network.test.channel_speed_cancelled").to_owned()),
             };
         }
         if let Some(receiver) = &progress_receiver {
@@ -1459,7 +1457,7 @@ fn test_download_channel_clone(
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(Duration::from_millis(40)),
             Err(error) => {
-                last_message = Some(format!("等待 git clone 状态失败：{error}"));
+                last_message = Some(tf("network.test.clone_wait_failed", &[("error", &error)]));
                 break;
             }
         }
@@ -1498,14 +1496,14 @@ fn test_download_channel_clone(
             success: false,
             latency_ms: Some(elapsed),
             error: Some(last_message.unwrap_or_else(|| {
-                format!("git clone 失败（退出码：{}）", status.code().unwrap_or(-1))
+                tf("network.test.clone_failed", &[("code", &status.code().unwrap_or(-1))])
             })),
         },
         Err(error) => DownloadChannelTestResult {
             channel,
             success: false,
             latency_ms: Some(elapsed),
-            error: Some(format!("等待 git clone 结束失败：{error}")),
+            error: Some(tf("network.test.clone_wait_failed", &[("error", &error)])),
         },
     };
     let _ = fs::remove_dir_all(&root);
@@ -1518,7 +1516,7 @@ fn cancelled_item(key: &str, name: &str) -> GithubMultiTestItem {
         name: name.to_owned(),
         success: false,
         latency_ms: None,
-        error: Some("测试已取消".to_owned()),
+        error: Some(t("network.test.cancelled").to_owned()),
         warning: None,
     }
 }
@@ -1533,7 +1531,7 @@ fn test_download(
     cancel: &Arc<AtomicBool>,
 ) -> GithubMultiTestItem {
     let key = "speed";
-    let name = "下载速度";
+    let name = t("network.test.download_speed");
     emit(
         sender,
         GithubTestEvent::ItemStarted {
@@ -1553,7 +1551,7 @@ fn test_download(
             name: name.to_owned(),
             success: false,
             latency_ms: None,
-            error: Some(format!("无法创建下载临时目录：{error}")),
+            error: Some(tf("network.test.download_temp_dir_failed", &[("error", &error)])),
             warning: None,
         };
     }
@@ -1573,7 +1571,7 @@ fn test_download(
                         name: name.to_owned(),
                         success: false,
                         latency_ms: None,
-                        error: Some(format!("无法创建下载文件：{error}")),
+                        error: Some(tf("network.test.download_file_create_failed", &[("error", &error)])),
                         warning: None,
                     };
                 }
@@ -1603,7 +1601,7 @@ fn test_download(
                     Ok(0) => break,
                     Ok(read) => {
                         if let Err(error) = file.write_all(&buffer[..read]) {
-                            read_error = Some(format!("写入下载文件失败：{error}"));
+                            read_error = Some(tf("network.test.download_write_failed", &[("error", &error)]));
                             break;
                         }
                         downloaded_bytes += read as u64;
@@ -1629,7 +1627,7 @@ fn test_download(
                         }
                     }
                     Err(error) => {
-                        read_error = Some(format!("下载文件失败：{error}"));
+                        read_error = Some(tf("network.test.download_failed", &[("error", &error)]));
                         break;
                     }
                 }
@@ -1673,12 +1671,12 @@ fn test_download(
             let status = response.status();
             let mut success = false;
             let mut warning = None;
-            let mut error = Some(format!("HTTP {status}"));
+            let mut error = Some(tf("network.test.http_status", &[("status", &status)]));
             if accelerate_url.is_some() && (status.as_u16() == 403 || status.as_u16() == 404) {
                 success = true;
-                warning = Some(format!(
-                    "加速地址可用，但该资源无法加速 ({})",
-                    status.as_u16()
+                warning = Some(tf(
+                    "network.test.accelerator_unusable_code",
+                    &[("status_code", &status.as_u16())]
                 ));
                 error = None;
             } else {
@@ -1699,7 +1697,7 @@ fn test_download(
             name: name.to_owned(),
             success: false,
             latency_ms: None,
-            error: Some(format!("测速失败：{error}")),
+            error: Some(tf("network.test.speed_failed", &[("error", &error)])),
             warning: None,
         },
     };
@@ -1710,19 +1708,19 @@ fn test_download(
 fn speed_message(bytes_per_second: u64) -> String {
     let mbps = bytes_per_second as f64 / 1_048_576.0;
     if mbps < 1.0 {
-        format!("速度较慢 ({:.1} KB/s)", bytes_per_second as f64 / 1024.0)
+        tf("network.speed.slow", &[("speed", &format!("{:.1}", bytes_per_second as f64 / 1024.0))])
     } else if mbps < 4.0 {
-        format!("速度正常 ({mbps:.2} MB/s)")
+        tf("network.speed.normal", &[("mbps", &format!("{mbps:.2}"))])
     } else if mbps < 10.0 {
-        format!("速度很快 ({mbps:.2} MB/s)")
+        tf("network.speed.fast", &[("mbps", &format!("{mbps:.2}"))])
     } else {
-        format!("速度极快 ({mbps:.2} MB/s)")
+        tf("network.speed.very_fast", &[("mbps", &format!("{mbps:.2}"))])
     }
 }
 
 /// 构造旧版风格的超时结果。
 pub fn timeout_results() -> Vec<GithubMultiTestItem> {
-    failed_results("连接超时", true)
+    failed_results("network.test.timeout", true)
 }
 
 #[cfg(test)]
@@ -1748,12 +1746,10 @@ mod tests {
             DownloadChannel::from_key("镜像 2"),
             DownloadChannel::Mirror2
         );
-        assert_eq!(
-            DownloadChannel::from_key("mirror3"),
-            DownloadChannel::Mirror3
-        );
         assert_eq!(DownloadChannel::from_key("官方"), DownloadChannel::Official);
         assert_eq!(DownloadChannel::from_key("unknown"), DownloadChannel::Auto);
+        // 已下线的 mirror3 设置回落到“自动”。
+        assert_eq!(DownloadChannel::from_key("mirror3"), DownloadChannel::Auto);
         assert_eq!(
             DownloadChannel::Mirror1.clone_url(),
             "https://gitee.com/AstraBrew-Labs/SillyTavern.git"
@@ -1762,15 +1758,8 @@ mod tests {
             DownloadChannel::Mirror2.clone_url(),
             "https://gitcode.com/GitHub_Trending/si/SillyTavern.git"
         );
-        assert_eq!(
-            DownloadChannel::Mirror3.clone_url(),
-            "https://cnb.cool/AstraBrew-Labs/SillyTavern.git"
-        );
         assert_eq!(DownloadChannel::Official.clone_url(), GITHUB_CLONE_URL);
-        assert_eq!(
-            download_url(DownloadChannel::Mirror3),
-            "https://cnb.cool/AstraBrew-Labs/SillyTavern/archive/refs/tags/1.18.0.tar.gz"
-        );
+        assert_eq!(DownloadChannel::fixed_channels().len(), 3);
     }
 
     fn release_fixture(tag_name: &str, mirror: MirrorAvailability) -> SillyTavernRelease {
@@ -1979,12 +1968,12 @@ pub enum MirrorAvailability {
 
 impl MirrorAvailability {
     /// 该状态对应的中文文案，英文由语言层自动翻译。
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Official => "官方直连",
-            Self::Synced => "镜像已同步",
-            Self::NotSynced => "镜像未同步，将使用直连",
-            Self::Unknown => "镜像状态未知",
+            Self::Official => "network.mirror_availability.official",
+            Self::Synced => "network.mirror_availability.synced",
+            Self::NotSynced => "network.mirror_availability.not_synced",
+            Self::Unknown => "network.mirror_availability.unknown",
         }
     }
 }
@@ -2323,7 +2312,7 @@ pub fn fetch_sillytavern_catalog(
         if branch == "staging" {
             fetch_sillytavern_staging(&client, SILLYTAVERN_API_MIRROR).or_else(|mirror_error| {
                 fetch_sillytavern_staging(&client, SILLYTAVERN_API_DIRECT).map_err(|direct_error| {
-                    format!("镜像请求失败：{mirror_error}；直连请求失败：{direct_error}")
+                    tf("network.catalog.fetch_failed", &[("mirror_error", &mirror_error), ("direct_error", &direct_error)])
                 })
             })
         } else {
@@ -2333,7 +2322,7 @@ pub fn fetch_sillytavern_catalog(
                     fetch_sillytavern_releases(&client, SILLYTAVERN_API_DIRECT)
                         .map(FetchedCatalog::Release)
                         .map_err(|direct_error| {
-                            format!("镜像请求失败：{mirror_error}；直连请求失败：{direct_error}")
+                            tf("network.catalog.fetch_failed", &[("mirror_error", &mirror_error), ("direct_error", &direct_error)])
                         })
                 })
         }
@@ -2357,7 +2346,7 @@ pub fn fetch_sillytavern_catalog(
                 &catalog.releases,
                 catalog.staging.as_ref(),
             )
-            .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
+            .map_err(|error| tf("network.cache.save_failed", &[("error", &error)]))?;
             catalog.cached_at = unix_seconds().unwrap_or_default();
             Ok(catalog)
         }
@@ -2372,7 +2361,7 @@ pub fn fetch_sillytavern_catalog(
             };
             refresh_catalog_mirror_state(&mut catalog, channel, proxy_mode, proxy_host, now);
             save_sillytavern_versions_cache("staging", channel, &[], catalog.staging.as_ref())
-                .map_err(|error| format!("无法保存酒馆版本缓存：{error}"))?;
+                .map_err(|error| tf("network.cache.save_failed", &[("error", &error)]))?;
             catalog.cached_at = unix_seconds().unwrap_or_default();
             Ok(catalog)
         }
@@ -2441,9 +2430,9 @@ fn fetch_sillytavern_releases(
         }
         let body = response.text().map_err(|error| error.to_string())?;
         let items = serde_json::from_str::<serde_json::Value>(&body)
-            .map_err(|error| format!("发布接口返回格式无效：{error}"))?;
+            .map_err(|error| tf("network.release.parse_failed", &[("error", &error)]))?;
         let Some(items) = items.as_array() else {
-            return Err("发布接口返回格式无效".to_owned());
+            return Err(t("network.release.parse_failed_bare").to_owned());
         };
         if items.is_empty() {
             break;
@@ -2493,12 +2482,12 @@ fn fetch_sillytavern_releases(
         }
         page = page
             .checked_add(1)
-            .ok_or_else(|| "发布版本分页溢出".to_owned())?;
+            .ok_or_else(|| t("network.release.page_overflow").to_owned())?;
     }
     releases.sort_by(compare_releases_desc);
     releases.dedup_by(|left, right| left.tag_name == right.tag_name);
     if releases.is_empty() {
-        return Err("未获取到稳定发行版本".to_owned());
+        return Err(t("network.release.no_stable").to_owned());
     }
     Ok(releases)
 }
@@ -2518,18 +2507,18 @@ fn fetch_sillytavern_staging(
     }
     let body = response.text().map_err(|error| error.to_string())?;
     let value = serde_json::from_str::<serde_json::Value>(&body)
-        .map_err(|error| format!("分支接口返回格式无效：{error}"))?;
+        .map_err(|error| tf("network.branch.parse_failed", &[("error", &error)]))?;
     let object = value
         .as_object()
-        .ok_or_else(|| "分支接口返回格式无效".to_owned())?;
+        .ok_or_else(|| t("network.branch.parse_failed_bare").to_owned())?;
     let commit = object
         .get("commit")
         .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "分支接口缺少 commit".to_owned())?;
+        .ok_or_else(|| t("network.branch.missing_commit").to_owned())?;
     let commit_detail = commit
         .get("commit")
         .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| "分支接口缺少提交详情".to_owned())?;
+        .ok_or_else(|| t("network.branch.missing_commit_detail").to_owned())?;
     let author = commit_detail
         .get("author")
         .and_then(serde_json::Value::as_object);
@@ -2947,7 +2936,7 @@ fn list_remote_tags(
     let output = command
         .args(["ls-remote", "--tags", channel.clone_url()])
         .output()
-        .map_err(|error| format!("无法读取镜像标签：{error}"))?;
+        .map_err(|error| tf("network.mirror.tags_failed", &[("error", &error)]))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
@@ -2971,7 +2960,7 @@ fn list_remote_branches(
     let output = command
         .args(["ls-remote", "--heads", channel.clone_url()])
         .output()
-        .map_err(|error| format!("无法读取镜像分支：{error}"))?;
+        .map_err(|error| tf("network.mirror.branch_failed", &[("error", &error)]))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
@@ -3073,14 +3062,14 @@ pub fn run_sillytavern_install_with_cancel(
             if index > 0 {
                 send_install_log(
                     &sender,
-                    "镜像下载开发版失败，正在回退到官方 GitHub 源。".to_owned(),
+                    t("network.install.mirror_staging_fallback").to_owned(),
                 );
             } else if channel == DownloadChannel::Official
                 && configured_channel != DownloadChannel::Official
             {
                 send_install_log(
                     &sender,
-                    "镜像没有 staging 开发版分支，正在使用官方 GitHub 源。".to_owned(),
+                    t("network.install.mirror_staging_missing").to_owned(),
                 );
             }
 
@@ -3100,7 +3089,7 @@ pub fn run_sillytavern_install_with_cancel(
                     break;
                 }
                 Err(error) => {
-                    send_install_log(&sender, format!("{channel:?} 源下载失败：{error}"));
+                    send_install_log(&sender, tf("network.install.channel_failed", &[("channel", &t(channel.label_key())), ("error", &error)]));
                     sync_error = Some(error);
                     if !target_existed && target.exists() {
                         // 新目录克隆失败时清理残留目录，确保官方源可以重新 clone。
@@ -3127,11 +3116,11 @@ pub fn run_sillytavern_install_with_cancel(
         run_install_command(npm, &sender, &cancel)
     })();
     match &result {
-        Err(error) if error == "安装已取消" => {
-            send_install_log(&sender, "安装已取消。".to_owned());
+        Err(error) if error == INSTALL_CANCELLED => {
+            send_install_log(&sender, t("network.install.cancelled_log").to_owned());
             let _ = sender.send(SillyTavernInstallEvent::Cancelled);
         }
-        Err(error) => send_install_log(&sender, format!("安装失败：{error}")),
+        Err(error) => send_install_log(&sender, tf("network.install.failed", &[("error", &error)])),
         Ok(()) => {}
     }
     let _ = sender.send(SillyTavernInstallEvent::Completed(result));
@@ -3152,9 +3141,9 @@ fn install_git_ref(
     let source_url = channel.clone_url();
     let target_text = target.to_string_lossy().to_string();
     if target_existed {
-        send_install_log(sender, format!("复用现有酒馆目录：{}", target.display()));
+        send_install_log(sender, tf("network.install.reuse_directory", &[("path", &target.display())]));
         if !target.join(".git").is_dir() {
-            return Err("规范目录已存在但不是 Git 仓库，无法安全更新。".to_owned());
+            return Err(t("network.install.unsafe_existing_dir").to_owned());
         }
         let mut set_remote = Command::new(resolve_command("git"));
         configure_git_proxy(&mut set_remote, proxy_mode, proxy_host);
@@ -3198,7 +3187,7 @@ fn install_git_ref(
         run_install_command(checkout, sender, cancel)
     } else {
         if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(|error| format!("无法创建安装目录：{error}"))?;
+            fs::create_dir_all(parent).map_err(|error| tf("network.install.create_dir_failed", &[("error", &error)]))?;
         }
         let mut clone = Command::new(resolve_command("git"));
         configure_git_proxy(&mut clone, proxy_mode, proxy_host);
@@ -3225,7 +3214,7 @@ pub(crate) fn configure_npm_proxy(command: &mut Command, proxy_mode: &str, proxy
 
 fn ensure_not_cancelled(cancel: &AtomicBool) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
-        Err("安装已取消".to_owned())
+        Err(INSTALL_CANCELLED.to_owned())
     } else {
         Ok(())
     }
@@ -3239,8 +3228,15 @@ fn wait_before_npm_install(cancel: &AtomicBool) -> Result<(), String> {
     Ok(())
 }
 
+/// 安装任务被用户取消时使用的内部哨兵错误。
+///
+/// 它是**键**而不是展示文案：创建处与判定处引用同一个常量，
+/// 展示时再按当前语言取值，避免「用翻译结果做比较」在切换语言后失效。
+pub(crate) const INSTALL_CANCELLED: &str = "network.install.cancelled";
+
 fn send_install_log(sender: &Sender<SillyTavernInstallEvent>, line: String) {
-    let _ = sender.send(SillyTavernInstallEvent::Log(line));
+    // 安装日志同样可能是文案键或运行时文本，入队前解析一次。
+    let _ = sender.send(SillyTavernInstallEvent::Log(resolve(&line)));
 }
 
 fn run_install_command(
@@ -3259,10 +3255,10 @@ pub(crate) fn run_logged_command(
 ) -> Result<(), String> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let program = command.get_program().to_string_lossy();
-    log(format!("正在执行 {program}…"));
+    log(tf("network.command.execute", &[("program", &program)]));
     let mut child = command
         .spawn()
-        .map_err(|error| format!("无法启动命令：{error}"))?;
+        .map_err(|error| tf("network.command.start_failed", &[("error", &error)]))?;
     let (line_sender, line_receiver) = mpsc::channel::<String>();
     if let Some(stdout) = child.stdout.take() {
         forward_process_stream(stdout, line_sender.clone());
@@ -3278,7 +3274,7 @@ pub(crate) fn run_logged_command(
         if cancel.load(Ordering::Relaxed) {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("安装已取消".to_owned());
+            return Err(INSTALL_CANCELLED.to_owned());
         }
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -3288,10 +3284,10 @@ pub(crate) fn run_logged_command(
                 if status.success() {
                     return Ok(());
                 }
-                return Err(format!("命令退出码：{}", status.code().unwrap_or(-1)));
+                return Err(tf("network.command.exit_code", &[("code", &status.code().unwrap_or(-1))]));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-            Err(error) => return Err(format!("等待命令结束失败：{error}")),
+            Err(error) => return Err(tf("network.command.wait_failed", &[("error", &error)])),
         }
     }
 }
@@ -3308,7 +3304,7 @@ where
                     let _ = sender.send(line);
                 }
                 Err(error) => {
-                    let _ = sender.send(format!("读取命令日志失败：{error}"));
+                    let _ = sender.send(tf("network.command.read_log_failed", &[("error", &error)]));
                     break;
                 }
             }

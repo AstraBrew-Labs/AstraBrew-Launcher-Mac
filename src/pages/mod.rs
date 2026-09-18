@@ -11,7 +11,7 @@ use astra_ui::{
 };
 
 use crate::app::Message;
-use crate::lang::text;
+use crate::lang::{raw, t, text};
 use crate::theme::button_style;
 pub(crate) mod console;
 pub(crate) mod extensions;
@@ -67,13 +67,13 @@ impl Page {
     /// 页面在导航栏中的中文标题。
     pub const fn title(self) -> &'static str {
         match self {
-            Page::Home => "主页",
-            Page::TavernConfig => "酒馆配置",
-            Page::Version => "版本管理",
-            Page::Extensions => "扩展管理",
-            Page::Resources => "资源管理",
-            Page::Console => "控制台",
-            Page::Settings => "设置",
+            Page::Home => "app.home.title",
+            Page::TavernConfig => "tavern.title",
+            Page::Version => "nav.version",
+            Page::Extensions => "extensions.title",
+            Page::Resources => "resources.title",
+            Page::Console => "app.quick.console.title",
+            Page::Settings => "settings.title",
         }
     }
 
@@ -132,11 +132,11 @@ fn home_view<'a>(
 ) -> Element<'a, Message> {
     let mode_controls_locked = console.status.is_transitioning() || console.is_running();
     let (launch_label, launch_icon, launch_color) = match console.status {
-        ConsoleStatus::Running => ("立即停止", Icon::Square, DANGER),
-        ConsoleStatus::Starting => ("正在启动…", Icon::Loader, WHITE),
-        ConsoleStatus::Stopping => ("正在停止…", Icon::Loader, WHITE),
+        ConsoleStatus::Running => ("app.quick.stop_now", Icon::Square, DANGER),
+        ConsoleStatus::Starting => ("app.quick.starting", Icon::Loader, WHITE),
+        ConsoleStatus::Stopping => ("app.quick.stopping", Icon::Loader, WHITE),
         ConsoleStatus::NotStarted | ConsoleStatus::Stopped | ConsoleStatus::Failed => {
-            ("一键启动", Icon::Play, WHITE)
+            ("app.quick.start", Icon::Play, WHITE)
         }
     };
 
@@ -153,8 +153,8 @@ fn home_view<'a>(
         column![
             row![
                 column![
-                    text("运行环境").size(16).font(crate::core::typography::medium()),
-                    text("启动器检测到的本机依赖与当前配置")
+                    text("app.home.environment").size(16).font(crate::core::typography::medium()),
+                    text("app.home.subtitle")
                         .size(11)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -170,7 +170,7 @@ fn home_view<'a>(
                     info_item_owned(Icon::GitBranch, "Git", environment_version(state.environment.git.as_deref())),
                     info_item_owned(Icon::Hexagon, "Node.js", environment_version(state.environment.nodejs.as_deref())),
                     current_tavern_info_item(versions),
-                    info_item(Icon::Rocket, "启动模式", current_quick_mode(state).label()),
+                    info_item(Icon::Rocket, "app.quick.start_mode", current_quick_mode(state).label_key()),
                 ]
                 .spacing(10),
             )
@@ -197,11 +197,11 @@ fn home_view<'a>(
     ]
     .into_iter()
     .map(|(mode, icon)| {
-        ToggleButtonGroupItem::new(Some(mode.label()), Some(icon), mode == selected_mode)
+        ToggleButtonGroupItem::new(Some(mode.label_key()), Some(icon), mode == selected_mode)
     })
     .collect();
     let mode_select = column![
-        text("启动模式")
+        text("app.quick.start_mode")
             .size(11)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -223,7 +223,7 @@ fn home_view<'a>(
             .into_iter()
             .map(|(browser, icon)| {
                 ToggleButtonGroupItem::new(
-                    Some(browser.label()),
+                    Some(browser.label_key()),
                     Some(icon),
                     browser == tavern.browser_type(),
                 )
@@ -231,7 +231,7 @@ fn home_view<'a>(
             .collect();
 
             column![
-                text("浏览器")
+                text("app.quick.browser")
                     .size(11)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
@@ -245,8 +245,8 @@ fn home_view<'a>(
 
     let service_mode_select: Option<Element<'_, Message>> = state.server_mode_enabled.then(|| {
         let items = [
-            (ServerServiceMode::Lan, "局域网", Icon::Wifi),
-            (ServerServiceMode::Internet, "互联网", Icon::Globe),
+            (ServerServiceMode::Lan, "settings.service_mode.lan", Icon::Wifi),
+            (ServerServiceMode::Internet, "settings.service_mode.internet", Icon::Globe),
         ]
         .into_iter()
         .map(|(mode, label, icon)| {
@@ -255,7 +255,7 @@ fn home_view<'a>(
         .collect();
 
         column![
-            text("服务模式")
+            text("app.quick.service_mode")
                 .size(11)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
@@ -330,7 +330,7 @@ fn home_view<'a>(
             scrollable(
                 column![
                     column![
-                        text("主页").size(25).font(crate::core::typography::medium()),
+                        text("app.home.title").size(25).font(crate::core::typography::medium()),
                         text("AstraBrew Launcher")
                             .size(12)
                             .font(crate::core::typography::regular())
@@ -394,19 +394,19 @@ fn current_quick_mode(state: &SettingsState) -> QuickStartMode {
 }
 
 /// 主页使用的主题感知分段选择器，避免 Astra UI 默认的固定浅色背景。
-pub(crate) fn themed_segmented_group<'a>(
-    items: Vec<ToggleButtonGroupItem<'a>>,
-    on_toggle: impl Fn(usize) -> Message + Clone + 'a,
-) -> Element<'a, Message> {
+pub(crate) fn themed_segmented_group<Message: Clone + 'static>(
+    items: Vec<ToggleButtonGroupItem<'static>>,
+    on_toggle: impl Fn(usize) -> Message + Clone,
+) -> Element<'static, Message> {
     themed_segmented_group_enabled(items, true, on_toggle)
 }
 
 /// 可禁用的分段选择器，酒馆运行期间用于锁定启动模式相关设置。
-pub(crate) fn themed_segmented_group_enabled<'a>(
-    items: Vec<ToggleButtonGroupItem<'a>>,
+pub(crate) fn themed_segmented_group_enabled<Message: Clone + 'static>(
+    items: Vec<ToggleButtonGroupItem<'static>>,
     enabled: bool,
-    on_toggle: impl Fn(usize) -> Message + Clone + 'a,
-) -> Element<'a, Message> {
+    on_toggle: impl Fn(usize) -> Message + Clone,
+) -> Element<'static, Message> {
     let item_count = items.len();
     let controls = items
         .into_iter()
@@ -417,7 +417,7 @@ pub(crate) fn themed_segmented_group_enabled<'a>(
             let icon = item.icon;
             let mut content = row![].spacing(6).align_y(Alignment::Center);
             if let Some(icon) = icon {
-                let icon_text: iced::widget::Text<'a> = icon.into();
+                let icon_text: iced::widget::Text<'static> = icon.into();
                 content = content.push(icon_text.size(15).style(move |theme| {
                     iced::widget::text::Style {
                         color: Some(if selected && enabled {
@@ -533,7 +533,7 @@ fn home_version_selector<'a>(
     let trigger = button(
         row![
             icons::icon(Icon::Beer, 15, selected_color),
-            text(selected_label)
+            raw(selected_label)
                 .size(12)
                 .font(crate::core::typography::medium())
                 .style(move |_theme| iced::widget::text::Style {
@@ -577,7 +577,7 @@ fn home_version_selector<'a>(
         trigger.on_press(Message::HomeTavernVersionSelectorToggled)
     };
     column![
-        text("酒馆版本")
+        text("app.quick.tavern_version")
             .size(11)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -603,7 +603,7 @@ fn home_version_dropdown<'a>(
         let label = format!(
             "{} - {}",
             item.version,
-            crate::lang::display_label(item.source.label())
+            crate::lang::t(item.source.label_key())
         );
         let item_button = button(
             row![
@@ -614,7 +614,7 @@ fn home_version_dropdown<'a>(
                         background: Some(Background::Color(source_color)),
                         ..iced::widget::container::Style::default()
                     }),
-                text(label)
+                raw(label)
                     .size(12)
                     .font(crate::core::typography::medium())
                     .style(move |_theme| iced::widget::text::Style {
@@ -656,7 +656,7 @@ fn home_version_dropdown<'a>(
 
     if version_items.is_empty() {
         menu = menu.push(
-            container(text("暂无可切换的酒馆实例").size(12).style(crate::theme::muted_text_style))
+            container(text("app.quick.no_switchable").size(12).style(crate::theme::muted_text_style))
                 .padding([10, 12]),
         );
     }
@@ -721,9 +721,9 @@ fn current_tavern_label(versions: &VersionState) -> String {
         (Some(version), Some(source)) => format!(
             "{} - {}",
             version,
-            crate::lang::display_label(source.label())
+            crate::lang::t(source.label_key())
         ),
-        _ => "请选择酒馆版本".to_owned(),
+        _ => t("app.quick.select_version").to_owned(),
     }
 }
 
@@ -742,11 +742,11 @@ fn current_tavern_info_item<'a>(versions: &'a VersionState) -> Element<'a, Messa
                 .align_y(Alignment::Center)
                 .style(icon_surface),
             column![
-                text("酒馆版本")
+                text("app.quick.tavern_version")
                     .size(11)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
-                text(value)
+                raw(value)
                     .size(13)
                     .font(crate::core::typography::medium())
                     .style(move |_theme| iced::widget::text::Style { color: Some(color) }),
@@ -778,7 +778,7 @@ fn info_item_owned<'a>(
                     .size(11)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
-                text(value).size(13).font(crate::core::typography::medium()),
+                raw(value).size(13).font(crate::core::typography::medium()),
             ]
             .spacing(2),
         ]
@@ -790,16 +790,16 @@ fn info_item_owned<'a>(
 }
 
 fn environment_version(value: Option<&str>) -> String {
-    value.map(str::to_owned).unwrap_or_else(|| "未检测到".to_owned())
+    value.map(str::to_owned).unwrap_or_else(|| t("app.quick.not_detected").to_owned())
 }
 
 fn environment_status_badge(state: &SettingsState) -> Element<'static, Message> {
     let ready = state.environment.git.is_some() && state.environment.nodejs.is_some();
     if ready {
-        status_badge("环境正常")
+        status_badge("app.quick.env_ok")
     } else {
         status_badge_with_color(
-            "环境不完整",
+            "app.quick.env_incomplete",
             Color::from_rgb8(245, 165, 36),
             Icon::TriangleAlert,
         )

@@ -3,6 +3,7 @@
 //! 页面层只负责收集用户意图，本模块统一执行路径校验、Git 命令和 ZIP 解压，
 //! 防止界面状态与磁盘真实状态脱节。
 
+use crate::lang::tf;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File};
@@ -336,7 +337,7 @@ fn fetch_branches_once(
                 let _ = child.wait_with_output();
                 return Err(ExtensionError::new(
                     "extensions.error.branch_fetch_timeout",
-                    format!("{} 秒", DETECT_TIMEOUT.as_secs()),
+                    tf("extensions.timeout_seconds", &[("seconds", &DETECT_TIMEOUT.as_secs())]),
                 ));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(50)),
@@ -482,7 +483,7 @@ pub fn install_git_extension(
         }
         if index > 0 {
             let _ = sender.send(ExtensionEvent::Log(
-                "extensions.log.proxy_fallback".to_owned(),
+                crate::lang::t("extensions.log.proxy_fallback").to_owned(),
             ));
             remove_if_exists(&staging)?;
         }

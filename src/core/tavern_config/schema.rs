@@ -123,25 +123,25 @@ fn valid_ip_range(value: &str) -> bool {
 
 /// 返回磁盘值；错误只含规则，不包含可能敏感的用户输入。
 pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
-    let text = || ui.as_str().ok_or("配置值类型不正确。");
+    let text = || ui.as_str().ok_or("tavern.field_error.type_invalid");
     let integer = |min: i64, max: i64| -> Result<Value, &'static str> {
         let number = text()?
             .trim()
             .parse::<i64>()
-            .map_err(|_| "请输入有效整数。")?;
+            .map_err(|_| "tavern.field_error.invalid_integer")?;
         if !(min..=max).contains(&number) {
-            return Err("数值超出允许范围。");
+            return Err("tavern.field_error.out_of_range");
         }
         Ok(number.into())
     };
     Ok(match field.kind {
-        Bool => Value::Bool(ui.as_bool().ok_or("配置值类型不正确。")?),
+        Bool => Value::Bool(ui.as_bool().ok_or("tavern.field_error.type_invalid")?),
         Text => Value::String(text()?.to_owned()),
         Ipv4 => {
             text()?
                 .trim()
                 .parse::<Ipv4Addr>()
-                .map_err(|_| "请输入有效 IPv4 地址。")?;
+                .map_err(|_| "tavern.field_error.invalid_ipv4")?;
             Value::String(text()?.trim().to_owned())
         }
         Ipv6 => {
@@ -150,7 +150,7 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
                 .trim_start_matches('[')
                 .trim_end_matches(']')
                 .parse::<Ipv6Addr>()
-                .map_err(|_| "请输入有效 IPv6 地址。")?;
+                .map_err(|_| "tavern.field_error.invalid_ipv6")?;
             Value::String(text()?.trim().to_owned())
         }
         Integer(min, max) => integer(min, max)?,
@@ -162,15 +162,15 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
             }
         }
         List | Whitelist => {
-            let items = ui.as_array().ok_or("配置值类型不正确。")?;
+            let items = ui.as_array().ok_or("tavern.field_error.type_invalid")?;
             let mut values = Vec::new();
             for item in items {
-                let item = item.as_str().ok_or("列表项必须是文本。")?.trim();
+                let item = item.as_str().ok_or("tavern.field_error.list_item_text")?.trim();
                 if item.is_empty() {
-                    return Err("请补全或删除空白列表项。");
+                    return Err("tavern.field_error.list_item_empty");
                 }
                 if matches!(field.kind, Whitelist) && !valid_ip_range(item) {
-                    return Err("白名单需填写 IP 地址或 CIDR 网段。");
+                    return Err("tavern.field_error.whitelist_format");
                 }
                 values.push(Value::String(item.to_owned()));
             }
@@ -183,7 +183,7 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
                 "Firefox" => "firefox",
                 "Edge" => "edge",
                 "Safari" => "safari",
-                _ => return Err("请选择支持的配置值。"),
+                _ => return Err("tavern.field_error.unsupported_value"),
             }
             .into(),
         ),
@@ -192,7 +192,7 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
                 "Jpeg" => "jpg",
                 "Png" => "png",
                 "Webp" => "webp",
-                _ => return Err("请选择支持的配置值。"),
+                _ => return Err("tavern.field_error.unsupported_value"),
             }
             .into(),
         ),
@@ -201,7 +201,7 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
             "Info" => 1,
             "Warn" => 2,
             "Error" => 3,
-            _ => return Err("请选择支持的配置值。"),
+            _ => return Err("tavern.field_error.unsupported_value"),
         }),
     })
 }
@@ -209,12 +209,12 @@ pub fn encode(field: &Field, ui: &Value) -> Result<Value, &'static str> {
 /// 未支持的枚举保留在磁盘，只用 Unknown 标记提醒界面；未编辑时绝不覆盖它。
 pub fn decode(field: &Field, raw: &Value) -> Result<Value, &'static str> {
     let result = match field.kind {
-        Bool => Value::Bool(raw.as_bool().ok_or("配置值类型不正确。")?),
-        Integer(_, _) => Value::String(raw.as_i64().ok_or("配置值类型不正确。")?.to_string()),
+        Bool => Value::Bool(raw.as_bool().ok_or("tavern.field_error.type_invalid")?),
+        Integer(_, _) => Value::String(raw.as_i64().ok_or("tavern.field_error.type_invalid")?.to_string()),
         NullableInteger if raw.is_null() => Value::String(String::new()),
-        NullableInteger => Value::String(raw.as_i64().ok_or("配置值类型不正确。")?.to_string()),
+        NullableInteger => Value::String(raw.as_i64().ok_or("tavern.field_error.type_invalid")?.to_string()),
         Browser => Value::String(
-            match raw.as_str().ok_or("配置值类型不正确。")? {
+            match raw.as_str().ok_or("tavern.field_error.type_invalid")? {
                 "default" => "System",
                 "chrome" => "Chrome",
                 "firefox" => "Firefox",
@@ -225,7 +225,7 @@ pub fn decode(field: &Field, raw: &Value) -> Result<Value, &'static str> {
             .into(),
         ),
         Format => Value::String(
-            match raw.as_str().ok_or("配置值类型不正确。")? {
+            match raw.as_str().ok_or("tavern.field_error.type_invalid")? {
                 "jpg" | "jpeg" => "Jpeg",
                 "png" => "Png",
                 "webp" => "Webp",
@@ -234,7 +234,7 @@ pub fn decode(field: &Field, raw: &Value) -> Result<Value, &'static str> {
             .into(),
         ),
         Log => Value::String(
-            match raw.as_i64().ok_or("配置值类型不正确。")? {
+            match raw.as_i64().ok_or("tavern.field_error.type_invalid")? {
                 0 => "Debug",
                 1 => "Info",
                 2 => "Warn",
@@ -248,11 +248,11 @@ pub fn decode(field: &Field, raw: &Value) -> Result<Value, &'static str> {
                 .as_array()
                 .is_some_and(|items| items.iter().all(Value::is_string))
             {
-                return Err("列表项必须是文本。");
+                return Err("tavern.field_error.list_item_text");
             }
             raw.clone()
         }
-        _ => Value::String(raw.as_str().ok_or("配置值类型不正确。")?.to_owned()),
+        _ => Value::String(raw.as_str().ok_or("tavern.field_error.type_invalid")?.to_owned()),
     };
     if !matches!(field.kind, Browser | Format | Log) {
         encode(field, &result)?;

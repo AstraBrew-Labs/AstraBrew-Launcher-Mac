@@ -20,7 +20,7 @@ use crate::core::library::edit::{
     EditorData, LoadedEditor, LoadedEditorSnapshot, create_preset_prompt, load_editor,
     load_world_book_for_binding, save_editor,
 };
-use crate::lang::{current_language, t, text};
+use crate::lang::{current_language, raw, resolve, t, t_in, text, tf};
 use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
 
 const AUTOSAVE_DELAY: Duration = Duration::from_millis(500);
@@ -321,7 +321,7 @@ impl WorldPosition {
 
 impl fmt::Display for WorldPosition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(t(self.label_key(), current_language()))
+        formatter.write_str(t_in(self.label_key(), current_language()))
     }
 }
 
@@ -353,7 +353,7 @@ impl PresetRole {
 
 impl fmt::Display for PresetRole {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(t(self.label_key(), current_language()))
+        formatter.write_str(t_in(self.label_key(), current_language()))
     }
 }
 
@@ -510,7 +510,7 @@ impl WorkbenchState {
                         let update_result = self.loaded.as_ref().map(|loaded| {
                             loaded
                                 .lock()
-                                .map_err(|_| "资源编辑状态已损坏。".to_owned())
+                                .map_err(|_| t("workbench.error.state_corrupted").to_owned())
                                 .and_then(|mut loaded| loaded.set_character_cover(bytes))
                         });
                         match update_result.transpose() {
@@ -521,9 +521,9 @@ impl WorkbenchState {
                                 return (self.mark_changed(true), WorkbenchEvent::None);
                             }
                             Ok(None) => {
-                                self.operation_error = Some("角色卡尚未加载完成。".to_owned());
+                                self.operation_error = Some(t("workbench.character.not_loaded").to_owned());
                             }
-                            Err(error) => self.operation_error = Some(error),
+                            Err(error) => self.operation_error = Some(resolve(&error)),
                         }
                         self.close_pending = false;
                     }
@@ -534,7 +534,7 @@ impl WorkbenchState {
                         }
                     }
                     Err(error) => {
-                        self.operation_error = Some(error);
+                        self.operation_error = Some(resolve(&error));
                         self.close_pending = false;
                     }
                 }
@@ -949,7 +949,7 @@ impl WorkbenchState {
                         return (self.mark_changed(true), WorkbenchEvent::None);
                     }
                     Err(error) => {
-                        self.operation_error = Some(error);
+                        self.operation_error = Some(resolve(&error));
                         self.close_pending = false;
                     }
                 }
@@ -1015,7 +1015,7 @@ impl WorkbenchState {
                         });
                         return (self.mark_changed(true), WorkbenchEvent::None);
                     }
-                    Err(error) => self.save_error = Some(error),
+                    Err(error) => self.save_error = Some(resolve(&error)),
                 }
                 (Task::none(), WorkbenchEvent::None)
             }
@@ -1075,7 +1075,7 @@ impl WorkbenchState {
                         }
                     }
                     Err(error) => {
-                        self.save_error = Some(error);
+                        self.save_error = Some(resolve(&error));
                         self.close_pending = false;
                     }
                 }
@@ -1176,7 +1176,7 @@ impl WorkbenchState {
             _ => None,
         };
         let Ok(mut loaded) = loaded.lock() else {
-            self.operation_error = Some("资源编辑状态已损坏。".to_owned());
+            self.operation_error = Some(t("workbench.error.state_corrupted").to_owned());
             return Task::none();
         };
         let current = loaded.snapshot();
@@ -1208,17 +1208,17 @@ impl WorkbenchState {
                     // 大型预设的快照克隆、序列化和磁盘写入全部离开 UI 线程。
                     let snapshot = loaded
                         .lock()
-                        .map_err(|_| "资源编辑状态已损坏。".to_owned())?
+                        .map_err(|_| t("workbench.error.state_corrupted").to_owned())?
                         .clone();
                     let saved = save_editor(snapshot)?;
                     loaded
                         .lock()
-                        .map_err(|_| "资源编辑状态已损坏。".to_owned())?
+                        .map_err(|_| t("workbench.error.state_corrupted").to_owned())?
                         .adopt_saved_document(saved);
                     Ok(())
                 })
                 .await
-                .unwrap_or_else(|_| Err("资源保存线程意外退出。".to_owned()))
+                .unwrap_or_else(|_| Err(t("workbench.error.save_thread_crashed").to_owned()))
             },
             move |result| WorkbenchMessage::SaveFinished(revision, result),
         )
@@ -1354,7 +1354,7 @@ fn load_task(path: PathBuf, kind: WorkbenchKind, serial: u64) -> Task<WorkbenchM
                 }))))
             })
             .await
-            .unwrap_or_else(|_| Err("资源加载线程意外退出。".to_owned()))
+            .unwrap_or_else(|_| Err(t("workbench.error.load_thread_crashed").to_owned()))
         },
         move |result| WorkbenchMessage::Loaded(serial, result),
     )
@@ -1364,7 +1364,7 @@ fn select_character_cover_task() -> Task<WorkbenchMessage> {
     Task::perform(
         async {
             let Some(file) = rfd::AsyncFileDialog::new()
-                .add_filter("PNG 图片", &["png"])
+                .add_filter(t("resources.filter.png_image"), &["png"])
                 .pick_file()
                 .await
             else {
@@ -1373,10 +1373,10 @@ fn select_character_cover_task() -> Task<WorkbenchMessage> {
             tokio::task::spawn_blocking(move || {
                 std::fs::read(file.path())
                     .map(Some)
-                    .map_err(|error| format!("读取封面图片失败：{error}"))
+                    .map_err(|error| tf("workbench.error.cover_read_failed", &[("error", &error)]))
             })
             .await
-            .unwrap_or_else(|_| Err("封面图片读取线程意外退出。".to_owned()))
+            .unwrap_or_else(|_| Err(t("workbench.error.cover_thread_crashed").to_owned()))
         },
         WorkbenchMessage::CharacterCoverLoaded,
     )
@@ -1385,9 +1385,9 @@ fn select_character_cover_task() -> Task<WorkbenchMessage> {
 fn take_prepared(parcel: PreparedParcel) -> Result<PreparedWorkbench, String> {
     parcel
         .lock()
-        .map_err(|_| "工作台加载结果已损坏。".to_owned())?
+        .map_err(|_| t("workbench.error.parcel_corrupted").to_owned())?
         .take()
-        .ok_or_else(|| "工作台加载结果已被读取。".to_owned())
+        .ok_or_else(|| t("workbench.error.parcel_consumed").to_owned())
 }
 
 fn add_preset_prompt_task(loaded: Arc<Mutex<LoadedEditor>>) -> Task<WorkbenchMessage> {
@@ -1396,14 +1396,14 @@ fn add_preset_prompt_task(loaded: Arc<Mutex<LoadedEditor>>) -> Task<WorkbenchMes
             tokio::task::spawn_blocking(move || {
                 let loaded = loaded
                     .lock()
-                    .map_err(|_| "资源编辑状态已损坏。".to_owned())?;
+                    .map_err(|_| t("workbench.error.state_corrupted").to_owned())?;
                 let EditorData::Preset(preset) = &loaded.data else {
-                    return Err("当前工作台不是预设编辑器。".to_owned());
+                    return Err(t("workbench.error.not_preset_editor").to_owned());
                 };
                 Ok(create_preset_prompt(&preset.prompts))
             })
             .await
-            .unwrap_or_else(|_| Err("预设条目创建线程意外退出。".to_owned()))
+            .unwrap_or_else(|_| Err(t("workbench.error.prompt_create_thread_crashed").to_owned()))
         },
         WorkbenchMessage::PresetPromptAdded,
     )
@@ -1414,7 +1414,7 @@ fn bind_world_task(path: PathBuf) -> Task<WorkbenchMessage> {
         async move {
             tokio::task::spawn_blocking(move || load_world_book_for_binding(&path))
                 .await
-                .unwrap_or_else(|_| Err("世界书加载线程意外退出。".to_owned()))
+                .unwrap_or_else(|_| Err(t("workbench.error.world_load_thread_crashed").to_owned()))
         },
         WorkbenchMessage::WorldBookBound,
     )
@@ -1628,10 +1628,10 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
     let status = if state.save_error.is_some() {
         row![
             icons::icon(Icon::CircleAlert, 14, DANGER),
-            text(t("workbench.save.failed", language))
+            raw(t_in("workbench.save.failed", language))
                 .size(11)
                 .color(DANGER),
-            button(text(t("workbench.save.retry", language)).size(11))
+            button(raw(t_in("workbench.save.retry", language)).size(11))
                 .on_press(WorkbenchMessage::RetrySave)
                 .padding([5, 9])
                 .style(button_style(ButtonVariant::Secondary)),
@@ -1646,13 +1646,13 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
         row![
             icons::icon(Icon::LoaderCircle, 14, BLUE_600),
             text(if state.close_pending {
-                t("workbench.save.closing", language)
+                t_in("workbench.save.closing", language)
             } else if state.preset_add_pending {
-                t("workbench.preset.adding", language)
+                t_in("workbench.preset.adding", language)
             } else if state.character_cover_pending {
-                t("workbench.character.cover.loading", language)
+                t_in("workbench.character.cover.loading", language)
             } else {
-                t("workbench.save.saving", language)
+                t_in("workbench.save.saving", language)
             })
             .size(11),
         ]
@@ -1661,7 +1661,7 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
     } else {
         row![
             icons::icon(Icon::CircleCheck, 14, SUCCESS),
-            text(t("workbench.save.saved", language)).size(11),
+            raw(t_in("workbench.save.saved", language)).size(11),
         ]
         .spacing(6)
         .align_y(Alignment::Center)
@@ -1692,8 +1692,8 @@ fn workbench_header(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
                 .align_y(Alignment::Center)
                 .style(accent_surface),
             column![
-                text(t(state.kind.title_key(), language)).size(17),
-                text(
+                raw(t_in(state.kind.title_key(), language)).size(17),
+                raw(
                     state
                         .path
                         .as_deref()
@@ -1766,7 +1766,7 @@ fn workbench_body(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
             container(
                 row![
                     icons::icon(Icon::CircleAlert, 15, DANGER),
-                    text(error).size(11).width(Fill).color(DANGER),
+                    raw(error).size(11).width(Fill).color(DANGER),
                 ]
                 .spacing(8)
                 .align_y(Alignment::Center),
@@ -1799,13 +1799,13 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
             .style(panel_surface),
             column![
                 section_title("workbench.character.cover"),
-                text(t("workbench.character.cover.detail", language))
+                raw(t_in("workbench.character.cover.detail", language))
                     .size(11)
                     .style(crate::theme::muted_text_style),
                 button(
                     row![
                         icons::icon(Icon::ImagePlus, 14, BLUE_600),
-                        text(t("workbench.character.cover.change", language)).size(11),
+                        raw(t_in("workbench.character.cover.change", language)).size(11),
                     ]
                     .spacing(6),
                 )
@@ -1846,9 +1846,9 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
             row![
                 icons::icon(Icon::BookPlus, 14, BLUE_600),
                 text(if form.world_book.is_some() {
-                    t("workbench.world.change", language)
+                    t_in("workbench.world.change", language)
                 } else {
-                    t("workbench.world.bind", language)
+                    t_in("workbench.world.bind", language)
                 })
                 .size(11),
             ]
@@ -1860,7 +1860,7 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
         button(
             row![
                 icons::icon(Icon::Unlink, 14, DANGER),
-                text(t("workbench.world.unbind", language)).size(11),
+                raw(t_in("workbench.world.unbind", language)).size(11),
             ]
             .spacing(6),
         )
@@ -1885,7 +1885,7 @@ fn character_view(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
         column![
             section_title("workbench.character.world"),
             world_controls,
-            container(text(t("workbench.world.empty", language)).size(12))
+            container(raw(t_in("workbench.world.empty", language)).size(12))
                 .width(Fill)
                 .padding(18)
                 .style(panel_surface),
@@ -2102,15 +2102,15 @@ fn world_entry_view(
     container(
         column![
             row![
-                text(format!(
+                raw(format!(
                     "{} {}",
-                    t("workbench.world.entry", language),
+                    t_in("workbench.world.entry", language),
                     index + 1
                 ))
                 .size(13),
                 space::horizontal(),
                 checkbox(entry.enabled)
-                    .label(t("workbench.field.enabled", language))
+                    .label(t_in("workbench.field.enabled", language))
                     .on_toggle(move |value| WorkbenchMessage::EntryToggled(index, value)),
             ]
             .align_y(Alignment::Center),
@@ -2145,9 +2145,9 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
             column![
                 section_title("workbench.preset.prompts"),
                 text(if form.has_prompt_order {
-                    t("workbench.preset.order_managed", language)
+                    t_in("workbench.preset.order_managed", language)
                 } else {
-                    t("workbench.preset.direct_managed", language)
+                    t_in("workbench.preset.direct_managed", language)
                 })
                 .size(11)
                 .style(crate::theme::muted_text_style),
@@ -2165,14 +2165,11 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
                         14,
                         BLUE_600
                     ),
-                    text(t(
-                        if add_pending {
+                    raw(t_in(if add_pending {
                             "workbench.preset.adding"
                         } else {
                             "workbench.preset.add"
-                        },
-                        language
-                    ))
+                        }, language))
                     .size(11),
                 ]
                 .spacing(6),
@@ -2220,10 +2217,10 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
     };
     let status_bar = container(
         row![
-            text(format!(
+            raw(format!(
                 "{} {}",
                 form.prompts.len(),
-                t("workbench.preset.items", language),
+                t_in("workbench.preset.items", language),
             ))
             .size(11)
             .style(crate::theme::muted_text_style),
@@ -2248,23 +2245,23 @@ fn preset_view(form: &PresetForm, add_pending: bool) -> Element<'_, WorkbenchMes
 fn preset_prompt_view(index: usize, prompt: &PresetPromptForm) -> Element<'_, WorkbenchMessage> {
     let language = current_language();
     let state_label = if prompt.partial {
-        t("workbench.preset.partial", language)
+        t_in("workbench.preset.partial", language)
     } else if prompt.enabled {
-        t("workbench.field.enabled", language)
+        t_in("workbench.field.enabled", language)
     } else {
-        t("workbench.field.disabled", language)
+        t_in("workbench.field.disabled", language)
     };
     let mut body = column![
         row![
             column![
                 text(if prompt.marker {
-                    t("workbench.preset.marker", language)
+                    t_in("workbench.preset.marker", language)
                 } else {
-                    t("workbench.preset.prompt", language)
+                    t_in("workbench.preset.prompt", language)
                 })
                 .size(11)
                 .style(crate::theme::muted_text_style),
-                text(&prompt.identifier).size(12),
+                raw(&prompt.identifier).size(12),
             ]
             .spacing(2),
             space::horizontal(),
@@ -2331,7 +2328,7 @@ fn world_position_field(
     let selector_text_size = selector_text_size(compact);
     let selected = WorldPosition::from_values(&entry.position, &entry.position_role);
     column![
-        text(t("workbench.field.position", language))
+        raw(t_in("workbench.field.position", language))
             .size(11)
             .style(crate::theme::muted_text_style),
         pick_list(&WORLD_POSITIONS[..], Some(selected), move |position| {
@@ -2354,7 +2351,7 @@ fn preset_role_field(index: usize, prompt: &PresetPromptForm) -> Element<'_, Wor
     let selector_text_size = selector_text_size(false);
     let selected = PresetRole::from_value(&prompt.role);
     column![
-        text(t("workbench.field.role", language))
+        raw(t_in("workbench.field.role", language))
             .size(11)
             .style(crate::theme::muted_text_style),
         pick_list(&PRESET_ROLES[..], Some(selected), move |role| {
@@ -2409,7 +2406,7 @@ fn entry_tags_field(
             34.0 * crate::core::typography::current_ui_scale().max(0.85),
         ))
         .horizontal();
-    let input = text_input(t(placeholder_key, language), entry.tag_input(kind))
+    let input = text_input(t_in(placeholder_key, language), entry.tag_input(kind))
         .on_input(move |value| WorkbenchMessage::EntryTagInputChanged(index, kind, value))
         .on_submit(WorkbenchMessage::AddEntryTag(index, kind))
         .padding([7, 9])
@@ -2417,7 +2414,7 @@ fn entry_tags_field(
         .style(text_input_style)
         .width(Fill);
     column![
-        text(t(label_key, language))
+        raw(t_in(label_key, language))
             .size(11)
             .style(crate::theme::muted_text_style),
         container(chips_view).width(Fill),
@@ -2456,7 +2453,7 @@ fn entry_tag_chip(
 ) -> Element<'_, WorkbenchMessage> {
     container(
         row![
-            text(label).size(11).color(BLUE_600),
+            raw(label).size(11).color(BLUE_600),
             button(
                 container(icons::icon(Icon::X, 11, DANGER))
                     .width(Fill)
@@ -2493,7 +2490,7 @@ fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
     .spacing(6)
     .wrap();
     let input = text_input(
-        t("workbench.character.tags.placeholder", language),
+        t_in("workbench.character.tags.placeholder", language),
         &form.tag_input,
     )
         .on_input(WorkbenchMessage::CharacterTagInputChanged)
@@ -2503,7 +2500,7 @@ fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
         .style(text_input_style)
         .width(Fill);
     column![
-        text(t("workbench.field.tags", language))
+        raw(t_in("workbench.field.tags", language))
             .size(11)
             .style(crate::theme::muted_text_style),
         container(chips).width(Fill),
@@ -2536,7 +2533,7 @@ fn character_tags_field(form: &CharacterForm) -> Element<'_, WorkbenchMessage> {
 fn character_tag_chip<'a>(index: usize, label: &'a str) -> Element<'a, WorkbenchMessage> {
     container(
         row![
-            text(label).size(11).color(BLUE_600),
+            raw(label).size(11).color(BLUE_600),
             button(
                 container(icons::icon(Icon::X, 11, DANGER))
                     .width(Fill)
@@ -2563,7 +2560,7 @@ fn field_input<'a>(
     value: &'a str,
     on_input: impl Fn(String) -> WorkbenchMessage + 'a,
 ) -> Element<'a, WorkbenchMessage> {
-    let label = t(key, current_language());
+    let label = t_in(key, current_language());
     column![
         text(label).size(11).style(crate::theme::muted_text_style),
         text_input(label, value)
@@ -2594,7 +2591,7 @@ fn area_field<'a>(
     content: &'a text_editor::Content,
     on_action: impl Fn(text_editor::Action) -> WorkbenchMessage + 'a,
 ) -> Element<'a, WorkbenchMessage> {
-    let label = t(key, current_language());
+    let label = t_in(key, current_language());
     column![
         text(label).size(11).style(crate::theme::muted_text_style),
         text_editor::TextEditor::new(content)
@@ -2608,7 +2605,7 @@ fn area_field<'a>(
 }
 
 fn section_title(key: &'static str) -> Element<'static, WorkbenchMessage> {
-    text(t(key, current_language()))
+    raw(t_in(key, current_language()))
         .size(14)
         .font(crate::core::typography::medium())
         .into()
@@ -2622,15 +2619,15 @@ fn centered_state<'a>(
     let language = current_language();
     let mut content = column![
         icons::icon(icon, 30, BLUE_600),
-        text(t(title_key, language)).size(14),
+        raw(t_in(title_key, language)).size(14),
     ]
     .spacing(10)
     .align_x(Alignment::Center);
     if let Some((detail, message)) = action {
         content = content
-            .push(text(detail).size(11).style(crate::theme::muted_text_style))
+            .push(raw(detail).size(11).style(crate::theme::muted_text_style))
             .push(
-                button(text(t("workbench.load.retry", language)).size(11))
+                button(raw(t_in("workbench.load.retry", language)).size(11))
                     .on_press(message)
                     .padding([7, 12])
                     .style(button_style(ButtonVariant::Secondary)),
@@ -2653,7 +2650,7 @@ fn world_picker(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
             button(
                 row![
                     icons::icon(Icon::BookOpenText, 14, BLUE_600),
-                    text(&option.name).size(12),
+                    raw(&option.name).size(12),
                 ]
                 .spacing(7),
             )
@@ -2664,12 +2661,12 @@ fn world_picker(state: &WorkbenchState) -> Element<'_, WorkbenchMessage> {
         );
     }
     if state.world_books.is_empty() {
-        list = list.push(text(t("workbench.world.no_options", language)).size(12));
+        list = list.push(raw(t_in("workbench.world.no_options", language)).size(12));
     }
     modal_shell(
         column![
             row![
-                text(t("workbench.world.select", language)).size(15),
+                raw(t_in("workbench.world.select", language)).size(15),
                 space::horizontal(),
                 button(icons::icon(Icon::X, 15, BLUE_600))
                     .on_press(WorkbenchMessage::HideWorldPicker)
@@ -2687,18 +2684,18 @@ fn confirmation_modal(confirmation: &Confirmation) -> Element<'_, WorkbenchMessa
     let language = current_language();
     let (title, detail, confirm) = match confirmation {
         Confirmation::DeletePreset(_) => (
-            t("workbench.confirm.delete.title", language),
-            t("workbench.confirm.delete.detail", language),
+            t_in("workbench.confirm.delete.title", language),
+            t_in("workbench.confirm.delete.detail", language),
             WorkbenchMessage::ConfirmDeletePreset,
         ),
         Confirmation::BindWorld(_) => (
-            t("workbench.confirm.replace.title", language),
-            t("workbench.confirm.replace.detail", language),
+            t_in("workbench.confirm.replace.title", language),
+            t_in("workbench.confirm.replace.detail", language),
             WorkbenchMessage::ConfirmWorldAction,
         ),
         Confirmation::UnbindWorld => (
-            t("workbench.confirm.unbind.title", language),
-            t("workbench.confirm.unbind.detail", language),
+            t_in("workbench.confirm.unbind.title", language),
+            t_in("workbench.confirm.unbind.detail", language),
             WorkbenchMessage::ConfirmWorldAction,
         ),
     };
@@ -2708,11 +2705,11 @@ fn confirmation_modal(confirmation: &Confirmation) -> Element<'_, WorkbenchMessa
             text(detail).size(12).style(crate::theme::muted_text_style),
             row![
                 space::horizontal(),
-                button(text(t("workbench.confirm.cancel", language)).size(11))
+                button(raw(t_in("workbench.confirm.cancel", language)).size(11))
                     .on_press(WorkbenchMessage::CancelConfirmation)
                     .padding([7, 12])
                     .style(button_style(ButtonVariant::Secondary)),
-                button(text(t("workbench.confirm.continue", language)).size(11))
+                button(raw(t_in("workbench.confirm.continue", language)).size(11))
                     .on_press(confirm)
                     .padding([7, 12])
                     .style(button_style(ButtonVariant::Primary)),

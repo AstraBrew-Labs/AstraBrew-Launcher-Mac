@@ -235,13 +235,13 @@ pub fn alert<'a, Message: 'a>(
         row![
             indicator,
             column![
-                iced::widget::text(title)
+                crate::lang::raw(crate::lang::resolve(title))
                     .size(13)
                     .font(crate::core::typography::medium())
                     .style(move |theme| iced::widget::text::Style {
                         color: Some(accent(theme)),
                     }),
-                iced::widget::text(description)
+                crate::lang::raw(crate::lang::resolve(description))
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(muted_text_style),
@@ -300,9 +300,10 @@ fn switch_thumb_style(theme: &Theme) -> container::Style {
 }
 
 /// 使用当前动态字体渲染的扁平状态标签。
-pub fn flat_chip<'a, Message: 'a>(label: &'a str, color: Color) -> Element<'a, Message> {
+/// 小尺寸标签胶囊。`label` 是文案键，渲染时按当前语言取值。
+pub fn flat_chip<'a, Message: 'a>(label: &'static str, color: Color) -> Element<'a, Message> {
     container(
-        iced::widget::text(label)
+        crate::lang::text(label)
             .size(11)
             .font(crate::core::typography::medium())
             .color(color),

@@ -2,6 +2,7 @@
 //!
 //! 所有 PM2 CLI 调用都由控制台运行时线程执行，避免阻塞 iced 主线程。
 
+use crate::lang::tf;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -62,25 +63,25 @@ impl Pm2Manager {
         for (key, value) in environment {
             command.env(key, value);
         }
-        run_checked(command, "PM2 启动失败")
+        run_checked(command, "pm2.start_failed")
     }
 
     pub fn stop(&self) -> Result<(), String> {
         let mut command = pm2_command();
         command.arg("stop").arg(PROCESS_NAME);
-        run_checked(command, "PM2 停止失败")
+        run_checked(command, "pm2.stop_failed")
     }
 
     pub fn restart(&self) -> Result<(), String> {
         let mut command = pm2_command();
         command.arg("restart").arg(PROCESS_NAME).arg("--update-env");
-        run_checked(command, "PM2 重启失败")
+        run_checked(command, "pm2.restart_failed")
     }
 
     pub fn delete(&self) -> Result<(), String> {
         let mut command = pm2_command();
         command.arg("delete").arg(PROCESS_NAME);
-        run_checked(command, "PM2 删除进程失败")
+        run_checked(command, "pm2.delete_failed")
     }
 
     /// 读取 PM2 中当前托管进程的状态。
@@ -88,7 +89,7 @@ impl Pm2Manager {
         let output = pm2_command()
             .arg("jlist")
             .output()
-            .map_err(|error| format!("无法查询 PM2 状态：{error}"))?;
+            .map_err(|error| tf("pm2.status_query_failed", &[("error", &error)]))?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
@@ -98,9 +99,9 @@ impl Pm2Manager {
                 .take(240)
                 .collect::<String>();
             if preview.trim().is_empty() {
-                format!("PM2 状态格式无效：{error}；命令没有返回 JSON。")
+                tf("pm2.status_format_invalid", &[("error", &error)])
             } else {
-                format!("PM2 状态格式无效：{error}；输出：{}", preview.trim())
+                tf("pm2.status_format_invalid_output", &[("error", &error.to_string()), ("output", &preview.trim().to_string())])
             }
         })?;
         let Some(value) = values
@@ -164,17 +165,17 @@ impl Pm2Manager {
         let mut file = match fs::File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(format!("无法读取 PM2 日志 {}：{error}", path.display())),
+            Err(error) => return Err(tf("pm2.log_read_failed", &[("path", &path.display().to_string()), ("error", &error.to_string())])),
         };
         let length = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
         if *offset > length {
             *offset = 0;
         }
         file.seek(SeekFrom::Start(*offset))
-            .map_err(|error| format!("无法定位 PM2 日志：{error}"))?;
+            .map_err(|error| tf("pm2.log_locate_failed", &[("error", &error)]))?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
-            .map_err(|error| format!("无法读取 PM2 日志：{error}"))?;
+            .map_err(|error| tf("pm2.log_open_failed", &[("error", &error)]))?;
         *offset = file.stream_position().unwrap_or(length);
         Ok(String::from_utf8_lossy(&bytes)
             .lines()

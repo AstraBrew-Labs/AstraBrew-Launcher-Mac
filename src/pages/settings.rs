@@ -23,7 +23,7 @@ use crate::core::typography::{
 };
 pub use crate::core::settings::{DisplayLanguage, ThemeMode};
 use crate::lang::lang::current_language;
-use crate::lang::{t, text};
+use crate::lang::{raw, t, t_in, text, tf};
 use crate::theme::{button_style, pick_list_menu_style, slider_style, text_input_style};
 
 const INPUT_WIDTH: f32 = 250.0;
@@ -37,7 +37,7 @@ macro_rules! enum_text {
     ($ty:ident, $([$variant:ident, $label:literal]),+ $(,)?) => {
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&crate::lang::display_label(match self { $(Self::$variant => $label,)+ }))
+                f.write_str(&crate::lang::t(match self { $(Self::$variant => $label,)+ }))
             }
         }
     };
@@ -52,9 +52,9 @@ pub enum CpuCores {
 }
 enum_text!(
     CpuCores,
-    [Auto, "自动"],
-    [Half, "一半核心"],
-    [All, "全部核心"]
+    [Auto, "channel.auto"],
+    [Half, "settings.cpu_cores.half"],
+    [All, "settings.cpu_cores.all"]
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -63,7 +63,7 @@ pub enum StartMode {
     Normal,
     Desktop,
 }
-enum_text!(StartMode, [Normal, "正常模式"], [Desktop, "桌面模式"]);
+enum_text!(StartMode, [Normal, "settings.start_mode.normal"], [Desktop, "settings.start_mode.desktop"]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum QuickStartMode {
@@ -73,11 +73,11 @@ pub enum QuickStartMode {
     Server,
 }
 impl QuickStartMode {
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Normal => "普通模式",
-            Self::Desktop => "桌面模式",
-            Self::Server => "服务器模式",
+            Self::Normal => "settings.quick_start.normal",
+            Self::Desktop => "settings.start_mode.desktop",
+            Self::Server => "settings.quick_start.server",
         }
     }
 }
@@ -104,7 +104,7 @@ impl ServerServiceMode {
         }
     }
 }
-enum_text!(ServerServiceMode, [Lan, "局域网"], [Internet, "互联网"]);
+enum_text!(ServerServiceMode, [Lan, "settings.service_mode.lan"], [Internet, "settings.service_mode.internet"]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TavernDataMode {
@@ -112,7 +112,7 @@ pub enum TavernDataMode {
     #[default]
     Current,
 }
-enum_text!(TavernDataMode, [Global, "全局数据"], [Current, "独立数据"]);
+enum_text!(TavernDataMode, [Global, "settings.data_mode.global"], [Current, "settings.data_mode.current"]);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NpmRegistry {
@@ -144,10 +144,10 @@ impl NpmRegistry {
 }
 enum_text!(
     NpmRegistry,
-    [Official, "NPM 官方源"],
+    [Official, "settings.npm_registry.official"],
     [Npmmirror, "npmmirror"],
-    [Tencent, "腾讯云镜像"],
-    [HuaweiCloud, "华为云镜像"]
+    [Tencent, "settings.npm_registry.tencent"],
+    [HuaweiCloud, "settings.npm_registry.huawei_cloud"]
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -160,11 +160,11 @@ pub enum ProxyMode {
 impl fmt::Display for ProxyMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
-            Self::None => "代理关闭",
-            Self::System => "跟随系统",
-            Self::Custom => "自定义代理",
+            Self::None => "settings.proxy_mode.none",
+            Self::System => "settings.language.system",
+            Self::Custom => "settings.proxy_mode.custom",
         };
-        f.write_str(&crate::lang::display_label(label))
+        f.write_str(&crate::lang::t(label))
     }
 }
 
@@ -180,12 +180,12 @@ pub enum SettingsAction {
 impl SettingsAction {
     pub const fn feedback(self) -> &'static str {
         match self {
-            Self::OpenLoginItemSettings => "已打开系统登录项设置。",
-            Self::ChooseExportPath => "已更新酒馆资源保存位置。",
-            Self::ChooseGlobalDataPath => "已更新全局数据存放位置。",
-            Self::RefreshDownloadChannel => "下载渠道测速已刷新。",
-            Self::TestGithub => "GitHub 连通性测试服务待接入。",
-            Self::CheckUpdate => "启动器更新检查服务待接入。",
+            Self::OpenLoginItemSettings => "settings.action.login_item_opened",
+            Self::ChooseExportPath => "settings.action.export_path_updated",
+            Self::ChooseGlobalDataPath => "settings.action.global_data_path_updated",
+            Self::RefreshDownloadChannel => "settings.action.download_channel_refreshed",
+            Self::TestGithub => "settings.action.github_pending",
+            Self::CheckUpdate => "settings.action.update_pending",
         }
     }
 }
@@ -503,8 +503,8 @@ impl SettingsState {
 pub fn settings_view(state: &SettingsState, mode_controls_locked: bool) -> Element<'_, Message> {
     let header = row![
         column![
-            text("设置").size(24).font(crate::core::typography::medium()),
-            text("管理启动器外观、酒馆运行方式、环境依赖与网络连接")
+            text("settings.title").size(24).font(crate::core::typography::medium()),
+            text("settings.subtitle")
                 .size(12)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style)
@@ -514,7 +514,7 @@ pub fn settings_view(state: &SettingsState, mode_controls_locked: bool) -> Eleme
         button(
             row![
                 crate::theme::muted_icon(Icon::RotateCcw, 15),
-                text("恢复默认").size(12).font(crate::core::typography::medium())
+                text("settings.restore_defaults").size(12).font(crate::core::typography::medium())
             ]
             .spacing(7)
             .align_y(Alignment::Center)
@@ -540,14 +540,14 @@ pub fn settings_view(state: &SettingsState, mode_controls_locked: bool) -> Eleme
     .width(Fill);
     if let Some(error) = &state.appearance_error {
         sections = sections.push(crate::theme::alert(
-            t("settings.interface.font.error_title", current_language()),
+            t_in("settings.interface.font.error_title", current_language()),
             error,
             AlertKind::Danger,
         ));
     }
     if let Some(error) = &state.save_error {
         sections = sections.push(crate::theme::alert(
-            "设置未能保存",
+            "settings.save_failed",
             error,
             AlertKind::Danger,
         ));
@@ -610,10 +610,10 @@ pub(crate) fn nodejs_required_modal() -> Element<'static, Message> {
                     .align_y(Alignment::Center)
                     .style(environment_log_style),
                     column![
-                        text(t("environment.nodejs_required.title", language))
+                        raw(t_in("environment.nodejs_required.title", language))
                             .size(18)
                             .font(crate::core::typography::medium()),
-                        text(t("environment.nodejs_required.description", language))
+                        raw(t_in("environment.nodejs_required.description", language))
                             .size(12)
                             .font(crate::core::typography::regular())
                             .style(crate::theme::muted_text_style),
@@ -624,14 +624,14 @@ pub(crate) fn nodejs_required_modal() -> Element<'static, Message> {
                 .spacing(14)
                 .align_y(Alignment::Center),
                 crate::theme::alert(
-                    t("environment.nodejs_required.title", language),
-                    t("environment.nodejs_required.action_hint", language),
+                    t_in("environment.nodejs_required.title", language),
+                    t_in("environment.nodejs_required.action_hint", language),
                     AlertKind::Info,
                 ),
                 row![
                     space::horizontal(),
                     button(
-                        text(t("environment.nodejs_required.later", language))
+                        raw(t_in("environment.nodejs_required.later", language))
                             .size(12)
                             .font(crate::core::typography::medium())
                     )
@@ -642,7 +642,7 @@ pub(crate) fn nodejs_required_modal() -> Element<'static, Message> {
                     button(
                         row![
                             icons::icon(Icon::Download, 15, iced::Color::WHITE),
-                            text(t("environment.nodejs_required.install", language))
+                            raw(t_in("environment.nodejs_required.install", language))
                                 .size(12)
                                 .font(crate::core::typography::medium())
                                 .color(iced::Color::WHITE),
@@ -706,13 +706,13 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
                 let detail = if result.success {
                     result
                         .latency_ms
-                        .map(|latency| format!("测速成功 · {latency} ms"))
-                        .unwrap_or_else(|| "测速成功".to_owned())
+                        .map(|latency| tf("settings.channel_test.speed_ok_latency", &[("latency", &latency)]))
+                        .unwrap_or_else(|| t("settings.channel_test.speed_ok").to_owned())
                 } else {
                     result
                         .error
                         .clone()
-                        .unwrap_or_else(|| "测速失败".to_owned())
+                        .unwrap_or_else(|| t("settings.channel_test.speed_failed").to_owned())
                 };
                 let icon = if result.success {
                     icons::icon(Icon::CircleCheck, 16, iced::Color::from_rgb8(23, 201, 100))
@@ -721,7 +721,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
                 };
                 (
                     icon,
-                    text(detail)
+                    raw(detail)
                         .size(10)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style)
@@ -733,14 +733,14 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
                     .clone_stage
                     .as_deref()
                     .map(crate::lang::github_clone_stage_label)
-                    .unwrap_or_else(|| "准备克隆".to_owned());
+                    .unwrap_or_else(|| t("git.clone.preparing").to_owned());
                 let percent = test
                     .clone_percentage
                     .map(|value| format!("{value:.0}%"))
-                    .unwrap_or_else(|| "进行中".to_owned());
+                    .unwrap_or_else(|| t("git.clone.in_progress").to_owned());
                 let detail = format!("{stage} {percent}");
                 let counts = match (test.clone_current, test.clone_total) {
-                    (Some(current), Some(total)) => Some(format!("{current} / {total} 个对象")),
+                    (Some(current), Some(total)) => Some(tf("git.clone.objects", &[("current", &current), ("total", &total)])),
                     _ => None,
                 };
                 let detail = if let Some(counts) = counts {
@@ -760,7 +760,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
                 };
                 (
                     crate::theme::subtle_icon(Icon::Circle, 13),
-                    text(detail)
+                    raw(detail)
                         .size(10)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style)
@@ -770,13 +770,13 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
             } else {
                 (
                     crate::theme::subtle_icon(Icon::Circle, 13),
-                    text("等待测试…").into(),
+                    text("settings.channel_test.waiting").into(),
                     text("").into(),
                 )
             };
             row![
                 icon,
-                column![text(channel.label()).size(12).font(crate::core::typography::medium()), detail]
+                column![text(channel.label_key()).size(12).font(crate::core::typography::medium()), detail]
                     .spacing(3)
                     .width(Fill),
                 indicator,
@@ -794,7 +794,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
                 .is_indeterminate(true)
                 .animation_phase(phase)
                 .color(ProgressCircleColor::Accent),
-            text("正在测速下载渠道…").size(12).font(crate::core::typography::medium()),
+            text("settings.channel_test.running").size(12).font(crate::core::typography::medium()),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -802,7 +802,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
     } else if test.timed_out {
         row![
             icons::icon(Icon::ClockAlert, 16, iced::Color::from_rgb8(245, 165, 36)),
-            text("测速耗时较长，已完成的渠道结果会保留，完成后自动生效。")
+            text("settings.channel_test.slow_hint")
                 .size(12)
                 .font(crate::core::typography::medium()),
         ]
@@ -812,7 +812,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
     } else if test.all_failed {
         row![
             icons::icon(Icon::CircleX, 16, iced::Color::from_rgb8(255, 56, 60)),
-            text("所有渠道测速失败，已回退到官方渠道。")
+            text("settings.channel_test.all_failed")
                 .size(12)
                 .font(crate::core::typography::medium()),
         ]
@@ -822,13 +822,16 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
     } else {
         row![
             icons::icon(Icon::CircleCheck, 16, iced::Color::from_rgb8(23, 201, 100)),
-            text(format!(
-                "最快渠道：{}",
-                state
-                    .download_resolved_channel
-                    .or(test.current_channel)
-                    .unwrap_or(DownloadChannel::Official)
-                    .label()
+            raw(tf(
+                "settings.channel_test.fastest",
+                &[(
+                    "channel",
+                    &t(state
+                        .download_resolved_channel
+                        .or(test.current_channel)
+                        .unwrap_or(DownloadChannel::Official)
+                        .label_key()),
+                )],
             ))
             .size(12)
             .font(crate::core::typography::medium()),
@@ -842,7 +845,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
         status,
         space::horizontal(),
         button(
-            text(if test.running { "取消" } else { "关闭" })
+            text(if test.running { "common.cancel" } else { "common.close" })
                 .size(12)
                 .font(crate::core::typography::medium())
         )
@@ -858,7 +861,7 @@ fn download_channel_test_modal(state: &SettingsState) -> Element<'_, Message> {
     let panel = mouse_area(
         container(
             column![
-                text("酒馆下载渠道测速").size(18).font(crate::core::typography::medium()),
+                text("settings.channel_test.title").size(18).font(crate::core::typography::medium()),
                 rule::horizontal(1.0).style(crate::theme::separator_style),
                 scrollable(
                     container(column(rows).spacing(8))
@@ -973,10 +976,10 @@ fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
             .into()
     };
 
-    let status_title = format!("{} {}", t(status_key, language), dependency.name());
+    let status_title = format!("{} {}", t_in(status_key, language), dependency.name());
     let elapsed_label = format!(
         "{} {}s",
-        t("environment.install.elapsed", language),
+        t_in("environment.install.elapsed", language),
         elapsed
     );
     let latest_line = task
@@ -985,26 +988,26 @@ fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
         .rev()
         .find(|line| !line.trim().is_empty())
         .map(|line| truncate_environment_log(line, 78))
-        .unwrap_or_else(|| t("environment.install.waiting", language).to_owned());
+        .unwrap_or_else(|| t_in("environment.install.waiting", language).to_owned());
 
     let action_label = if task.running {
-        t("environment.install.cancel", language)
+        t_in("environment.install.cancel", language)
     } else {
-        t("environment.install.close", language)
+        t_in("environment.install.close", language)
     };
     let details_label = if task.show_details {
-        t("environment.install.hide_details", language)
+        t_in("environment.install.hide_details", language)
     } else {
-        t("environment.install.show_details", language)
+        t_in("environment.install.show_details", language)
     };
 
     let header = row![
         status_icon,
         column![
-            text(status_title).size(14).font(crate::core::typography::medium()),
-            text(format!(
+            raw(status_title).size(14).font(crate::core::typography::medium()),
+            raw(format!(
                 "{}  ·  {}",
-                t(description_key, language),
+                t_in(description_key, language),
                 elapsed_label
             ))
             .size(10)
@@ -1039,7 +1042,7 @@ fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
                 INK_MUTED
             },
         ),
-        text(latest_line)
+        raw(latest_line)
             .size(10)
             .font(Font::MONOSPACE)
             .style(crate::theme::muted_text_style),
@@ -1084,7 +1087,7 @@ fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
 
     if task.running {
         content = content.push(
-            text(t("environment.install.progress_unknown", language))
+            raw(t_in("environment.install.progress_unknown", language))
                 .size(9)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -1094,14 +1097,14 @@ fn environment_task_modal(task: &EnvironmentTaskState) -> Element<'_, Message> {
 
     if task.show_details {
         let log = if task.log.is_empty() {
-            t("environment.install.waiting", language)
+            t_in("environment.install.waiting", language)
         } else {
             task.log.as_str()
         };
         content = content.push(
             scrollable(
                 container(
-                    text(log)
+                    raw(log)
                         .size(10)
                         .font(Font::MONOSPACE)
                         .style(crate::theme::text_style),
@@ -1159,19 +1162,19 @@ fn truncate_environment_log(line: &str, max_chars: usize) -> String {
 fn interface_settings(state: &SettingsState) -> Element<'_, Message> {
     section(
         Icon::Palette,
-        "界面设置",
-        "调整启动器的显示语言、主题与窗口行为。",
+        "settings.section.interface",
+        "settings.section.interface.hint",
         section_rows(vec![
             setting_row(
                 Icon::Languages,
-                "语言",
-                "选择显示语言或跟随系统。",
+                "settings.field.language",
+                "settings.field.language.hint",
                 segmented_control(
                     &[
-                        (DisplayLanguage::System, "跟随系统", Icon::Monitor),
+                        (DisplayLanguage::System, "settings.language.system", Icon::Monitor),
                         (
                             DisplayLanguage::SimplifiedChinese,
-                            "简体中文",
+                            "settings.language.simplified_chinese",
                             Icon::Languages,
                         ),
                         (DisplayLanguage::English, "English", Icon::Languages),
@@ -1182,13 +1185,13 @@ fn interface_settings(state: &SettingsState) -> Element<'_, Message> {
             ),
             setting_row(
                 Icon::SunMoon,
-                "主题",
-                "选择浅色、深色或跟随系统外观。",
+                "settings.field.theme",
+                "settings.field.theme.hint",
                 segmented_control(
                     &[
-                        (ThemeMode::System, "跟随系统", Icon::Monitor),
-                        (ThemeMode::Light, "浅色", Icon::Sun),
-                        (ThemeMode::Dark, "深色", Icon::Moon),
+                        (ThemeMode::System, "settings.theme_mode.system", Icon::Monitor),
+                        (ThemeMode::Light, "settings.theme_mode.light", Icon::Sun),
+                        (ThemeMode::Dark, "settings.theme_mode.dark", Icon::Moon),
                     ],
                     state.theme,
                     Message::SettingsThemeSelected,
@@ -1196,20 +1199,20 @@ fn interface_settings(state: &SettingsState) -> Element<'_, Message> {
             ),
             setting_row(
                 Icon::Scaling,
-                t("settings.interface.scale.title", current_language()),
-                t("settings.interface.scale.description", current_language()),
+                "settings.interface.scale.title",
+                "settings.interface.scale.description",
                 ui_scale_control(state.ui_scale),
             ),
             setting_row(
                 Icon::Type,
-                t("settings.interface.font.title", current_language()),
-                t("settings.interface.font.description", current_language()),
+                "settings.interface.font.title",
+                "settings.interface.font.description",
                 font_control(state),
             ),
             setting_row(
                 Icon::PanelsTopLeft,
-                "记住上次窗口位置",
-                "启动时恢复上次窗口的位置。",
+                "settings.field.remember_window",
+                "settings.field.remember_window.hint",
                 toggle_control(
                     state.remember_window_position,
                     Message::SettingsRememberWindowPosition,
@@ -1221,7 +1224,7 @@ fn interface_settings(state: &SettingsState) -> Element<'_, Message> {
 
 fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<'_, Message> {
     let launch_mode_control: Element<'_, Message> = if state.server_mode_enabled {
-        readonly_text("服务器模式")
+        readonly_text("settings.quick_start.server")
     } else {
         start_mode_control(state.start_mode, !mode_controls_locked)
     };
@@ -1229,12 +1232,12 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
     let mut rows = vec![
         setting_row(
             Icon::Power,
-            "软件自启动",
-            "开机时自动启动星酿启动器。",
+            "settings.field.auto_launch",
+            "settings.field.auto_launch.hint",
             row![
                 toggle_control(state.auto_start, Message::SettingsAutoStart),
                 action_button(
-                    "系统设置",
+                    "settings.auto_launch.open_login_items",
                     Icon::ExternalLink,
                     SettingsAction::OpenLoginItemSettings
                 )
@@ -1245,13 +1248,13 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         ),
         setting_row(
             Icon::Cpu,
-            "扫描占用核心数",
-            "分配用于全盘扫描的 CPU 线程数。",
+            "settings.field.scan_cores",
+            "settings.field.scan_cores.hint",
             segmented_control(
                 &[
-                    (CpuCores::Auto, "自动", Icon::Gauge),
-                    (CpuCores::Half, "一半核心", Icon::CircleGauge),
-                    (CpuCores::All, "全部核心", Icon::Cpu),
+                    (CpuCores::Auto, "settings.cpu_cores.auto", Icon::Gauge),
+                    (CpuCores::Half, "settings.cpu_cores.half", Icon::CircleGauge),
+                    (CpuCores::All, "settings.cpu_cores.all", Icon::Cpu),
                 ],
                 state.cpu_cores,
                 Message::SettingsCpuCoresSelected,
@@ -1259,8 +1262,8 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         ),
         setting_row(
             Icon::Play,
-            "酒馆启动模式",
-            "正常模式直接使用浏览器；桌面模式使用内置 WebView；服务器模式下固定为服务器模式。",
+            "settings.field.tavern_start_mode",
+            "settings.field.tavern_start_mode.hint",
             launch_mode_control,
         ),
     ];
@@ -1270,8 +1273,8 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         rows.extend([
             setting_row(
                 Icon::CircleStop,
-                "关闭酒馆窗口自动停止服务",
-                "桌面模式下关闭 WebView 窗口时自动停止酒馆服务。",
+                "settings.field.stop_on_window_close",
+                "settings.field.stop_on_window_close.hint",
                 toggle_control(
                     state.auto_stop_tavern_on_window_close,
                     Message::SettingsAutoStopTavern,
@@ -1279,8 +1282,8 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
             ),
             setting_row(
                 Icon::FolderOpen,
-                "酒馆资源保存",
-                "桌面模式下酒馆页面导出资源的默认保存位置。",
+                "settings.field.resource_save_path",
+                "settings.field.resource_save_path.hint",
                 path_control(&state.tavern_export_path, SettingsAction::ChooseExportPath),
             ),
         ]);
@@ -1288,10 +1291,10 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
 
     rows.push(setting_row(
         Icon::Server,
-        "启用服务器模式",
-        "把此设备作为仅运行酒馆服务的服务器。",
+        "settings.field.server_mode",
+        "settings.field.server_mode.hint",
         if mode_controls_locked {
-            readonly_text(if state.server_mode_enabled { "已启用" } else { "未启用" })
+            readonly_text(if state.server_mode_enabled { "workbench.field.enabled" } else { "settings.value.not_enabled" })
         } else {
             toggle_control(state.server_mode_enabled, Message::SettingsServerMode)
         },
@@ -1301,12 +1304,12 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
     if state.server_mode_enabled {
         rows.push(setting_row(
             Icon::Globe,
-            "酒馆服务模式",
-            "选择只向局域网开放，或向互联网开放。",
+            "settings.field.tavern_service_mode",
+            "settings.field.tavern_service_mode.hint",
             segmented_control_enabled(
                 &[
-                    (ServerServiceMode::Lan, "局域网", Icon::Wifi),
-                    (ServerServiceMode::Internet, "互联网", Icon::Earth),
+                    (ServerServiceMode::Lan, "settings.service_mode.lan", Icon::Wifi),
+                    (ServerServiceMode::Internet, "settings.service_mode.internet", Icon::Earth),
                 ],
                 state.server_service_mode,
                 !mode_controls_locked,
@@ -1319,10 +1322,10 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         let pm2_available = state.environment.pm2.is_some();
         rows.push(setting_row(
             Icon::CloudCog,
-            "允许酒馆后台运行",
-            "关闭启动器后继续运行酒馆服务，需要 PM2。",
+            "settings.field.allow_background",
+            "settings.field.allow_background.hint",
             if mode_controls_locked || !pm2_available {
-                readonly_text(if state.allow_tavern_background { "已启用" } else { "未启用" })
+                readonly_text(if state.allow_tavern_background { "workbench.field.enabled" } else { "settings.value.not_enabled" })
             } else {
                 toggle_control(
                     state.allow_tavern_background,
@@ -1333,9 +1336,9 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         if state.server_service_mode == ServerServiceMode::Internet {
             rows.push(setting_row(
                 Icon::Waypoints,
-                "反向代理",
-                "互联网服务模式使用的域名、端口与证书功能。",
-                readonly_text("待开发"),
+                "settings.field.reverse_proxy",
+                "settings.field.reverse_proxy.hint",
+                readonly_text("settings.value.pending_development"),
             ));
         }
     }
@@ -1343,12 +1346,12 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
     rows.extend([
         setting_row(
             Icon::Database,
-            "酒馆数据模式",
-            "全局模式共用数据；独立模式让各酒馆使用自己的数据。",
+            "settings.field.tavern_data_mode",
+            "settings.field.tavern_data_mode.hint",
             segmented_control(
                 &[
-                    (TavernDataMode::Global, "全局数据", Icon::Database),
-                    (TavernDataMode::Current, "独立数据", Icon::HardDrive),
+                    (TavernDataMode::Global, "settings.data_mode.global", Icon::Database),
+                    (TavernDataMode::Current, "settings.data_mode.current", Icon::HardDrive),
                 ],
                 state.data_mode,
                 Message::SettingsDataModeSelected,
@@ -1356,8 +1359,8 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
         ),
         setting_row(
             Icon::FolderCog,
-            "全局数据存放位置",
-            "设置全局数据模式下酒馆配置与数据的存储目录。",
+            "settings.field.global_data_path",
+            "settings.field.global_data_path.hint",
             path_control(
                 &state.global_data_path,
                 SettingsAction::ChooseGlobalDataPath,
@@ -1367,8 +1370,8 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
 
     section(
         Icon::SlidersHorizontal,
-        "基本设置",
-        "配置启动行为、酒馆运行模式与数据存放方式。",
+        "settings.section.basic",
+        "settings.section.basic.hint",
         section_rows(rows),
     )
 }
@@ -1376,12 +1379,12 @@ fn basic_settings(state: &SettingsState, mode_controls_locked: bool) -> Element<
 fn console_settings(state: &SettingsState) -> Element<'_, Message> {
     section(
         Icon::SquareTerminal,
-        "控制台设置",
-        "控制酒馆启动日志中显示的信息。",
+        "settings.section.console",
+        "settings.section.console.hint",
         section_rows(vec![setting_row(
             Icon::Terminal,
-            "显示完整的启动命令",
-            "启动酒馆时在控制台日志中显示完整命令。",
+            "settings.field.show_startup_command",
+            "settings.field.show_startup_command.hint",
             toggle_control(
                 state.show_startup_command,
                 Message::SettingsShowStartupCommand,
@@ -1409,21 +1412,21 @@ fn environment_settings(state: &SettingsState) -> Element<'_, Message> {
     let homebrew_title = dependency_title("Homebrew", homebrew_outdated);
     let nodejs_title = dependency_title("Node.js", nodejs_outdated);
     let caddy_description = if state.server_mode_enabled {
-        "用于给酒馆添加反向代理（必装）。"
+        "settings.dep.caddy.required"
     } else {
-        "用于给酒馆添加反向代理（可选）。"
+        "settings.dep.caddy.optional"
     };
     let pm2_description = if state.server_mode_enabled {
-        "让酒馆脱离启动器在后台运行（必装，需要 Node.js）。"
+        "settings.dep.pm2.required"
     } else {
-        "让酒馆脱离启动器在后台运行（可选，需要 Node.js）。"
+        "settings.dep.pm2.optional"
     };
 
     let rows = section_rows(vec![
         environment_dependency_row(
             Icon::Beer,
             homebrew_title,
-            "macOS 的软件包管理器（必装）。",
+            "settings.dep.homebrew",
             environment_version_or_action(
                 EnvironmentDependency::Homebrew,
                 state.environment.homebrew.clone(),
@@ -1434,7 +1437,7 @@ fn environment_settings(state: &SettingsState) -> Element<'_, Message> {
         environment_dependency_row(
             Icon::GitBranch,
             "Git".to_owned(),
-            "用于管理酒馆版本与下载酒馆（必装）。",
+            "settings.dep.git",
             environment_version_or_action(
                 EnvironmentDependency::Git,
                 state.environment.git.clone(),
@@ -1445,7 +1448,7 @@ fn environment_settings(state: &SettingsState) -> Element<'_, Message> {
         environment_dependency_row(
             Icon::CodeXml,
             nodejs_title,
-            "用于运行酒馆（必装）。",
+            "settings.dep.nodejs",
             environment_version_or_action(
                 EnvironmentDependency::NodeJs,
                 state.environment.nodejs.clone(),
@@ -1480,8 +1483,8 @@ fn environment_settings(state: &SettingsState) -> Element<'_, Message> {
 
     section(
         Icon::PackageOpen,
-        "环境依赖",
-        "检查、安装并管理酒馆运行所需的本机工具。",
+        "settings.section.environment",
+        "settings.section.environment.hint",
         rows,
     )
 }
@@ -1490,20 +1493,20 @@ fn npm_registry_setting(state: &SettingsState) -> Element<'_, Message> {
     row![
         setting_icon(Icon::Globe),
         column![
-            text("NPM 源设置")
+            text("settings.npm.source_title")
                 .size(13)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            text("设置 NPM 下载软件包时使用的镜像源。")
+            text("settings.npm.source_hint")
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             row![
-                text("源 URL：")
+                text("settings.npm.source_url")
                     .size(10)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
-                text(state.npm_registry.url())
+                raw(state.npm_registry.url())
                     .size(10)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::text_style),
@@ -1516,9 +1519,9 @@ fn npm_registry_setting(state: &SettingsState) -> Element<'_, Message> {
         segmented_control(
             &[
                 (NpmRegistry::Npmmirror, "npmmirror", Icon::Package),
-                (NpmRegistry::HuaweiCloud, "华为云", Icon::Cloud),
-                (NpmRegistry::Tencent, "腾讯云", Icon::CloudCog),
-                (NpmRegistry::Official, "官方源", Icon::Boxes),
+                (NpmRegistry::HuaweiCloud, "settings.npm.huawei_cloud", Icon::Cloud),
+                (NpmRegistry::Tencent, "settings.npm.tencent", Icon::CloudCog),
+                (NpmRegistry::Official, "settings.npm.official", Icon::Boxes),
             ],
             state.npm_registry,
             Message::SettingsNpmRegistrySelected,
@@ -1533,7 +1536,7 @@ fn npm_registry_setting(state: &SettingsState) -> Element<'_, Message> {
 
 fn dependency_title(name: &str, outdated: bool) -> String {
     if outdated {
-        format!("{name}  ⚠ 版本过低")
+        tf("settings.dep.version_outdated", &[("name", &name)])
     } else {
         name.to_owned()
     }
@@ -1546,30 +1549,38 @@ fn environment_version_or_action(
     enabled: bool,
 ) -> Element<'static, Message> {
     match version {
-        Some(_) if outdated => environment_action_button("更新", dependency, enabled),
-        Some(version) => text(version)
+        Some(_) if outdated => environment_action_button(
+            "settings.dep.update",
+            Icon::ArrowUp,
+            dependency,
+            enabled,
+        ),
+        Some(version) => raw(version)
             .size(13)
             .font(crate::core::typography::medium())
             .style(crate::theme::text_style)
             .into(),
-        None => environment_action_button("安装", dependency, enabled),
+        None => environment_action_button(
+            "versions.online.install",
+            Icon::Download,
+            dependency,
+            enabled,
+        ),
     }
 }
 
+/// 环境依赖行的操作按钮。
+///
+/// 图标由调用方显式传入，不再拿「显示文案」当判断条件——文案已经键化，
+/// 用翻译结果做比较在切换语言后会失效。
 fn environment_action_button(
     label: &'static str,
+    icon: Icon,
     dependency: EnvironmentDependency,
     enabled: bool,
 ) -> Element<'static, Message> {
     let content = row![
-        crate::theme::muted_icon(
-            if label == "更新" {
-                Icon::ArrowUp
-            } else {
-                Icon::Download
-            },
-            14,
-        ),
+        crate::theme::muted_icon(icon, 14),
         text(label).size(11).font(crate::core::typography::medium()),
     ]
     .spacing(6)
@@ -1590,32 +1601,34 @@ fn environment_action_button(
 /// 但手动选渠道时用户同样需要确认缓存还在有效期内，否则会误以为缓存没有保存。
 fn download_channel_cache_status(state: &SettingsState) -> &'static str {
     if state.download_channel_test.running {
-        "测速中…"
+        "settings.channel_cache.testing"
     } else if state.download_channel_cache_valid() {
-        "缓存有效"
+        "settings.channel_cache.valid"
     } else if state.download_resolved_channel.is_some()
         || state.download_channel_last_tested.is_some()
     {
-        "缓存已过期"
+        "settings.channel_cache.expired"
     } else {
-        "尚未测速"
+        "settings.channel_cache.untested"
     }
 }
 
 fn download_settings(state: &SettingsState) -> Element<'_, Message> {
-    let selected_label = state
-        .download_channel
-        .display_label(state.download_resolved_channel);
+    let selected_label = t(
+        state
+            .download_channel
+            .resolved_label_key(state.download_resolved_channel),
+    );
     let descriptions = column(
         DownloadChannel::fixed_channels()
             .into_iter()
             .map(|channel| {
                 row![
-                    text(format!("{}：", channel.label()))
+                    raw(format!("{}：", t(channel.label_key())))
                         .size(10)
                         .font(crate::core::typography::medium())
                         .style(crate::theme::muted_text_style),
-                    text(channel.description())
+                    text(channel.hint_key())
                         .size(10)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -1631,26 +1644,15 @@ fn download_settings(state: &SettingsState) -> Element<'_, Message> {
         DownloadChannel::Auto,
         DownloadChannel::Mirror1,
         DownloadChannel::Mirror2,
-        DownloadChannel::Mirror3,
         DownloadChannel::Official,
     ];
-    let channel_icons = [
-        Icon::Gauge,
-        Icon::Cloud,
-        Icon::CloudCog,
-        Icon::CloudDownload,
-        Icon::GitBranch,
-    ];
+    let channel_icons = [Icon::Gauge, Icon::Cloud, Icon::CloudCog, Icon::GitBranch];
     let channel_items = channel_values
         .into_iter()
         .zip(channel_icons)
         .map(|(channel, icon)| {
             ToggleButtonGroupItem::new(
-                Some(download_channel_toggle_label(
-                    channel,
-                    state.download_resolved_channel,
-                    state.language,
-                )),
+                Some(channel.resolved_label_key(state.download_resolved_channel)),
                 Some(icon),
                 channel == state.download_channel,
             )
@@ -1662,13 +1664,13 @@ fn download_settings(state: &SettingsState) -> Element<'_, Message> {
 
     section(
         Icon::CloudDownload,
-        "下载设置",
-        "选择酒馆核心下载、安装与更新时使用的仓库渠道。",
+        "settings.section.download",
+        "settings.section.download.hint",
         section_rows(vec![
             row![
                 setting_icon(Icon::Download),
                 column![
-                    text("酒馆下载渠道")
+                    text("settings.field.download_channel")
                         .size(13)
                         .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
@@ -1689,15 +1691,15 @@ fn download_settings(state: &SettingsState) -> Element<'_, Message> {
             .into(),
             setting_row(
                 Icon::RefreshCw,
-                "自动测速缓存",
-                "测速结果缓存 7 天；选择“自动”且缓存过期时会在启动后自动测速。",
+                "settings.field.channel_cache",
+                "settings.field.channel_cache.hint",
                 row![
                     text(download_channel_cache_status(state))
                         .size(11)
                         .font(crate::core::typography::medium())
                         .style(crate::theme::muted_text_style),
                     action_button(
-                        "重新测速",
+                        "settings.action.retest",
                         Icon::RefreshCw,
                         SettingsAction::RefreshDownloadChannel,
                     ),
@@ -1715,8 +1717,8 @@ fn network_settings(state: &SettingsState) -> Element<'_, Message> {
     if state.proxy_mode == ProxyMode::Custom {
         rows.push(setting_row(
             Icon::Link,
-            "自定义代理地址",
-            "输入 HTTP、HTTPS 或 SOCKS 代理地址。",
+            "settings.field.custom_proxy",
+            "settings.field.custom_proxy.hint",
             input_control(
                 "http://127.0.0.1:7890",
                 &state.custom_proxy,
@@ -1728,15 +1730,15 @@ fn network_settings(state: &SettingsState) -> Element<'_, Message> {
 
     section(
         Icon::Cable,
-        "网络设置",
-        "设置应用程序网络代理并测试 GitHub 连通性。",
+        "settings.section.network",
+        "settings.section.network.hint",
         section_rows(rows),
     )
 }
 
 fn proxy_setting(state: &SettingsState) -> Element<'_, Message> {
     let mut description = column![
-        text("选择直连、跟随系统代理或使用自定义代理。")
+        text("settings.proxy.choice_hint")
             .size(11)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
@@ -1746,9 +1748,9 @@ fn proxy_setting(state: &SettingsState) -> Element<'_, Message> {
 
     if state.proxy_mode == ProxyMode::System {
         let status = match state.system_proxy_status {
-            SystemProxyStatus::Enabled => "系统代理：已启用",
-            SystemProxyStatus::Disabled => "系统代理：未启用",
-            SystemProxyStatus::Unknown => "系统代理：未知",
+            SystemProxyStatus::Enabled => "settings.system_proxy.enabled",
+            SystemProxyStatus::Disabled => "settings.system_proxy.disabled",
+            SystemProxyStatus::Unknown => "settings.system_proxy.unknown",
         };
         description = description.push(
             row![
@@ -1768,9 +1770,9 @@ fn proxy_setting(state: &SettingsState) -> Element<'_, Message> {
         description,
         segmented_control(
             &[
-                (ProxyMode::None, "直连", Icon::Cable),
-                (ProxyMode::System, "跟随系统", Icon::Monitor),
-                (ProxyMode::Custom, "自定义", Icon::Link),
+                (ProxyMode::None, "settings.proxy.direct", Icon::Cable),
+                (ProxyMode::System, "settings.proxy_mode.system", Icon::Monitor),
+                (ProxyMode::Custom, "settings.proxy.custom", Icon::Link),
             ],
             state.proxy_mode,
             Message::SettingsProxyModeSelected,
@@ -1796,7 +1798,7 @@ fn github_test_setting(state: &SettingsState) -> Element<'_, Message> {
                     .is_indeterminate(true)
                     .animation_phase(phase)
                     .color(ProgressCircleColor::Accent),
-                text("测试中…").size(11).font(crate::core::typography::medium()),
+                text("settings.github_test.testing").size(11).font(crate::core::typography::medium()),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -1806,13 +1808,13 @@ fn github_test_setting(state: &SettingsState) -> Element<'_, Message> {
         .style(button_style(ButtonVariant::Secondary))
         .into()
     } else {
-        action_button("开始测试", Icon::Activity, SettingsAction::TestGithub)
+        action_button("settings.github_test.start", Icon::Activity, SettingsAction::TestGithub)
     };
 
     setting_row(
         Icon::Plug,
-        "GitHub 连接测试",
-        "测试首页、仓库、API、文件访问与下载速度。",
+        "settings.github_test.title",
+        "settings.github_test.hint",
         control,
     )
 }
@@ -1823,15 +1825,15 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
         .map(|started| (started.elapsed().as_secs_f32() * 0.9).fract())
         .unwrap_or(0.0);
     let mode = if state.mode_label.is_empty() {
-        "直连"
+        t("settings.proxy.direct")
     } else {
         state.mode_label.as_str()
     };
     let mut details = column![
         row![
-            text("测试模式").size(11).font(crate::core::typography::medium()),
+            text("settings.github_test.mode_label").size(11).font(crate::core::typography::medium()),
             space::horizontal(),
-            text(mode).size(11).font(crate::core::typography::regular()),
+            raw(mode).size(11).font(crate::core::typography::regular()),
         ]
         .align_y(Alignment::Center),
     ]
@@ -1840,9 +1842,9 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     if let Some(proxy) = &state.proxy_address {
         details = details.push(
             row![
-                text("代理地址").size(11).font(crate::core::typography::medium()),
+                text("tavern.config.request_proxy_url").size(11).font(crate::core::typography::medium()),
                 space::horizontal(),
-                text(proxy).size(10).font(crate::core::typography::regular()),
+                raw(proxy).size(10).font(crate::core::typography::regular()),
             ]
             .align_y(Alignment::Center),
         );
@@ -1850,9 +1852,9 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     if let Some(accelerate) = &state.accelerate_url {
         details = details.push(
             row![
-                text("加速地址").size(11).font(crate::core::typography::medium()),
+                text("settings.github_test.accelerator_label").size(11).font(crate::core::typography::medium()),
                 space::horizontal(),
-                text(accelerate).size(10).font(crate::core::typography::regular()),
+                raw(accelerate).size(10).font(crate::core::typography::regular()),
             ]
             .align_y(Alignment::Center),
         );
@@ -1876,11 +1878,11 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
         .into()
     } else {
         crate::theme::alert(
-            "测试失败",
+            "settings.github_test.failed_title",
             state
                 .error
                 .as_deref()
-                .unwrap_or("GitHub 测试进程未能完成。"),
+                .unwrap_or(t("settings.github_test.incomplete")),
             AlertKind::Danger,
         )
     };
@@ -1891,7 +1893,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
                 .is_indeterminate(true)
                 .animation_phase(phase)
                 .color(ProgressCircleColor::Accent),
-            text("正在测试 GitHub 连接…").size(12).font(crate::core::typography::medium()),
+            text("settings.github_test.running").size(12).font(crate::core::typography::medium()),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -1899,7 +1901,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     } else if state.timed_out {
         row![
             icons::icon(Icon::ClockAlert, 16, iced::Color::from_rgb8(245, 165, 36)),
-            text("测试超时，请检查网络或代理设置后重试。")
+            text("settings.github_test.timeout")
                 .size(12)
                 .font(crate::core::typography::medium()),
         ]
@@ -1909,7 +1911,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     } else if state.error.is_some() {
         row![
             icons::icon(Icon::CircleX, 16, iced::Color::from_rgb8(255, 56, 60)),
-            text("测试失败，请查看详情后重试。")
+            text("settings.github_test.failed_hint")
                 .size(12)
                 .font(crate::core::typography::medium()),
         ]
@@ -1919,7 +1921,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     } else {
         row![
             icons::icon(Icon::CircleCheck, 16, iced::Color::from_rgb8(23, 201, 100)),
-            text("测试完成").size(12).font(crate::core::typography::medium()),
+            text("settings.github_test.completed").size(12).font(crate::core::typography::medium()),
         ]
         .spacing(8)
         .align_y(Alignment::Center)
@@ -1929,7 +1931,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     let footer = row![
         status,
         space::horizontal(),
-        button(text("关闭").size(12).font(crate::core::typography::medium()))
+        button(text("resources.import.close").size(12).font(crate::core::typography::medium()))
             .on_press(Message::GithubTestClose)
             .height(34)
             .padding([7, 14])
@@ -1942,7 +1944,7 @@ fn github_test_modal(state: &GithubTestState) -> Element<'_, Message> {
     let panel = mouse_area(
         container(
             column![
-                text("GitHub 连接测试").size(18).font(crate::core::typography::medium()),
+                text("settings.github_test.title").size(18).font(crate::core::typography::medium()),
                 rule::horizontal(1.0).style(crate::theme::separator_style),
                 details,
                 rule::horizontal(1.0).style(crate::theme::separator_style),
@@ -1997,7 +1999,7 @@ fn live_github_result_row(
     }
 
     let detail_text = |value: String| {
-        text(value)
+        raw(value)
             .size(10)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style)
@@ -2047,7 +2049,7 @@ fn live_github_result_row(
             let total = state
                 .download_total_bytes
                 .map(format_bytes)
-                .unwrap_or_else(|| "总大小未知".to_owned());
+                .unwrap_or_else(|| t("settings.github_test.size_unknown").to_owned());
             let speed = format_speed(state.download_bytes_per_second);
             let percentage = state
                 .download_percentage
@@ -2081,13 +2083,13 @@ fn live_github_result_row(
                     .animation_phase(phase)
                     .color(ProgressCircleColor::Accent)
                     .into(),
-                detail_text("测试中…".to_owned()).into(),
+                detail_text(t("settings.github_test.testing").to_owned()).into(),
             )
         };
 
     row![
         crate::theme::subtle_icon(Icon::Circle, 13),
-        text(item.name.clone())
+        raw(item.name.clone())
             .size(12)
             .font(crate::core::typography::medium())
             .width(Fill),
@@ -2120,7 +2122,7 @@ fn format_bytes(bytes: u64) -> String {
 
 fn format_speed(bytes_per_second: u64) -> String {
     if bytes_per_second == 0 {
-        "速度计算中".to_owned()
+        t("settings.github_test.calculating_speed").to_owned()
     } else {
         format!("{}/s", format_bytes(bytes_per_second))
     }
@@ -2140,13 +2142,8 @@ fn github_result_row(
             let total = state
                 .download_total_bytes
                 .map(format_bytes)
-                .unwrap_or_else(|| "总大小未知".to_owned());
-            let summary = format!(
-                "{} / {} · 平均 {}",
-                format_bytes(state.download_downloaded_bytes),
-                total,
-                format_speed(state.download_bytes_per_second)
-            );
+                .unwrap_or_else(|| t("settings.github_test.size_unknown").to_owned());
+            let summary = tf("settings.github_test.progress", &[("done", &format_bytes(state.download_downloaded_bytes)), ("total", &total), ("speed", &format_speed(state.download_bytes_per_second))]);
             item.warning
                 .as_ref()
                 .map(|warning| format!("{summary} · {warning}"))
@@ -2154,34 +2151,35 @@ fn github_result_row(
         } else {
             item.warning
                 .clone()
-                .unwrap_or_else(|| "下载完成".to_owned())
+                .unwrap_or_else(|| t("settings.github_test.download_done").to_owned())
         }
     } else {
         item.warning
             .clone()
             .or_else(|| item.error.clone())
             .unwrap_or_else(|| match (item.key.as_str(), state) {
-                ("clone", Some(_)) if item.success => "克隆完成".to_owned(),
-                _ => "连接成功".to_owned(),
+                ("clone", Some(_)) if item.success => t("settings.github_test.clone_done").to_owned(),
+                _ => t("settings.github_test.connected").to_owned(),
             })
     };
     let latency = item
         .latency_ms
-        .map(|value| format!("耗时 {value} ms"))
+        .map(|value| tf("settings.github_test.elapsed", &[("value", &value)]))
         .unwrap_or_default();
 
     row![
         icons::icon(icon, 16, color),
         column![
-            text(item.name.clone()).size(12).font(crate::core::typography::medium()),
-            text(detail)
+            raw(item.name.clone()).size(12).font(crate::core::typography::medium()),
+            // detail 由 warning / error / 拼接文案构成，可能是键也可能是自由文本，统一解析一次。
+            raw(crate::lang::resolve(&detail))
                 .size(10)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
         ]
         .spacing(3)
         .width(Fill),
-        text(latency)
+        raw(latency)
             .size(11)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -2195,20 +2193,20 @@ fn github_result_row(
 fn software_settings() -> Element<'static, Message> {
     section(
         Icon::Info,
-        "软件与更新",
-        "查看当前版本并检查启动器更新。",
+        "settings.section.updates",
+        "settings.section.updates.hint",
         section_rows(vec![
             setting_row(
                 Icon::AppWindow,
                 "AstraBrew Launcher",
-                "当前版本 0.2.0",
-                crate::theme::flat_chip("当前版本", BLUE_600),
+                "settings.current_version",
+                crate::theme::flat_chip("extensions.version", BLUE_600),
             ),
             setting_row(
                 Icon::Download,
-                "检查更新",
-                "检查是否有新的启动器版本可用。",
-                action_button("检查更新", Icon::RefreshCw, SettingsAction::CheckUpdate),
+                "settings.check_update",
+                "settings.check_update.hint",
+                action_button("settings.check_update", Icon::RefreshCw, SettingsAction::CheckUpdate),
             ),
         ]),
     )
@@ -2260,8 +2258,8 @@ fn section_rows<'a>(rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
 
 fn setting_row<'a>(
     icon: Icon,
-    title: &'a str,
-    description: &'a str,
+    title: &'static str,
+    description: &'static str,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
     let label = column![
@@ -2307,13 +2305,13 @@ fn setting_row<'a>(
 fn environment_dependency_row<'a>(
     icon: Icon,
     title: String,
-    description: &'a str,
+    description: &'static str,
     control: Element<'a, Message>,
 ) -> Element<'a, Message> {
     row![
         setting_icon(icon),
         column![
-            text(title)
+            raw(title)
                 .size(13)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
@@ -2345,8 +2343,8 @@ fn setting_icon(icon: Icon) -> Element<'static, Message> {
 
 fn start_mode_control(selected: StartMode, enabled: bool) -> Element<'static, Message> {
     let items = [
-        (StartMode::Normal, "正常模式", Icon::Play),
-        (StartMode::Desktop, "桌面模式", Icon::AppWindow),
+        (StartMode::Normal, "settings.start_mode.normal", Icon::Play),
+        (StartMode::Desktop, "settings.start_mode.desktop", Icon::AppWindow),
     ]
     .into_iter()
     .map(|(mode, label, icon)| {
@@ -2362,33 +2360,6 @@ fn start_mode_control(selected: StartMode, enabled: bool) -> Element<'static, Me
     })
 }
 
-fn download_channel_toggle_label(
-    channel: DownloadChannel,
-    resolved: Option<DownloadChannel>,
-    language: DisplayLanguage,
-) -> &'static str {
-    let english = crate::lang::effective_language(language) == crate::lang::Language::English;
-    match (channel, resolved, english) {
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror1), false) => "自动（镜像 1）",
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror2), false) => "自动（镜像 2）",
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror3), false) => "自动（镜像 3）",
-        (DownloadChannel::Auto, Some(DownloadChannel::Official), false) => "自动（官方）",
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror1), true) => "Automatic (Mirror 1)",
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror2), true) => "Automatic (Mirror 2)",
-        (DownloadChannel::Auto, Some(DownloadChannel::Mirror3), true) => "Automatic (Mirror 3)",
-        (DownloadChannel::Auto, Some(DownloadChannel::Official), true) => "Automatic (Official)",
-        (DownloadChannel::Auto, _, false) => "自动",
-        (DownloadChannel::Auto, _, true) => "Automatic",
-        (DownloadChannel::Mirror1, _, false) => "镜像 1",
-        (DownloadChannel::Mirror1, _, true) => "Mirror 1",
-        (DownloadChannel::Mirror2, _, false) => "镜像 2",
-        (DownloadChannel::Mirror2, _, true) => "Mirror 2",
-        (DownloadChannel::Mirror3, _, false) => "镜像 3",
-        (DownloadChannel::Mirror3, _, true) => "Mirror 3",
-        (DownloadChannel::Official, _, false) => "官方",
-        (DownloadChannel::Official, _, true) => "Official",
-    }
-}
 
 fn segmented_control<T>(
     options: &[(T, &'static str, Icon)],
@@ -2436,7 +2407,7 @@ fn ui_scale_control(value: f32) -> Element<'static, Message> {
         .width(210)
         .style(slider_style),
         container(
-            text(format!("{percent:.0}%"))
+            raw(format!("{percent:.0}%"))
                 .size(12)
                 .font(crate::core::typography::medium())
         )
@@ -2451,7 +2422,7 @@ fn ui_scale_control(value: f32) -> Element<'static, Message> {
 fn font_control(state: &SettingsState) -> Element<'_, Message> {
     let picker = combo_box(
         &state.font_choices,
-        t("settings.interface.font.placeholder", current_language()),
+        t_in("settings.interface.font.placeholder", current_language()),
         Some(&state.selected_font),
         Message::SettingsFontSelected,
     )
@@ -2465,10 +2436,7 @@ fn font_control(state: &SettingsState) -> Element<'_, Message> {
     if state.font_loading {
         column![
             picker,
-            text(t(
-                "settings.interface.font.loading",
-                current_language(),
-            ))
+            raw(t_in("settings.interface.font.loading", current_language()))
             .size(10)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
@@ -2485,7 +2453,7 @@ fn input_control<'a>(
     value: &'a str,
     on_input: fn(String) -> Message,
 ) -> Element<'a, Message> {
-    text_input(placeholder, value)
+    text_input(t(placeholder), value)
         .on_input(on_input)
         .width(INPUT_WIDTH)
         .padding([8, 11])
@@ -2510,13 +2478,13 @@ fn readonly_text(label: &'static str) -> Element<'static, Message> {
 fn path_control(path: &str, action: SettingsAction) -> Element<'_, Message> {
     row![
         container(
-            text(path)
+            raw(path)
                 .size(10)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style)
         )
         .width(190),
-        action_button("更改", Icon::FolderOpen, action)
+        action_button("settings.action.change", Icon::FolderOpen, action)
     ]
     .spacing(8)
     .align_y(Alignment::Center)
@@ -2622,10 +2590,9 @@ fn environment_backdrop_style(_theme: &Theme, _status: button::Status) -> button
 mod tests {
     use super::{
         DEFAULT_UI_SCALE, DownloadChannelTestState, NpmRegistry, SettingsState, StartMode,
-        TavernDataMode, download_channel_toggle_label,
+        TavernDataMode,
     };
     use crate::core::network::DownloadChannel;
-    use crate::core::settings::DisplayLanguage;
     #[test]
     fn npm_registry_urls_match_the_old_launcher() {
         assert_eq!(NpmRegistry::Official.url(), "https://registry.npmjs.org/");
@@ -2645,21 +2612,29 @@ mod tests {
 
     #[test]
     fn automatic_channel_label_includes_resolved_channel() {
+        // 「自动」解析出具体渠道后，标签键要带上实际渠道；文案本身由键值表提供。
+        use crate::lang::{Language, t_in};
+
         assert_eq!(
-            download_channel_toggle_label(
-                DownloadChannel::Auto,
-                Some(DownloadChannel::Mirror1),
-                DisplayLanguage::SimplifiedChinese,
-            ),
+            DownloadChannel::Auto.resolved_label_key(Some(DownloadChannel::Mirror1)),
+            "channel.auto.resolved.mirror1"
+        );
+        assert_eq!(
+            t_in("channel.auto.resolved.mirror1", Language::Chinese),
             "自动（镜像 1）"
         );
         assert_eq!(
-            download_channel_toggle_label(
-                DownloadChannel::Auto,
-                Some(DownloadChannel::Official),
-                DisplayLanguage::English,
-            ),
+            DownloadChannel::Auto.resolved_label_key(Some(DownloadChannel::Official)),
+            "channel.auto.resolved.official"
+        );
+        assert_eq!(
+            t_in("channel.auto.resolved.official", Language::English),
             "Automatic (Official)"
+        );
+        // 未解析出渠道时回落到「自动」本身。
+        assert_eq!(
+            DownloadChannel::Auto.resolved_label_key(None),
+            DownloadChannel::Auto.label_key()
         );
     }
 

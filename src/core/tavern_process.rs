@@ -2,6 +2,7 @@
 //!
 //! 运行时线程独占直接子进程和 PM2 CLI 调用，通过命令/事件通道与 iced 主线程通信。
 
+use crate::lang::{t, tf};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -15,6 +16,15 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::core::pm2::Pm2Manager;
+
+/// 进程日志的级别标记：发射端与解析端之间的内部协议，不是可翻译文案。
+///
+/// 统一用 ASCII 形式，避免与本地化语言耦合；控制台解析端据此分类与剥离前缀。
+pub(crate) const LOG_MARK_SYSTEM: &str = "[system] ";
+pub(crate) const LOG_MARK_WARNING: &str = "[warning] ";
+pub(crate) const LOG_MARK_ERROR: &str = "[error] ";
+pub(crate) const LOG_MARK_COMMAND: &str = "[command] ";
+
 
 /// 酒馆数据目录模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,7 +166,7 @@ impl TavernRuntime {
     pub fn send(&self, command: ProcessCommand) -> Result<(), String> {
         self.command_tx
             .send(command)
-            .map_err(|_| "酒馆进程运行时已经停止。".to_owned())
+            .map_err(|_| t("tavern.process.already_stopped").to_owned())
     }
 
     pub fn drain(&self) -> Vec<ProcessEvent> {
@@ -290,12 +300,12 @@ fn start(state: &mut WorkerState, spec: TavernLaunchSpec, events: &Sender<Proces
         let _ = events.send(ProcessEvent::Pm2Unavailable);
     }
     if spec.github_proxy_url.is_some() && !node_supports_import() {
-        let warning = "[警告] 当前 Node.js 不支持 GitHub 加速拦截器（需要 19 或更高版本），已回退到普通代理设置。".to_owned();
+        let warning = format!("{LOG_MARK_WARNING}{}", t("tavern.process.interceptor_unsupported"));
         let _ = events.send(ProcessEvent::Log(warning));
     }
     if spec.show_startup_command {
         let _ = events.send(ProcessEvent::Log(format!(
-            "[启动命令] {}",
+            "{LOG_MARK_COMMAND}{}",
             display_command(&spec, mode)
         )));
     }
@@ -319,23 +329,17 @@ fn start(state: &mut WorkerState, spec: TavernLaunchSpec, events: &Sender<Proces
 
 fn validate_spec(spec: &TavernLaunchSpec) -> Result<(), String> {
     if !spec.instance_path.is_dir() {
-        return Err(format!(
-            "酒馆实例目录不存在：{}",
-            spec.instance_path.display()
-        ));
+        return Err(tf("tavern.process.instance_missing", &[("path", &spec.instance_path.display())]));
     }
     if !spec.instance_path.join("server.js").is_file() {
-        return Err(format!(
-            "所选目录不是可启动的 SillyTavern 实例，缺少 server.js：{}",
-            spec.instance_path.display()
-        ));
+        return Err(tf("tavern.process.not_a_tavern", &[("path", &spec.instance_path.display())]));
     }
     if crate::core::settings::env_detect::detect_nodejs().is_none() {
-        return Err("未检测到可用的 Node.js 和 npm，请先在设置中安装。".to_owned());
+        return Err(t("tavern.process.nodejs_required").to_owned());
     }
     let config = spec.config_path();
     if !config.is_file() {
-        return Err(format!("酒馆配置文件不存在：{}", config.display()));
+        return Err(tf("tavern.process.config_missing", &[("path", &config.display())]));
     }
     Ok(())
 }
@@ -350,14 +354,14 @@ fn prepare_webui_settings(spec: &TavernLaunchSpec) -> Result<(), String> {
     }
     let parent = target
         .parent()
-        .ok_or_else(|| "酒馆设置目标路径无效。".to_owned())?;
+        .ok_or_else(|| t("tavern.process.invalid_settings_path").to_owned())?;
     fs::create_dir_all(parent)
-        .map_err(|error| format!("无法创建酒馆数据目录 {}：{error}", parent.display()))?;
+        .map_err(|error| tf("tavern.process.create_data_dir_failed", &[("path", &parent.display().to_string()), ("error", &error.to_string())]))?;
     crate::utils::app_paths().ensure_default_tavern_settings();
     let template = fs::read_to_string(crate::utils::app_paths().default_tavern_settings_file())
         .unwrap_or_else(|_| crate::utils::TEMPLATE_TAVERN_SETTINGS_JSON.to_owned());
     let mut value: Value = serde_json::from_str(&template)
-        .map_err(|error| format!("内置酒馆设置模板无效：{error}"))?;
+        .map_err(|error| tf("tavern.process.template_invalid", &[("error", &error)]))?;
     if !spec.instance_version.trim().is_empty()
         && let Some(object) = value.as_object_mut()
     {
@@ -367,9 +371,9 @@ fn prepare_webui_settings(spec: &TavernLaunchSpec) -> Result<(), String> {
         );
     }
     let bytes = serde_json::to_vec_pretty(&value)
-        .map_err(|error| format!("无法生成酒馆默认设置：{error}"))?;
+        .map_err(|error| tf("tavern.process.generate_settings_failed", &[("error", &error)]))?;
     fs::write(&target, bytes)
-        .map_err(|error| format!("无法写入酒馆默认设置 {}：{error}", target.display()))
+        .map_err(|error| tf("tavern.process.write_settings_failed", &[("path", &target.display().to_string()), ("error", &error.to_string())]))
 }
 
 struct LaunchCommand {
@@ -443,7 +447,7 @@ fn start_direct(
         .stderr(Stdio::piped());
     let mut child = command
         .spawn()
-        .map_err(|error| format!("无法启动 SillyTavern：{error}"))?;
+        .map_err(|error| tf("tavern.process.start_failed", &[("error", &error)]))?;
     let pid = child.id();
     let (log_tx, log_rx) = mpsc::channel();
     if let Some(stdout) = child.stdout.take() {
@@ -579,7 +583,7 @@ fn release_port_and_retry(
         || conflict.processes.is_empty()
     {
         let _ = events.send(ProcessEvent::Failed(
-            "端口占用信息已经失效，请重新启动后再试。".to_owned(),
+            t("tavern.process.port_info_stale").to_owned(),
         ));
         return;
     }
@@ -601,7 +605,7 @@ fn release_port_and_retry(
         .collect();
     if confirmed.is_empty() {
         let _ = events.send(ProcessEvent::Failed(
-            "端口占用进程已经变化，未结束任何程序，请重新启动后确认。".to_owned(),
+            t("tavern.process.port_process_changed").to_owned(),
         ));
         return;
     }
@@ -663,7 +667,8 @@ fn poll_direct(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
             Ok(None) => {}
             Err(error) => {
                 let _ = events.send(ProcessEvent::Log(format!(
-                    "[错误] 无法查询酒馆进程状态：{error}"
+                    "{LOG_MARK_ERROR}{}",
+                    tf("tavern.process.status_query_failed", &[("error", &error)])
                 )));
             }
         }
@@ -719,12 +724,12 @@ fn poll_pm2(state: &mut WorkerState, events: &Sender<ProcessEvent>) {
             state.active_mode = None;
             state.active_spec = None;
             let _ = events.send(ProcessEvent::Failed(
-                "PM2 中的 SillyTavern 进程进入错误状态。".to_owned(),
+                t("tavern.process.pm2_error_state").to_owned(),
             ));
         }
         Ok(_) => finish_stopped(state, events),
         Err(error) => {
-            let _ = events.send(ProcessEvent::Log(format!("[错误] {error}")));
+            let _ = events.send(ProcessEvent::Log(format!("{LOG_MARK_ERROR}{error}")));
         }
     }
 }
@@ -735,7 +740,7 @@ fn recover_pm2_after_command_error(
     events: &Sender<ProcessEvent>,
     error: String,
 ) {
-    let _ = events.send(ProcessEvent::Log(format!("[错误] {error}")));
+    let _ = events.send(ProcessEvent::Log(format!("{LOG_MARK_ERROR}{error}")));
     match state.pm2.info() {
         Ok(Some(info)) if info.status == "online" => {
             state.active_mode = Some(RuntimeMode::Pm2);
@@ -744,8 +749,9 @@ fn recover_pm2_after_command_error(
         }
         Ok(_) => finish_stopped(state, events),
         Err(query_error) => {
-            let _ = events.send(ProcessEvent::Failed(format!(
-                "{error}；随后查询 PM2 状态也失败：{query_error}"
+            let _ = events.send(ProcessEvent::Failed(tf(
+                "tavern.process.pm2_query_failed",
+                &[("error", &error), ("query_error", &query_error)],
             )));
         }
     }
@@ -825,9 +831,9 @@ fn prepare_interceptor() -> Result<PathBuf, String> {
         .temp
         .join("github-interceptor.mjs");
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| format!("无法创建临时目录：{error}"))?;
+        fs::create_dir_all(parent).map_err(|error| tf("network.test.temp_dir_failed", &[("error", &error)]))?;
     }
-    fs::write(&path, INTERCEPTOR).map_err(|error| format!("无法写入 GitHub 加速脚本：{error}"))?;
+    fs::write(&path, INTERCEPTOR).map_err(|error| tf("tavern.process.write_interceptor_failed", &[("error", &error)]))?;
     Ok(path)
 }
 
@@ -967,7 +973,7 @@ pub fn query_port_processes(port: u16) -> Result<Vec<PortProcess>, String> {
     let output = Command::new("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
         .output()
-        .map_err(|error| format!("无法查询端口占用：{error}"))?;
+        .map_err(|error| tf("tavern.process.port_query_failed", &[("error", &error)]))?;
     if !output.status.success() && output.stdout.is_empty() {
         return Ok(Vec::new());
     }
@@ -995,7 +1001,7 @@ pub fn parse_lsof_processes(output: &str) -> Result<Vec<PortProcess>, String> {
         }
     }
     if processes.is_empty() && !output.trim().is_empty() {
-        return Err("无法解析端口占用进程。".to_owned());
+        return Err(t("tavern.process.port_parse_failed").to_owned());
     }
     Ok(processes)
 }
@@ -1004,31 +1010,31 @@ pub fn parse_lsof_processes(output: &str) -> Result<Vec<PortProcess>, String> {
 pub fn ensure_sillytavern_log_file() -> Result<(), String> {
     let paths = crate::utils::app_paths();
     fs::create_dir_all(&paths.logs)
-        .map_err(|error| format!("无法创建酒馆日志目录 {}：{error}", paths.logs.display()))?;
+        .map_err(|error| tf("tavern.process.create_log_dir_failed", &[("path", &paths.logs.display().to_string()), ("error", &error.to_string())]))?;
     OpenOptions::new()
         .create(true)
         .append(true)
         .open(paths.sillytavern_log_file())
         .map(|_| ())
-        .map_err(|error| format!("无法创建酒馆日志文件：{error}"))
+        .map_err(|error| tf("tavern.process.create_log_failed", &[("error", &error)]))
 }
 
 /// 新启动前将当前日志轮换为 latest，并创建新的实时日志。
 pub fn prepare_sillytavern_log_file() -> Result<(), String> {
     let paths = crate::utils::app_paths();
     fs::create_dir_all(&paths.logs)
-        .map_err(|error| format!("无法创建酒馆日志目录 {}：{error}", paths.logs.display()))?;
+        .map_err(|error| tf("tavern.process.create_log_dir_failed", &[("path", &paths.logs.display().to_string()), ("error", &error.to_string())]))?;
     let current = paths.sillytavern_log_file();
     let latest = paths.sillytavern_latest_log_file();
     if current.exists() {
         if latest.exists() {
-            fs::remove_file(&latest).map_err(|error| format!("无法替换上一份酒馆日志：{error}"))?;
+            fs::remove_file(&latest).map_err(|error| tf("tavern.process.rotate_latest_failed", &[("error", &error)]))?;
         }
-        fs::rename(&current, &latest).map_err(|error| format!("无法轮换酒馆日志：{error}"))?;
+        fs::rename(&current, &latest).map_err(|error| tf("tavern.process.rotate_failed", &[("error", &error)]))?;
     }
     fs::File::create(&current)
         .map(|_| ())
-        .map_err(|error| format!("无法创建酒馆实时日志 {}：{error}", current.display()))
+        .map_err(|error| tf("tavern.process.create_live_log_failed", &[("path", &current.display().to_string()), ("error", &error.to_string())]))
 }
 
 /// 将一行已经清理和分类的日志写入规范实时日志。
@@ -1038,9 +1044,9 @@ pub fn append_sillytavern_log_line(line: &str) -> Result<(), String> {
         .create(true)
         .append(true)
         .open(&path)
-        .map_err(|error| format!("无法打开酒馆实时日志 {}：{error}", path.display()))?;
+        .map_err(|error| tf("tavern.process.open_live_log_failed", &[("path", &path.display().to_string()), ("error", &error.to_string())]))?;
     writeln!(file, "{line}")
-        .map_err(|error| format!("无法写入酒馆实时日志 {}：{error}", path.display()))
+        .map_err(|error| tf("tavern.process.write_live_log_failed", &[("path", &path.display().to_string()), ("error", &error)]))
 }
 
 #[cfg(test)]
@@ -1154,7 +1160,7 @@ mod tests {
         );
         assert_eq!(
             extract_tavern_url(
-                "[启动命令] HTTP_PROXY=http://127.0.0.1:7892 node server.js --requestProxyUrl http://127.0.0.1:7892"
+                "[command] HTTP_PROXY=http://127.0.0.1:7892 node server.js --requestProxyUrl http://127.0.0.1:7892"
             ),
             None
         );

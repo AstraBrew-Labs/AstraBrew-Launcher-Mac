@@ -11,7 +11,7 @@ use lucide_icons::Icon;
 use astra_ui::{Avatar, AvatarColor, AvatarShape, AvatarSize, WHITE, icons};
 
 use crate::app::Message;
-use crate::lang::text;
+use crate::lang::{raw, text};
 use crate::pages::Page;
 use crate::pages::versions::VersionState;
 
@@ -92,9 +92,9 @@ pub fn sidebar<'a>(page: Page, versions: &'a VersionState) -> Element<'a, Messag
 fn logo_section<'a>(versions: &'a VersionState, scale: f32) -> Element<'a, Message> {
     let version_info: Element<'a, Message> =
         match (versions.current_version.as_deref(), versions.current_source) {
-            (Some(version), Some(source)) => text(format!(
+            (Some(version), Some(source)) => raw(format!(
                 "{version} - {}",
-                crate::lang::display_label(source.label())
+                crate::lang::t(source.label_key())
             ))
             .size((10.0 / scale).clamp(8.0, 10.0))
             .font(crate::core::typography::regular())
@@ -102,7 +102,7 @@ fn logo_section<'a>(versions: &'a VersionState, scale: f32) -> Element<'a, Messa
                 color: Some(source.color()),
             })
             .into(),
-            _ => text("酒馆版本 —")
+            _ => text("app.sidebar.version_placeholder")
                 .size((10.0 / scale).clamp(8.0, 10.0))
                 .font(crate::core::typography::regular())
                 .style(crate::theme::subtle_text_style)

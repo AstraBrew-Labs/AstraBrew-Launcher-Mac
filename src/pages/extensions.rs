@@ -25,7 +25,7 @@ use crate::core::extensions::{
     OfflinePackageInspection, OperationSuccess, repository_name,
 };
 use crate::lang::lang::current_language;
-use crate::lang::{t, text};
+use crate::lang::{raw, t_in, text, tf};
 use crate::theme::{button_style, pick_list_menu_style, pick_list_style, text_input_style};
 
 const PURPLE: Color = Color::from_rgb8(142, 68, 220);
@@ -715,11 +715,11 @@ fn base_view(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
     );
     let header = row![
         column![
-            text(tr("extensions.title"))
+            raw(tr("extensions.title"))
                 .size(24)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            text(tr("extensions.description"))
+            raw(tr("extensions.description"))
                 .size(12)
                 .style(crate::theme::muted_text_style),
         ]
@@ -756,14 +756,14 @@ fn no_instance_card<'a>() -> Element<'a, ExtensionsMessage> {
     container(
         column![
             crate::theme::subtle_icon(Icon::Puzzle, 38),
-            text(tr("extensions.no_instance"))
+            raw(tr("extensions.no_instance"))
                 .size(17)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            text(tr("extensions.no_instance_hint"))
+            raw(tr("extensions.no_instance_hint"))
                 .size(11)
                 .style(crate::theme::muted_text_style),
-            button(text(tr("extensions.go_versions")).size(12))
+            button(raw(tr("extensions.go_versions")).size(12))
                 .on_press(ExtensionsMessage::NavigateVersion)
                 .padding([9, 16])
                 .style(button_style(ButtonVariant::Primary)),
@@ -784,15 +784,15 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
     let header = container(
         row![
             crate::theme::muted_icon(Icon::Puzzle, 18),
-            text(tr("extensions.installed"))
+            raw(tr("extensions.installed"))
                 .size(15)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            container(text(format!("{} {}", visible.len(), tr("extensions.items"))).size(9))
+            container(raw(format!("{} {}", visible.len(), tr("extensions.items"))).size(9))
                 .padding([4, 8])
                 .style(meta_surface),
             space::horizontal(),
-            text(tr("extensions.show_system"))
+            raw(tr("extensions.show_system"))
                 .size(11)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
@@ -844,7 +844,7 @@ fn extensions_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> {
 fn centered_state<'a>(icon: Icon, key: &'static str, detail: Option<String>) -> Element<'a, ExtensionsMessage> {
     let mut content = column![
         crate::theme::subtle_icon(icon, 34),
-        text(tr(key))
+        raw(tr(key))
             .size(13)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -852,7 +852,7 @@ fn centered_state<'a>(icon: Icon, key: &'static str, detail: Option<String>) -> 
     .spacing(8)
     .align_x(Alignment::Center);
     if let Some(detail) = detail {
-        content = content.push(text(detail).size(10).style(crate::theme::subtle_text_style));
+        content = content.push(raw(detail).size(10).style(crate::theme::subtle_text_style));
     }
     container(content)
         .width(Fill)
@@ -865,13 +865,13 @@ fn centered_state<'a>(icon: Icon, key: &'static str, detail: Option<String>) -> 
 fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
     let id = extension.id.clone();
     let extension_name: Element<'_, ExtensionsMessage> = if extension.enabled {
-        text(&extension.manifest.display_name)
+        raw(&extension.manifest.display_name)
             .size(15)
             .font(crate::core::typography::medium())
             .style(crate::theme::text_style)
             .into()
     } else {
-        text(&extension.manifest.display_name)
+        raw(&extension.manifest.display_name)
             .size(15)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style)
@@ -899,12 +899,16 @@ fn extension_row(extension: &ExtensionInfo) -> Element<'_, ExtensionsMessage> {
 
     let mut meta = row![
         crate::theme::subtle_icon(Icon::User, 12),
-        text(if extension.manifest.author.is_empty() { "-" } else { &extension.manifest.author })
+        raw(if extension.manifest.author.is_empty() {
+            "-"
+        } else {
+            extension.manifest.author.as_str()
+        })
             .size(10)
             .style(crate::theme::muted_text_style),
         text("|").size(10).style(crate::theme::subtle_text_style),
         crate::theme::subtle_icon(Icon::Folder, 12),
-        text(&extension.id).size(10).style(crate::theme::muted_text_style),
+        raw(&extension.id).size(10).style(crate::theme::muted_text_style),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
@@ -1105,7 +1109,7 @@ fn install_progress_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMess
             text(status_title)
                 .size(14)
                 .font(crate::core::typography::medium()),
-            text(format!(
+            raw(format!(
                 "{}  ·  {} {}s",
                 description,
                 tr("extensions.install.elapsed"),
@@ -1122,7 +1126,7 @@ fn install_progress_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMess
     .width(Fill);
     let summary = row![
         crate::theme::subtle_icon(Icon::Circle, 13),
-        text(latest_log)
+        raw(latest_log)
             .size(10)
             .style(crate::theme::muted_text_style),
     ]
@@ -1140,7 +1144,7 @@ fn install_progress_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMess
     .width(Fill);
     if state.install.running {
         content = content.push(
-            text(tr("extensions.install.progress_unknown"))
+            raw(tr("extensions.install.progress_unknown"))
                 .size(9)
                 .style(crate::theme::muted_text_style),
         );
@@ -1153,7 +1157,7 @@ fn install_progress_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMess
             ""
         };
         let log_content: Element<'_, ExtensionsMessage> = if logs.is_empty() {
-            column(state.install.logs.iter().map(|line| text(line).size(10).font(Font::MONOSPACE).style(crate::theme::text_style).into()))
+            column(state.install.logs.iter().map(|line| raw(line).size(10).font(Font::MONOSPACE).style(crate::theme::text_style).into()))
                 .spacing(2)
                 .width(Fill)
                 .into()
@@ -1191,7 +1195,7 @@ fn git_install_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> 
     .style(pick_list_style)
     .menu_style(pick_list_menu_style);
     let mut content = column![
-        text(tr("extensions.git_url")).size(11).font(crate::core::typography::medium()),
+        raw(tr("extensions.git_url")).size(11).font(crate::core::typography::medium()),
         row![
             text_input(tr("extensions.git_url.placeholder"), &state.install.git_url)
                 .on_input(ExtensionsMessage::GitUrlChanged)
@@ -1205,7 +1209,7 @@ fn git_install_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessage> 
                 .style(button_style(ButtonVariant::Secondary)),
         ]
         .spacing(8),
-        text(tr("extensions.branch")).size(11).font(crate::core::typography::medium()),
+        raw(tr("extensions.branch")).size(11).font(crate::core::typography::medium()),
         branch_picker,
     ]
     .spacing(8)
@@ -1228,8 +1232,8 @@ fn offline_install_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessa
                 row![
                     icons::icon(if package.valid { Icon::CircleCheck } else { Icon::CircleX }, 14, status),
                     column![
-                        text(&package.file_name).size(11),
-                        text(detail).size(9).style(crate::theme::subtle_text_style),
+                        raw(&package.file_name).size(11),
+                        raw(detail).size(9).style(crate::theme::subtle_text_style),
                     ]
                     .spacing(2)
                     .width(Fill),
@@ -1243,7 +1247,7 @@ fn offline_install_panel(state: &ExtensionsState) -> Element<'_, ExtensionsMessa
         );
     }
     let list: Element<'_, ExtensionsMessage> = if state.install.offline_packages.is_empty() {
-        text(tr("extensions.offline.empty"))
+        raw(tr("extensions.offline.empty"))
             .size(10)
             .style(crate::theme::subtle_text_style)
             .into()
@@ -1269,13 +1273,13 @@ fn append_install_feedback<'a>(
 ) -> iced::widget::Column<'a, ExtensionsMessage> {
     if let Some(error) = &state.install.error {
         content = content.push(
-            container(text(format_error(error)).size(10).color(DANGER))
+            container(raw(format_error(error)).size(10).color(DANGER))
                 .padding([6, 8])
                 .style(error_surface),
         );
     }
     if !state.install.logs.is_empty() {
-        let logs = column(state.install.logs.iter().map(|line| text(line).size(9).into())).spacing(2);
+        let logs = column(state.install.logs.iter().map(|line| raw(line).size(9).into())).spacing(2);
         content = content.push(
             container(scrollable(logs).height(100))
                 .padding(8)
@@ -1283,7 +1287,7 @@ fn append_install_feedback<'a>(
         );
     }
     if state.install.completed {
-        content = content.push(text(tr("extensions.install.success")).size(11).color(SUCCESS));
+        content = content.push(raw(tr("extensions.install.success")).size(11).color(SUCCESS));
     }
     content
 }
@@ -1313,7 +1317,7 @@ fn confirmation_modal(state: &ExtensionsState) -> Element<'_, ExtensionsMessage>
     extension_modal(
         title,
         "",
-        text(description)
+        raw(description)
             .size(12)
             .style(crate::theme::muted_text_style),
         tr("extensions.cancel"),
@@ -1339,7 +1343,7 @@ fn extension_modal<'a>(
     on_close: ExtensionsMessage,
 ) -> Element<'a, ExtensionsMessage> {
     let mut heading = column![
-        text(title)
+        raw(title)
             .size(18)
             .font(crate::core::typography::medium())
             .style(crate::theme::text_style),
@@ -1348,7 +1352,7 @@ fn extension_modal<'a>(
     .width(Fill);
     if !description.is_empty() {
         heading = heading.push(
-            text(description)
+            raw(description)
                 .size(12)
                 .style(crate::theme::muted_text_style),
         );
@@ -1362,13 +1366,13 @@ fn extension_modal<'a>(
     .width(Fill);
     let footer = row![
         space::horizontal(),
-        button(text(cancel_label).size(12).font(crate::core::typography::medium()))
+        button(raw(cancel_label).size(12).font(crate::core::typography::medium()))
             .on_press(on_cancel)
             .height(36)
             .padding([8, 16])
             .style(button_style(ButtonVariant::Secondary)),
         button(
-            text(confirm_label)
+            raw(confirm_label)
                 .size(12)
                 .font(crate::core::typography::medium())
                 .color(WHITE),
@@ -1423,7 +1427,7 @@ fn install_tab_button<'a>(
 ) -> Element<'a, ExtensionsMessage> {
     button(
         container(
-            text(label)
+            raw(label)
                 .size(12)
                 .font(crate::core::typography::medium()),
         )
@@ -1439,7 +1443,7 @@ fn install_tab_button<'a>(
 }
 
 fn header_button<'a>(label: &'a str, icon: Icon, message: ExtensionsMessage, variant: ButtonVariant) -> Element<'a, ExtensionsMessage> {
-    button(row![icons::icon(icon, 14, if variant == ButtonVariant::Primary { WHITE } else { BLUE_600 }), text(label).size(11)].spacing(6).align_y(Alignment::Center))
+    button(row![icons::icon(icon, 14, if variant == ButtonVariant::Primary { WHITE } else { BLUE_600 }), raw(label).size(11)].spacing(6).align_y(Alignment::Center))
         .on_press(message)
         .padding([9, 13])
         .style(button_style(variant))
@@ -1447,22 +1451,22 @@ fn header_button<'a>(label: &'a str, icon: Icon, message: ExtensionsMessage, var
 }
 
 fn badge<'a>(label: &'a str, color: Color) -> Element<'a, ExtensionsMessage> {
-    container(text(label).size(9).color(color)).padding([3, 7]).style(move |_theme| badge_surface(color)).into()
+    container(raw(label).size(9).color(color)).padding([3, 7]).style(move |_theme| badge_surface(color)).into()
 }
 
 fn owned_badge(label: String, color: Color) -> Element<'static, ExtensionsMessage> {
-    container(text(label).size(9).color(color)).padding([3, 7]).style(move |_theme| badge_surface(color)).into()
+    container(raw(label).size(9).color(color)).padding([3, 7]).style(move |_theme| badge_surface(color)).into()
 }
 
 fn icon_badge<'a>(label: &'a str, icon: Icon, color: Color) -> Element<'a, ExtensionsMessage> {
-    container(row![icons::icon(icon, 10, color), text(label).size(9).color(color)].spacing(4).align_y(Alignment::Center))
+    container(row![icons::icon(icon, 10, color), raw(label).size(9).color(color)].spacing(4).align_y(Alignment::Center))
         .padding([3, 7])
         .style(move |_theme| badge_surface(color))
         .into()
 }
 
 fn small_action<'a>(label: &'a str, icon: Icon, message: ExtensionsMessage) -> Element<'a, ExtensionsMessage> {
-    button(row![crate::theme::muted_icon(icon, 11), text(label).size(9).style(crate::theme::muted_text_style)].spacing(4).align_y(Alignment::Center))
+    button(row![crate::theme::muted_icon(icon, 11), raw(label).size(9).style(crate::theme::muted_text_style)].spacing(4).align_y(Alignment::Center))
         .on_press(message)
         .padding([3, 5])
         .style(small_action_style)
@@ -1472,7 +1476,7 @@ fn small_action<'a>(label: &'a str, icon: Icon, message: ExtensionsMessage) -> E
 fn icon_action<'a>(icon: Icon, label: &'a str, message: ExtensionsMessage, color: Color) -> Element<'a, ExtensionsMessage> {
     tooltip(
         centered_icon_button(icon, message, color, 28.0, 14),
-        container(text(label).size(10).color(WHITE)).padding([5, 8]).style(tooltip_surface),
+        container(raw(label).size(10).color(WHITE)).padding([5, 8]).style(tooltip_surface),
         tooltip::Position::Top,
     )
     .gap(5)
@@ -1530,7 +1534,7 @@ fn separator_line<'a>() -> Element<'a, ExtensionsMessage> {
 }
 
 fn tr(key: &'static str) -> &'static str {
-    t(key, current_language())
+    t_in(key, current_language())
 }
 
 fn format_error(error: &ExtensionError) -> String {
@@ -1539,22 +1543,28 @@ fn format_error(error: &ExtensionError) -> String {
 }
 
 fn format_count_notice(count: usize) -> String {
-    match current_language() {
-        crate::lang::Language::Chinese => format!("扫描完成，共发现 {count} 个扩展。"),
-        crate::lang::Language::English => format!("Scan complete. Found {count} extensions."),
-    }
+    tf("extensions.success.scanned", &[("count", &count)])
 }
 
 fn format_success(success: &OperationSuccess) -> String {
-    match (current_language(), success) {
-        (crate::lang::Language::Chinese, OperationSuccess::Installed(ids)) => format!("已安装扩展：{}。", ids.join("、")),
-        (crate::lang::Language::English, OperationSuccess::Installed(ids)) => format!("Installed: {}.", ids.join(", ")),
-        (crate::lang::Language::Chinese, OperationSuccess::Enabled { name, enabled }) => format!("{name} 已{}。", if *enabled { "启用" } else { "停用" }),
-        (crate::lang::Language::English, OperationSuccess::Enabled { name, enabled }) => format!("{name} has been {}.", if *enabled { "enabled" } else { "disabled" }),
-        (crate::lang::Language::Chinese, OperationSuccess::Deleted(name)) => format!("已删除扩展 {name}。"),
-        (crate::lang::Language::English, OperationSuccess::Deleted(name)) => format!("Deleted extension {name}."),
-        (crate::lang::Language::Chinese, OperationSuccess::GitRepaired(name)) => format!("已修复 {name} 的 Git 元数据。"),
-        (crate::lang::Language::English, OperationSuccess::GitRepaired(name)) => format!("Repaired Git metadata for {name}."),
+    match success {
+        OperationSuccess::Installed(ids) => {
+            tf("extensions.success.installed", &[("names", &ids.join("、"))])
+        }
+        OperationSuccess::Enabled { name, enabled } => {
+            let key = if *enabled {
+                "extensions.success.enabled"
+            } else {
+                "extensions.success.disabled"
+            };
+            tf(key, &[("name", name)])
+        }
+        OperationSuccess::Deleted(name) => {
+            tf("extensions.success.deleted", &[("name", name)])
+        }
+        OperationSuccess::GitRepaired(name) => {
+            tf("extensions.success.git_repaired", &[("name", name)])
+        }
     }
 }
 

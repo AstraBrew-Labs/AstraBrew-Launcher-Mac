@@ -1,5 +1,7 @@
 //! 本地实例任务调度。应用级订阅消费事件，关闭弹窗或切换页面不会丢失后台任务。
 
+use crate::lang::tf;
+use crate::lang::t;
 use iced::Task;
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -147,14 +149,11 @@ impl Launcher {
         if !self.local_runtime.writable {
             self.versions
                 .local
-                .notify("本地实例列表不可写，请修复后重新启动。", "", true);
+                .notify("local.list.not_writable", "", true);
             return Task::none();
         }
         self.versions.local.import_pending = true;
-        let title = crate::lang::t(
-            "选择酒馆的 package.json",
-            crate::lang::effective_language(self.settings.language),
-        );
+        let title = crate::lang::t("local.import.dialog_title");
         Task::perform(
             async move {
                 rfd::AsyncFileDialog::new()
@@ -196,7 +195,7 @@ impl Launcher {
                 } else {
                     self.versions
                         .local
-                        .notify("本地实例列表不可写，请修复后重新启动。", "", true);
+                        .notify("local.list.not_writable", "", true);
                 }
             }
             VersionMessage::CloseScanLog => self.versions.local.close_scan(),
@@ -209,7 +208,7 @@ impl Launcher {
                     self.versions.local.scan.phase = ScanPhase::Cancelled;
                     self.versions.local.scan.cancel_confirm_visible = false;
                     self.versions.local.scan.auto_hide_at = None;
-                    self.versions.local.notify("扫描已取消。", "", false);
+                    self.versions.local.notify("local.scan.cancelled", "", false);
                 }
             }
             VersionMessage::SwitchLocal(path) => {
@@ -218,7 +217,7 @@ impl Launcher {
                 } else {
                     self.versions
                         .local
-                        .notify("已有安装任务正在执行，请稍后再试。", "", true);
+                        .notify("app.notice.install_running", "", true);
                 }
             }
             VersionMessage::RecheckLocalDependencies(path) => {
@@ -231,7 +230,7 @@ impl Launcher {
                 if !self.local_runtime.writable {
                     self.versions
                         .local
-                        .notify("本地实例列表不可写，请修复后重新启动。", "", true);
+                        .notify("local.list.not_writable", "", true);
                     return true;
                 }
                 let before = self.versions.local_instances.len();
@@ -274,7 +273,7 @@ impl Launcher {
             self.versions.local.scan.visible = true;
             self.versions
                 .local
-                .notify("扫描正在停止，请稍后重试。", "", false);
+                .notify("app.local_instances.scan_stopping", "", false);
             return;
         }
         self.local_runtime
@@ -404,7 +403,7 @@ impl Launcher {
         let tx = self.local_runtime.tx.clone();
         std::thread::spawn(move || {
             let result = service::save(&service::store_path(), &instances)
-                .map_err(|error| LocalError::new("保存本地实例列表失败。", error));
+                .map_err(|error| LocalError::new("app.local_instances.save_failed", error));
             let _ = tx.send(Event::Saved(result));
         });
     }
@@ -476,7 +475,7 @@ impl Launcher {
         if self.versions.install_task.running || self.versions.local.install.running {
             self.versions
                 .local
-                .notify("已有安装任务正在执行，请稍后再试。", "", true);
+                .notify("app.notice.install_running", "", true);
             return;
         }
         let Some(instance) = self
@@ -566,9 +565,9 @@ impl Launcher {
                             let added = self.add_local_instance(instance);
                             self.versions.local.notify(
                                 if added {
-                                    "已导入本地实例。"
+                                    "app.local_instances.imported"
                                 } else {
-                                    "该本地实例已在列表中，已忽略。"
+                                    "app.local_instances.duplicate"
                                 },
                                 "",
                                 false,
@@ -626,9 +625,9 @@ impl Launcher {
                                     });
                                 self.versions.local.notify(
                                     if report.partial {
-                                        "快速扫描完成，仅扫描用户主目录；部分位置不可访问。"
+                                        "app.local_instances.scan_partial"
                                     } else {
-                                        "扫描完成，已自动添加发现的本地实例。"
+                                        "app.local_instances.scan_done"
                                     },
                                     "",
                                     report.partial,
@@ -667,10 +666,10 @@ impl Launcher {
                                     self.versions.current_version = Some(item.version.clone());
                                     self.versions
                                         .local
-                                        .notify("已切换到本地实例。", &path, false);
+                                        .notify("versions.local.switched", &path, false);
                                 } else if switch {
                                     self.versions.local.notify(
-                                        "运行依赖不完整，请先安装依赖。",
+                                        "app.local_instances.deps_incomplete",
                                         &path,
                                         true,
                                     );
@@ -705,7 +704,7 @@ impl Launcher {
                     let status = match result {
                         Ok(status) => {
                             self.versions.local.notify(
-                                "运行依赖已安装完成，请手动切换版本。",
+                                "local.install.completed",
                                 "",
                                 false,
                             );
@@ -717,8 +716,8 @@ impl Launcher {
                             self.versions.local.report(&error);
                             if matches!(
                                 error.message,
-                                "安装依赖失败，请查看日志后重试。"
-                                    | "安装已结束，但运行依赖仍不完整。"
+                                "local.deps.install_failed"
+                                    | "local.deps.incomplete_after_install"
                             ) {
                                 DependencyStatus::Incomplete
                             } else {
@@ -751,49 +750,30 @@ impl Launcher {
 
 /// 失效实例的提醒文案。
 ///
-/// 路径与语言无关，句子按当前界面语言生成，避免英文界面出现中文整句。
+/// 整句走键值表；路径是运行时数据，只作为占位符实参传入。
+/// 列表分隔符也走键，避免英文界面出现中文顿号。
 fn format_removed_instances(paths: &[String], cleared_current: bool) -> String {
     // Toast 宽度固定，路径太多时只列前几条。
     const MAX_LISTED: usize = 3;
-    match crate::lang::current_language() {
-        crate::lang::Language::Chinese => {
-            let listed = paths
-                .iter()
-                .take(MAX_LISTED)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join("、");
-            let more = if paths.len() > MAX_LISTED {
-                format!("…（共 {} 个）", paths.len())
-            } else {
-                String::new()
-            };
-            let mut text = format!("实例目录已不存在，已从列表移除：{listed}{more}");
-            if cleared_current {
-                text.push_str("当前使用的实例也已取消选择。");
-            }
-            text
-        }
-        crate::lang::Language::English => {
-            let listed = paths
-                .iter()
-                .take(MAX_LISTED)
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ");
-            let more = if paths.len() > MAX_LISTED {
-                format!(" … ({} in total)", paths.len())
-            } else {
-                String::new()
-            };
-            let prefix = "Instance folders no longer exist and were removed:";
-            let mut text = format!("{prefix} {listed}{more}");
-            if cleared_current {
-                text.push_str(" The current instance was cleared as well.");
-            }
-            text
-        }
+    let listed = paths
+        .iter()
+        .take(MAX_LISTED)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(crate::lang::t("common.list_separator"));
+    let more = if paths.len() > MAX_LISTED {
+        tf("app.local_instances.removed_more", &[("count", &paths.len())])
+    } else {
+        String::new()
+    };
+    let mut text = tf(
+        "app.local_instances.removed_title",
+        &[("listed", &listed), ("more", &more)],
+    );
+    if cleared_current {
+        text.push_str(t("app.local_instances.current_cleared"));
     }
+    text
 }
 
 #[cfg(test)]

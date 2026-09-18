@@ -93,7 +93,7 @@ impl Records {
             } else {
                 if self.pending.len() >= self.limit {
                     return Err(LocalError::new(
-                        "快速扫描输出异常，已停止。",
+                        "local.scan.output_anomaly",
                         "record too long",
                     ));
                 }
@@ -196,7 +196,7 @@ impl Diagnostics {
             return Ok(true);
         }
         Err(LocalError::new(
-            "快速扫描命令执行失败。",
+            "local.scan.command_failed",
             format!("find exit code: {code}\n{}", self.last),
         ))
     }
@@ -236,7 +236,7 @@ fn drive(
         if exit.is_none() {
             exit = process
                 .poll()
-                .map_err(|e| LocalError::new("无法等待快速扫描进程。", e))?;
+                .map_err(|e| LocalError::new("local.scan.wait_failed", e))?;
         }
         progress.elapsed_seconds = started.elapsed().as_secs();
         if last_progress.elapsed() >= Duration::from_millis(100) {
@@ -251,7 +251,7 @@ fn drive(
         {
             if !paths.pending.is_empty() {
                 return Err(LocalError::new(
-                    "快速扫描输出异常，已停止。",
+                    "local.scan.output_anomaly",
                     "missing final NUL",
                 ));
             }
@@ -267,7 +267,7 @@ fn drive(
             }
             Err(_) => {
                 return Err(LocalError::new(
-                    "快速扫描输出异常，已停止。",
+                    "local.scan.output_anomaly",
                     "stream disconnected",
                 ));
             }
@@ -290,14 +290,14 @@ fn drive(
                         || path.file_name() != Some(OsStr::new("package.json"))
                     {
                         return Err(LocalError::new(
-                            "快速扫描输出异常，已停止。",
+                            "local.scan.output_anomaly",
                             path.display(),
                         ));
                     }
                     if path.to_str().is_none() {
                         partial = true;
                         if !emit(ScanEvent::Warning(LocalError::new(
-                            "实例路径无法保存为文本，已跳过。",
+                            "local.scan.path_not_text",
                             path.display(),
                         ))) {
                             return Err(LocalError::cancelled());
@@ -330,7 +330,7 @@ fn drive(
                     diagnostics.observe(&line);
                     if !line.is_empty()
                         && !emit(ScanEvent::Warning(LocalError::new(
-                            "快速扫描跳过或遇到错误。",
+                            "local.scan.skipped_or_error",
                             String::from_utf8_lossy(&line),
                         )))
                     {
@@ -344,14 +344,14 @@ fn drive(
                 if !errors.pending.is_empty() {
                     diagnostics.observe(&errors.pending);
                     if !emit(ScanEvent::Warning(LocalError::new(
-                        "快速扫描跳过或遇到错误。",
+                        "local.scan.skipped_or_error",
                         String::from_utf8_lossy(&errors.pending),
                     ))) {
                         return Err(LocalError::cancelled());
                     }
                 }
             }
-            Output::Failed(error) => return Err(LocalError::new("无法读取快速扫描输出。", error)),
+            Output::Failed(error) => return Err(LocalError::new("local.scan.read_output_failed", error)),
         }
     }
 }
@@ -378,18 +378,18 @@ fn execute(
     let mut child = FindChild(
         command
             .spawn()
-            .map_err(|error| LocalError::new("无法启动快速扫描命令。", error))?,
+            .map_err(|error| LocalError::new("local.scan.start_failed", error))?,
     );
     let stdout = child
         .0
         .stdout
         .take()
-        .ok_or_else(|| LocalError::new("无法读取快速扫描输出。", "stdout"))?;
+        .ok_or_else(|| LocalError::new("local.scan.read_output_failed", "stdout"))?;
     let stderr = child
         .0
         .stderr
         .take()
-        .ok_or_else(|| LocalError::new("无法读取快速扫描输出。", "stderr"))?;
+        .ok_or_else(|| LocalError::new("local.scan.read_output_failed", "stderr"))?;
     let (tx, rx) = mpsc::sync_channel(64);
     let out_tx = tx.clone();
     let out = std::thread::spawn(move || read_stream(stdout, Stream::Out, out_tx));
@@ -402,7 +402,7 @@ fn execute(
     let err_result = err.join();
     if out_result.is_err() || err_result.is_err() {
         return Err(LocalError::new(
-            "无法读取快速扫描输出。",
+            "local.scan.read_output_failed",
             "reader thread failed",
         ));
     }
@@ -415,18 +415,18 @@ pub fn run_home(online: PathBuf, cancel: &AtomicBool, mut emit: impl FnMut(ScanE
         let home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .ok_or_else(|| LocalError::new("无法确定用户主目录，快速扫描未启动。", "HOME"))?;
+            .ok_or_else(|| LocalError::new("local.scan.home_unknown", "HOME"))?;
         // HOME 缺失或异常时不能像旧版一样回退到 /，否则会变成全盘扫描。
         if !home.is_absolute() || home == Path::new("/") {
             return Err(LocalError::new(
-                "无法确定用户主目录，快速扫描未启动。",
+                "local.scan.home_unknown",
                 home.display(),
             ));
         }
         let home = normalized_path(&home);
         if home == Path::new("/") {
             return Err(LocalError::new(
-                "无法确定用户主目录，快速扫描未启动。",
+                "local.scan.home_unknown",
                 home.display(),
             ));
         }

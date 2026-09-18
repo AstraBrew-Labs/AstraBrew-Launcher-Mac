@@ -10,7 +10,7 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Color, ContentFit, Element, Fill, Theme};
 use lucide_icons::Icon;
 
-use crate::lang::text;
+use crate::lang::{raw, t, text, textf, tf};
 use crate::theme::button_style;
 use astra_ui::{
     BLUE_600, ButtonVariant, DANGER, INK_MUTED, INK_SUBTLE, SUCCESS, WHITE, icons,
@@ -45,10 +45,10 @@ impl TavernBranch {
         }
     }
 
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Release => "稳定版",
-            Self::Staging => "开发版",
+            Self::Release => "versions.branch.release",
+            Self::Staging => "versions.branch.staging",
         }
     }
 }
@@ -67,10 +67,10 @@ pub enum VersionSource {
 #[allow(dead_code)]
 impl VersionSource {
     /// 返回侧边栏可以直接使用的来源文本。
-    pub const fn label(self) -> &'static str {
+    pub const fn label_key(self) -> &'static str {
         match self {
-            Self::Local => "本地",
-            Self::Online => "在线",
+            Self::Local => "versions.source.local",
+            Self::Online => "versions.source.online",
         }
     }
 
@@ -440,7 +440,7 @@ impl VersionState {
                     self.current_path = Some(instance.path.clone());
                     self.current_source = Some(VersionSource::Local);
                     self.local
-                        .notify("已切换到本地实例。", &instance.path, false);
+                        .notify("versions.local.switched", &instance.path, false);
                 }
             }
             VersionMessage::RemoveLocal(path) => {
@@ -448,13 +448,13 @@ impl VersionState {
                     && self.current_path.as_deref() == Some(path.as_str());
                 if is_current {
                     self.local
-                        .notify("当前正在使用的实例不能从列表中移除。", "", true);
+                        .notify("versions.local.cannot_remove_current", "", true);
                 } else if !self.local_instances.iter().any(|item| {
                     item.path == path && item.dependencies == DependencyStatus::Installing
                 }) {
                     self.local_instances
                         .retain(|instance| instance.path != path);
-                    self.local.notify("已从本地实例列表移除。", "", false);
+                    self.local.notify("versions.local.removed", "", false);
                 }
             }
             VersionMessage::RefreshOnline => {
@@ -518,12 +518,12 @@ impl VersionState {
                     self.notice = Some(if from_cache {
                         TransientNotice::warning(
                             "notice.refresh_warning",
-                            "在线版本请求失败，当前使用旧缓存。",
+                            "versions.online.request_failed_stale",
                         )
                     } else {
                         TransientNotice::info(
                             "notice.refresh_complete",
-                            "在线版本列表已更新。",
+                            "versions.online.updated",
                         )
                     });
                 }
@@ -532,7 +532,7 @@ impl VersionState {
                 // 记录本次请求已经结束，重新进入页面不应自动重复请求；用户可点击刷新重试。
                 self.branch_loaded = true;
                 self.online_status = OnlineVersionsStatus::Error;
-                self.online_error = Some(format!("在线版本获取失败：{error}"));
+                self.online_error = Some(tf("versions.online.fetch_failed", &[("error", &error)]));
             }
             VersionMessage::TickLoading => {
                 self.loading_frame = self.loading_frame.wrapping_add(1) % 4;
@@ -590,12 +590,12 @@ impl VersionState {
                     self.online_instance_path = Some(path);
                     self.notice = Some(TransientNotice::success(
                         "notice.switch_complete",
-                        format!("已切换到在线安装版本 v{version}。"),
+                        tf("versions.online.switched_version", &[("version", &version)]),
                     ));
-                    self.local.notify("已切换到在线实例。", version, false);
+                    self.local.notify("versions.online.switched", version, false);
                 } else {
                     self.local
-                        .notify("在线实例尚未就绪，请重新选择版本。", version, true);
+                        .notify("versions.online.not_ready", version, true);
                 }
             }
             VersionMessage::DeleteOnline(version) => {
@@ -604,7 +604,7 @@ impl VersionState {
                 if is_current {
                     self.notice = Some(TransientNotice::warning(
                         "notice.action_unavailable",
-                        "当前正在使用的版本不能删除。",
+                        "versions.online.cannot_delete_current",
                     ));
                 } else if let Some(release) = self
                     .online_releases
@@ -614,7 +614,7 @@ impl VersionState {
                     release.installed = false;
                     self.notice = Some(TransientNotice::success(
                         "notice.delete_complete",
-                        format!("已删除在线安装版本 v{}。", release.version),
+                        tf("versions.online.deleted_version", &[("version", &release.version)]),
                     ));
                 }
             }
@@ -634,7 +634,7 @@ impl VersionState {
                 self.install_task.running = true;
                 append_log(
                     &mut self.install_task.logs,
-                    "下载完成，3 秒后开始安装 npm 依赖…",
+                    "versions.install.log_download_done",
                 );
             }
             VersionMessage::InstallDependenciesStarted => {
@@ -656,14 +656,14 @@ impl VersionState {
                 self.install_task.running = false;
                 self.install_task.can_close = true;
                 self.install_task.auto_close_ticks = 3;
-                append_log(&mut self.install_task.logs, "npm 依赖安装完成。");
+                append_log(&mut self.install_task.logs, "versions.install.log_npm_done");
             }
             VersionMessage::InstallFailed(error) => {
                 self.install_task.phase = InstallPhase::Failed;
                 self.install_task.running = false;
                 self.install_task.can_close = true;
                 self.install_task.error = Some(error.clone());
-                append_log(&mut self.install_task.logs, &format!("安装失败：{error}"));
+                append_log(&mut self.install_task.logs, &tf("network.install.failed", &[("error", &error)]));
             }
             VersionMessage::InstallTaskTick => {
                 if self.install_task.phase == InstallPhase::Completed
@@ -690,7 +690,7 @@ impl VersionState {
         if self.install_task.running {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                "已有在线酒馆安装任务正在执行。",
+                "versions.online.install_running",
             ));
             return;
         }
@@ -700,7 +700,7 @@ impl VersionState {
             version: Some(branch.clone()),
             phase: InstallPhase::Download,
             running: true,
-            logs: format!("准备切换 SillyTavern {branch} 分支\n"),
+            logs: tf("versions.online.log_prepare_switch", &[("branch", &branch.to_string())]) + "\n",
             error: None,
             can_close: false,
             auto_close_ticks: 0,
@@ -708,7 +708,7 @@ impl VersionState {
         };
         self.notice = Some(TransientNotice::info(
             "notice.operation_started",
-            format!("开始切换到 {branch} 分支。"),
+            tf("versions.online.switching_branch", &[("branch", &branch)]),
         ));
     }
 
@@ -716,7 +716,7 @@ impl VersionState {
         if self.install_task.running {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                "已有在线酒馆安装任务正在执行。",
+                "versions.online.install_running",
             ));
             return;
         }
@@ -727,7 +727,7 @@ impl VersionState {
         else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                format!("未找到在线版本 v{version}。"),
+                tf("versions.online.version_missing", &[("version", &version)]),
             ));
             return;
         };
@@ -741,7 +741,7 @@ impl VersionState {
             version: Some(version.clone()),
             phase: InstallPhase::Download,
             running: true,
-            logs: format!("准备安装 SillyTavern v{version}\n"),
+            logs: tf("versions.online.log_prepare_install", &[("version", &version.to_string())]) + "\n",
             error: None,
             can_close: false,
             auto_close_ticks: 0,
@@ -749,17 +749,17 @@ impl VersionState {
         };
         self.notice = Some(TransientNotice::info(
             "notice.operation_started",
-            format!("开始安装在线版本 v{version}。"),
+            tf("versions.online.installing_version", &[("version", &version)]),
         ));
         // 镜像 tag 不存在时由上层网络服务自动改用官方 GitHub 地址。
         match release.mirror {
             MirrorAvailability::NotSynced => append_log(
                 &mut self.install_task.logs,
-                "当前下载源没有同步此版本，将使用官方直连地址。",
+                "versions.install.log_mirror_not_synced",
             ),
             MirrorAvailability::Unknown => append_log(
                 &mut self.install_task.logs,
-                "暂时无法确认下载源是否同步此版本，将先尝试镜像地址。",
+                "versions.install.log_mirror_unknown",
             ),
             MirrorAvailability::Official | MirrorAvailability::Synced => {}
         }
@@ -902,6 +902,7 @@ impl VersionState {
 }
 
 fn append_log(logs: &mut String, line: &str) {
+    let line = &crate::lang::resolve(line);
     if !logs.is_empty() && !logs.ends_with('\n') {
         logs.push('\n');
     }
@@ -925,12 +926,12 @@ pub fn versions_view<'a>(
 ) -> Element<'a, VersionMessage> {
     let tabs = row![
         tab_button(
-            "本地实例",
+            "versions.tab.local",
             VersionTab::Local,
             state.active_tab == VersionTab::Local,
         ),
         tab_button(
-            "在线实例",
+            "versions.tab.online",
             VersionTab::Online,
             state.active_tab == VersionTab::Online,
         ),
@@ -1015,22 +1016,22 @@ fn tab_button(
 fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let header = panel_header(
         Icon::FolderSearch,
-        "本地实例列表",
+        "versions.local.title",
         Some(
             if state.local.scan.phase.active() || state.local.scan.auto_hide_at.is_some() {
                 format!(
                     "{}  {}",
-                    crate::lang::display_label(state.local.scan.status_label()),
+                    crate::lang::t(state.local.scan.status_key()),
                     local::truncate_path(&state.local.scan.progress.path, 60)
                 )
             } else {
-                format!("已添加 {} 个本地实例", state.local_instances.len())
+                tf("versions.local.count", &[("count", &state.local_instances.len())])
             },
         ),
         vec![
             icon_button_enabled(
                 Icon::FolderPlus,
-                "导入本地实例",
+                "versions.local.import",
                 VersionMessage::ImportLocal,
                 !state.local.loading && !state.local.import_pending,
             ),
@@ -1041,9 +1042,9 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                     Icon::Search
                 },
                 if state.local.scan.phase.active() {
-                    "取消扫描"
+                    "local.scan.cancel"
                 } else {
-                    "扫描本机"
+                    "versions.local.scan.start"
                 },
                 if state.local.scan.phase.active() {
                     VersionMessage::RequestCancelScan
@@ -1052,12 +1053,12 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 },
                 !state.local.loading,
             ),
-            icon_button(Icon::FileText, "查看扫描日志", VersionMessage::OpenScanLog),
+            icon_button(Icon::FileText, "versions.local.scan.view_log", VersionMessage::OpenScanLog),
         ],
     );
 
     let list = if state.local.loading {
-        container(text("正在加载本地实例…").size(13))
+        container(text("versions.local.loading").size(13))
             .width(Fill)
             .height(Fill)
             .align_x(Alignment::Center)
@@ -1067,21 +1068,21 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         container(
             column![
                 crate::theme::subtle_icon(Icon::FolderSearch, 36),
-                text("尚未发现本地实例")
+                text("versions.local.empty")
                     .size(13)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                text("可以扫描本机自动查找，也可以手动指定已有酒馆的 package.json。")
+                text("versions.local.empty.hint")
                     .size(11)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
                 row![
-                    button(text("开始扫描"))
+                    button(text("versions.local.scan.start_btn"))
                         .on_press(VersionMessage::ScanLocal)
                         .padding([8, 16])
                         .style(button_style(ButtonVariant::Primary)),
                     // 手动添加与“扫描”并列呈现，让用户自己选择自动查找还是指定目录。
-                    button(text("手动添加"))
+                    button(text("versions.local.add_manual"))
                         .on_press(VersionMessage::ImportLocal)
                         .padding([8, 16])
                         .style(button_style(ButtonVariant::Secondary)),
@@ -1120,9 +1121,9 @@ fn local_panel(state: &VersionState) -> Element<'_, VersionMessage> {
 fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a, VersionMessage> {
     let primary_action = if item.dependencies == DependencyStatus::Ready {
         let label = if current {
-            "当前使用"
+            "versions.local.action.current"
         } else {
-            "切换版本"
+            "versions.local.action.switch"
         };
         let mut action = button(
             row![
@@ -1147,9 +1148,9 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
         DependencyStatus::Checking | DependencyStatus::Installing | DependencyStatus::Failed(_)
     ) {
         let label = match item.dependencies {
-            DependencyStatus::Checking => "检测中…",
-            DependencyStatus::Installing => "安装中…",
-            _ => "重试检测",
+            DependencyStatus::Checking => "versions.local.action.checking",
+            DependencyStatus::Installing => "versions.local.action.installing",
+            _ => "versions.local.action.retry_check",
         };
         let mut action = button(text(label).size(12))
             .padding([9, 14])
@@ -1162,7 +1163,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
         button(
             row![
                 icons::icon(Icon::Download, 15, WHITE),
-                text("安装依赖").size(12).font(crate::core::typography::medium()).color(WHITE),
+                text("versions.local.action.install_deps").size(12).font(crate::core::typography::medium()).color(WHITE),
             ]
             .spacing(7)
             .align_y(Alignment::Center),
@@ -1176,7 +1177,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
         if matches!(item.dependencies, DependencyStatus::Failed(_)) {
             tooltip(
                 primary_action,
-                text("依赖检测失败，请点击重试查看原因。").size(11),
+                text("versions.local.deps_failed_hint").size(11),
                 tooltip::Position::Bottom,
             )
             .into()
@@ -1187,7 +1188,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
     let mut remove = button(
         row![
             icons::icon(Icon::Trash2, 15, DANGER),
-            text("从列表中移除")
+            text("versions.local.remove")
                 .size(12)
                 .font(crate::core::typography::medium())
                 .color(DANGER),
@@ -1211,8 +1212,8 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                 .style(indigo_icon_surface),
             column![
                 row![
-                    text(if item.version == "未知版本" {
-                        crate::lang::display_label("未知版本")
+                    raw(if item.version == crate::core::local_instances::UNKNOWN_VERSION {
+                        t("local.unknown_version").to_owned()
                     } else {
                         format!("v{}", item.version)
                     })
@@ -1224,7 +1225,7 @@ fn local_instance_row<'a>(item: &'a LocalInstance, current: bool) -> Element<'a,
                 .align_y(Alignment::Center),
                 row![
                     crate::theme::subtle_icon(Icon::MapPin, 12),
-                    text(&item.path)
+                    raw(&item.path)
                         .size(10)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -1252,7 +1253,7 @@ fn online_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         branch_button(TavernBranch::Staging, state.branch),
         icon_button(
             Icon::RefreshCw,
-            "刷新在线版本",
+            "versions.online.refresh",
             VersionMessage::RefreshOnline
         ),
     ]
@@ -1270,8 +1271,8 @@ fn online_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     panel(
         panel_header(
             Icon::CloudDownload,
-            "在线实例",
-            Some(format!("上次同步：{}", state.last_sync)),
+            "versions.tab.online",
+            Some(tf("versions.online.last_sync", &[("time", &state.last_sync)])),
             vec![branch_controls.into()],
         ),
         body,
@@ -1280,7 +1281,7 @@ fn online_panel(state: &VersionState) -> Element<'_, VersionMessage> {
 
 fn branch_button(branch: TavernBranch, current: TavernBranch) -> Element<'static, VersionMessage> {
     let active = branch == current;
-    button(text(branch.label()).size(11).font(crate::core::typography::medium()))
+    button(text(branch.label_key()).size(11).font(crate::core::typography::medium()))
         .on_press(VersionMessage::SelectBranch(branch))
         .padding([6, 10])
         .style(move |_theme, status| branch_button_style(active, status))
@@ -1316,11 +1317,11 @@ fn online_loading_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     container(
         column![
             crate::theme::subtle_icon(Icon::LoaderCircle, 34),
-            text(format!("正在获取酒馆版本{dots}"))
+            textf("versions.online.loading", &[("dots", &dots)])
                 .size(14)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
-            text("正在读取镜像与直连数据，操作区域将在完成后显示。")
+            text("versions.online.loading_hint")
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -1339,19 +1340,19 @@ fn online_error_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     container(
         column![
             crate::theme::subtle_icon(Icon::CloudOff, 34),
-            text("在线版本获取失败")
+            text("versions.online.fetch_failed_title")
                 .size(14)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
             state
                 .online_error
                 .as_deref()
-                .map(text)
-                .unwrap_or_else(|| text("没有可用的缓存版本。"))
+                .map(|message| raw(message))
+                .unwrap_or_else(|| text("versions.online.no_cache"))
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
-            button("重新获取")
+            button(text("versions.online.retry"))
                 .on_press(VersionMessage::RefreshOnline)
                 .padding([8, 16])
                 .style(button_style(ButtonVariant::Primary)),
@@ -1370,10 +1371,13 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     // 选中版本可能不在列表中；统一走有效版本，缺省展示最新版本。
     let selected = state.effective_online_version();
     let selected_release = state.effective_online_release();
-    let picker_label = selected.unwrap_or("选择版本");
+    // 选中版本是运行时数据；缺省文案是键，先按当前语言渲染成 String。
+    let picker_label = selected
+        .map(str::to_owned)
+        .unwrap_or_else(|| t("versions.online.select_version").to_owned());
     let picker = button(
         row![
-            text(picker_label).size(13).font(crate::core::typography::regular()),
+            raw(picker_label).size(13).font(crate::core::typography::regular()),
             space::horizontal(),
             icons::icon(Icon::ChevronDown, 15, INK_MUTED),
         ]
@@ -1392,7 +1396,7 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let action = selected_release
         .map(|release| online_action_button(state, release))
         .unwrap_or_else(|| {
-            button(text("暂无可用版本").size(13).font(crate::core::typography::medium()))
+            button(text("versions.online.no_version").size(13).font(crate::core::typography::medium()))
                 .width(Fill)
                 .padding([12, 16])
                 .style(button_style(ButtonVariant::Secondary))
@@ -1401,10 +1405,10 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let action = container(action).width(Fill).max_width(430);
     let status = selected_release
         .map(online_release_status)
-        .unwrap_or_else(|| text("请选择一个版本").size(11).font(crate::core::typography::regular()).into());
+        .unwrap_or_else(|| text("versions.online.please_select").size(11).font(crate::core::typography::regular()).into());
     let stale_hint: Element<'_, VersionMessage> =
         if state.online_status == OnlineVersionsStatus::StaleCache {
-            text("当前显示的是旧缓存版本。")
+            text("versions.online.stale_hint")
                 .size(10)
                 .font(crate::core::typography::regular())
                 .color(Color::from_rgb8(190, 120, 20))
@@ -1420,7 +1424,7 @@ fn online_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .height(150)
                 .content_fit(ContentFit::Contain),
             text("SillyTavern").size(20).font(crate::core::typography::medium()),
-            text("选择需要安装或使用的酒馆版本")
+            text("versions.online.hint")
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -1463,7 +1467,7 @@ fn online_update_button(state: &VersionState) -> Option<Element<'_, VersionMessa
     } else {
         VersionMessage::InstallOnline(newest.version.clone())
     };
-    let label = format!("更新到最新版本 v{}", newest.version);
+    let label = tf("versions.online.update_to_latest", &[("version", &newest.version)]);
     let line_anchor = || container(text(" ").size(13)).width(0);
     Some(
         tooltip(
@@ -1480,7 +1484,7 @@ fn online_update_button(state: &VersionState) -> Option<Element<'_, VersionMessa
             .padding([11, 14])
             .style(button_style(ButtonVariant::Outline)),
             container(
-                text(label)
+                raw(label)
                     .size(10)
                     .font(crate::core::typography::regular())
                     .color(WHITE),
@@ -1500,9 +1504,10 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
     let version = info
         .map(|item| format!("staging · {}", short_sha(&item.commit_sha)))
         .unwrap_or_else(|| "staging".to_owned());
+    // 提交信息是运行时数据，默认文案是键；统一先按当前语言渲染成 String。
     let detail = info
-        .map(|item| item.message.as_str())
-        .unwrap_or("正在使用 staging 开发分支");
+        .map(|item| item.message.as_str().to_owned())
+        .unwrap_or_else(|| t("versions.staging.active_detail").to_owned());
     let action: Element<'_, VersionMessage> = if state.staging_installed
         && state.current_source == Some(VersionSource::Online)
         && state.current_version.as_deref() == Some("staging")
@@ -1510,7 +1515,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         button(
             row![
                 icons::icon(Icon::CircleCheck, 16, SUCCESS),
-                text("当前版本").size(13).font(crate::core::typography::medium())
+                text("versions.online.current").size(13).font(crate::core::typography::medium())
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1523,7 +1528,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         button(
             row![
                 icons::icon(Icon::Power, 16, WHITE),
-                text("切换到此版本")
+                text("versions.online.switch_to")
                     .size(13)
                     .font(crate::core::typography::medium())
                     .color(WHITE)
@@ -1540,7 +1545,7 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
         button(
             row![
                 icons::icon(Icon::Download, 16, WHITE),
-                text("安装").size(13).font(crate::core::typography::medium()).color(WHITE)
+                text("versions.online.install").size(13).font(crate::core::typography::medium()).color(WHITE)
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1558,8 +1563,8 @@ fn staging_ready_panel(state: &VersionState) -> Element<'_, VersionMessage> {
                 .height(150)
                 .content_fit(ContentFit::Contain),
             text("SillyTavern staging").size(20).font(crate::core::typography::medium()),
-            text(version).size(13).font(crate::core::typography::medium()).color(BLUE_600),
-            text(detail)
+            raw(version).size(13).font(crate::core::typography::medium()).color(BLUE_600),
+            raw(detail)
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -1583,17 +1588,17 @@ fn short_sha(sha: &str) -> &str {
 fn staging_confirm_modal() -> Element<'static, VersionMessage> {
     let panel = container(
         column![
-            text("切换到开发版？").size(18).font(crate::core::typography::medium()),
-            text("开发版包含最新功能，但请注意它可能随时出现问题。")
+            text("versions.staging.confirm_title").size(18).font(crate::core::typography::medium()),
+            text("versions.staging.confirm_hint")
                 .size(12)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
             row![
-                button(text("取消").size(12).font(crate::core::typography::medium()))
+                button(text("tavern.sync.import.cancel").size(12).font(crate::core::typography::medium()))
                     .on_press(VersionMessage::CancelStagingRisk)
                     .padding([8, 16])
                     .style(button_style(ButtonVariant::Secondary)),
-                button(text("确认切换").size(12).font(crate::core::typography::medium()).color(WHITE))
+                button(text("versions.staging.confirm").size(12).font(crate::core::typography::medium()).color(WHITE))
                     .on_press(VersionMessage::ConfirmStagingRisk)
                     .padding([8, 16])
                     .style(button_style(ButtonVariant::Primary)),
@@ -1633,19 +1638,23 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
         .fold(column![].width(Fill), |rows, release| {
             let selected =
                 state.effective_online_version() == Some(release.version.as_str());
-            let status = if release.installed { "已安装" } else { "" };
+            let status = if release.installed {
+                t("versions.online.installed")
+            } else {
+                ""
+            };
             let row_content = row![
                 button(
                     column![
                         row![
-                            text(format!("v{}", release.version))
+                            raw(format!("v{}", release.version))
                                 .size(13)
                                 .font(crate::core::typography::medium()),
                             text(status).size(10).font(crate::core::typography::regular()).color(SUCCESS),
                         ]
                         .spacing(8)
                         .align_y(Alignment::Center),
-                        text(format!("发布于 {}", release.published_at))
+                        raw(tf("versions.online.published_at", &[("date", &release.published_at)]))
                             .size(10)
                             .font(crate::core::typography::regular())
                             .style(crate::theme::muted_text_style),
@@ -1674,7 +1683,7 @@ fn version_selector_modal(state: &VersionState) -> Element<'_, VersionMessage> {
     let panel = container(
         column![
             row![
-                text("选择酒馆版本").size(18).font(crate::core::typography::medium()),
+                text("versions.online.selector_title").size(18).font(crate::core::typography::medium()),
                 space::horizontal(),
                 button(icons::icon(Icon::X, 16, INK_MUTED))
                     .on_press(VersionMessage::CloseVersionSelector)
@@ -1740,9 +1749,12 @@ fn release_log_modal<'a>(
     state: &'a VersionState,
     theme: &Theme,
 ) -> Element<'a, VersionMessage> {
-    let title = state.release_log_version.as_deref().unwrap_or("版本");
+    let title = state
+        .release_log_version
+        .as_deref()
+        .unwrap_or(t("versions.release.version_label"));
     let body: Element<'a, VersionMessage> = if state.markdown_items.is_empty() {
-        text("该版本没有更新日志。")
+        text("versions.release.log_empty")
             .size(12)
             .font(crate::core::typography::regular())
             .into()
@@ -1759,10 +1771,10 @@ fn release_log_modal<'a>(
         column![
             row![
                 column![
-                    text(format!("SillyTavern v{title}"))
+                    raw(tf("versions.release.log_title", &[("title", &title)]))
                         .size(18)
                         .font(crate::core::typography::medium()),
-                    text("版本更新日志")
+                    text("versions.release.log_subtitle")
                         .size(11)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -1818,7 +1830,7 @@ fn online_action_button<'a>(
         return button(
             row![
                 icons::icon(Icon::CircleCheck, 16, SUCCESS),
-                text("当前版本").size(13).font(crate::core::typography::medium()),
+                text("versions.online.current").size(13).font(crate::core::typography::medium()),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1833,7 +1845,7 @@ fn online_action_button<'a>(
         button(
             row![
                 icons::icon(Icon::Power, 16, WHITE),
-                text("切换到此版本")
+                text("versions.online.switch_to")
                     .size(13)
                     .font(crate::core::typography::medium())
                     .color(WHITE),
@@ -1850,7 +1862,7 @@ fn online_action_button<'a>(
         button(
             row![
                 icons::icon(Icon::Download, 16, WHITE),
-                text("安装").size(13).font(crate::core::typography::medium()).color(WHITE),
+                text("versions.online.install").size(13).font(crate::core::typography::medium()).color(WHITE),
             ]
             .spacing(8)
             .align_y(Alignment::Center),
@@ -1866,7 +1878,7 @@ fn online_action_button<'a>(
 fn online_release_status(release: &OnlineRelease) -> Element<'static, VersionMessage> {
     let mirror = mirror_status_text(release.mirror);
     row![
-        text(format!("发布于 {}", release.published_at))
+        raw(tf("versions.online.published_at", &[("date", &release.published_at)]))
             .size(10)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
@@ -1884,7 +1896,7 @@ fn mirror_status_text(state: MirrorAvailability) -> iced::widget::Text<'static> 
         MirrorAvailability::NotSynced => Color::from_rgb8(190, 120, 20),
         MirrorAvailability::Official | MirrorAvailability::Unknown => INK_SUBTLE,
     };
-    text(state.label())
+    text(state.label_key())
         .size(10)
         .font(crate::core::typography::regular())
         .color(color)
@@ -1901,20 +1913,20 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     let install_color = if install_active { BLUE_600 } else { INK_MUTED };
 
     let steps = row![
-        install_step(Icon::Download, "下载", download_color, download_active),
+        install_step(Icon::Download, "versions.install.step_download", download_color, download_active),
         container(space::horizontal()).width(36),
-        install_step(Icon::PackageCheck, "安装", install_color, install_active),
+        install_step(Icon::PackageCheck, "versions.online.install", install_color, install_active),
     ]
     .spacing(8)
     .align_y(Alignment::Center)
     .width(Fill);
 
     let status = match task.phase {
-        InstallPhase::Download => "正在下载酒馆源码…",
-        InstallPhase::WaitingInstall => "下载完成，3 秒后开始安装…",
-        InstallPhase::Install => "正在安装 npm 依赖…",
-        InstallPhase::Completed => "安装完成，窗口将在 3 秒后自动关闭。",
-        InstallPhase::Failed => "安装失败，请查看日志后重试。",
+        InstallPhase::Download => t("versions.install.status_downloading"),
+        InstallPhase::WaitingInstall => t("versions.install.status_waiting"),
+        InstallPhase::Install => t("versions.install.status_installing"),
+        InstallPhase::Completed => t("versions.install.status_completed"),
+        InstallPhase::Failed => t("versions.install.status_failed"),
     };
     let status_color = match task.phase {
         InstallPhase::Failed => DANGER,
@@ -1934,7 +1946,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     .width(Fill);
     if task.can_close {
         footer = footer.push(
-            button(text("关闭").size(12).font(crate::core::typography::medium()))
+            button(text("resources.import.close").size(12).font(crate::core::typography::medium()))
                 .on_press(VersionMessage::CloseInstallModal)
                 .height(34)
                 .padding([7, 14])
@@ -1943,7 +1955,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
     }
 
     let error_detail: Element<'_, VersionMessage> = match task.error.as_deref() {
-        Some(error) => text(error)
+        Some(error) => raw(error)
             .size(11)
             .font(crate::core::typography::regular())
             .color(DANGER)
@@ -1955,8 +1967,8 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
         container(
             column![
                 column![
-                    text("酒馆安装").size(18).font(crate::core::typography::medium()),
-                    text(format!("正在处理 SillyTavern v{version}"))
+                    text("versions.install.title").size(18).font(crate::core::typography::medium()),
+                    textf("versions.install.processing", &[("version", &version)])
                         .size(12)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -1966,7 +1978,7 @@ fn install_modal(task: &InstallTaskState) -> Element<'_, VersionMessage> {
                 rule::horizontal(1.0).style(crate::theme::separator_style),
                 scrollable(
                     container(
-                        text(&task.logs)
+                        raw(&task.logs)
                             .size(11)
                             .font(crate::core::typography::regular())
                             .style(crate::theme::text_style),
@@ -2057,7 +2069,7 @@ fn panel_header<'a>(
     if let Some(meta) = meta {
         title_row = title_row.push(
             container(
-                text(meta)
+                raw(meta)
                     .size(9)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -2119,7 +2131,7 @@ fn icon_button_enabled(
 }
 
 fn current_badge(show: bool) -> Element<'static, VersionMessage> {
-    optional_badge(show, "当前", BLUE_600)
+    optional_badge(show, "versions.local.badge.current", BLUE_600)
 }
 
 fn optional_badge(

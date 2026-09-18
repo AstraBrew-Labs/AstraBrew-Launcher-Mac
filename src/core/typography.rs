@@ -4,6 +4,7 @@
 //! 所有系统字体长期放入内存。渲染字体通过线程局部状态传递给各页面，与语言
 //! 模块采用相同方式，保证构建同一帧时使用一致的字体族。
 
+use crate::lang::tf;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -63,10 +64,7 @@ impl fmt::Display for FontChoice {
         if let Some(family) = self.family {
             f.write_str(family)
         } else {
-            f.write_str(crate::lang::t(
-                "settings.interface.font.default",
-                crate::lang::lang::current_language(),
-            ))
+            f.write_str(crate::lang::t("settings.interface.font.default"))
         }
     }
 }
@@ -172,14 +170,14 @@ impl SystemFontCatalog {
             return Ok(Vec::new());
         };
         let Some(paths) = self.sources.get(family) else {
-            return Err(format!("找不到字体族“{family}”的字体文件。"));
+            return Err(tf("typing.font_missing", &[("family", &family)]));
         };
 
         paths
             .iter()
             .map(|path| {
                 std::fs::read(path)
-                    .map_err(|error| format!("无法读取字体 {}：{error}", path.display()))
+                    .map_err(|error| tf("typing.font_read_failed", &[("path", &path.display().to_string()), ("error", &error.to_string())]))
             })
             .collect()
     }

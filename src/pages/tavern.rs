@@ -5,7 +5,7 @@ use std::fmt;
 pub(crate) mod sync;
 use crate::core::tavern_config::{ConfigError, ErrorKind, Values};
 
-use crate::lang::text;
+use crate::lang::{raw, t, text};
 use iced::widget::{button, column, container, pick_list, row, scrollable, space, text_input};
 use iced::{Alignment, Background, Border, Color, Element, Fill, Length, Theme};
 use lucide_icons::Icon;
@@ -25,7 +25,7 @@ macro_rules! enum_text {
     ($ty:ident, $([$variant:ident, $label:literal]),+ $(,)?) => {
         impl fmt::Display for $ty {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&crate::lang::display_label(match self { $(Self::$variant => $label,)+ }))
+                f.write_str(&crate::lang::t(match self { $(Self::$variant => $label,)+ }))
             }
         }
     };
@@ -50,10 +50,10 @@ impl BrowserType {
         Self::Safari,
     ];
 
-    pub(crate) const fn label(self) -> &'static str {
+    pub(crate) const fn label_key(self) -> &'static str {
         match self {
-            Self::Unknown => "未支持的值（保留原值）",
-            Self::System => "系统默认",
+            Self::Unknown => "tavern.browser_type.unknown",
+            Self::System => "tavern.browser_type.system",
             Self::Chrome => "Chrome",
             Self::Firefox => "Firefox",
             Self::Edge => "Edge",
@@ -63,8 +63,8 @@ impl BrowserType {
 }
 enum_text!(
     BrowserType,
-    [Unknown, "未支持的值（保留原值）"],
-    [System, "系统默认"],
+    [Unknown, "tavern.browser_type.unknown"],
+    [System, "tavern.browser_type.system"],
     [Chrome, "Chrome"],
     [Firefox, "Firefox"],
     [Edge, "Edge"],
@@ -84,10 +84,10 @@ impl ThumbnailFormat {
 }
 enum_text!(
     ThumbnailFormat,
-    [Unknown, "未支持的值（保留原值）"],
-    [Jpeg, "JPEG（默认）"],
+    [Unknown, "tavern.browser_type.unknown"],
+    [Jpeg, "tavern.thumbnail_format.jpeg"],
     [Png, "PNG"],
-    [Webp, "WebP（推荐）"]
+    [Webp, "tavern.thumbnail_format.webp"]
 );
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -104,8 +104,8 @@ impl LogLevel {
 }
 enum_text!(
     LogLevel,
-    [Unknown, "未支持的值（保留原值）"],
-    [Debug, "0 - Debug（最详细）"],
+    [Unknown, "tavern.browser_type.unknown"],
+    [Debug, "tavern.log_level.debug"],
     [Info, "1 - Info"],
     [Warn, "2 - Warn"],
     [Error, "3 - Error"]
@@ -751,7 +751,7 @@ impl TavernState {
     pub(crate) fn apply_values(&mut self, values: Values) -> Result<(), ConfigError> {
         self.config =
             serde_json::from_value(serde_json::Value::Object(values.into_iter().collect()))
-                .map_err(|_| ConfigError::new(ErrorKind::Invalid, "无法同步配置到界面。", ""))?;
+                .map_err(|_| ConfigError::new(ErrorKind::Invalid, "tavern.error.sync_to_ui_failed", ""))?;
         Ok(())
     }
 
@@ -902,10 +902,10 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
             .align_y(Alignment::Center)
             .style(page_icon_style),
         column![
-            text("酒馆配置").size(21).font(crate::core::typography::medium()),
+            text("tavern.title").size(21).font(crate::core::typography::medium()),
             row![
                 crate::theme::muted_icon(Icon::Settings, 10),
-                text("管理当前版本的 config.yaml 选项")
+                text("tavern.subtitle")
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style)
@@ -917,12 +917,12 @@ pub(crate) fn tavern_view(state: &TavernState) -> Element<'_, TavernMessage> {
         space::horizontal(),
         status_badge(&state.sync),
         header_button(
-            "打开配置文件",
+            "tavern.action.open_config_file",
             Icon::FolderOpen,
             TavernAction::OpenConfigFile
         ),
         header_button(
-            "导入配置文件",
+            "tavern.action.import_config_file",
             Icon::ArrowDownUp,
             TavernAction::ImportConfig
         ),
@@ -985,7 +985,7 @@ fn config_groups(state: &TavernState) -> Element<'_, TavernMessage> {
 fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
     let port = row![
         container(stacked_field(
-            "服务端口",
+            "tavern.config.port",
             wide_text_control("8000", &config.port, TextField::Port, false),
             None,
         ))
@@ -997,13 +997,13 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
 
     let listen_addresses = row![
         container(stacked_field(
-            "IPV4 监听地址",
+            "tavern.config.listen_ipv4",
             wide_text_control("0.0.0.0", &config.listen_ipv4, TextField::ListenIpv4, false,),
             None,
         ))
         .width(Length::FillPortion(1)),
         container(stacked_field(
-            "IPV6 监听地址",
+            "tavern.config.listen_ipv6",
             wide_text_control("[::]", &config.listen_ipv6, TextField::ListenIpv6, false,),
             None,
         ))
@@ -1013,11 +1013,11 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
     .width(Fill);
 
     let protocol_options = row![
-        pill_toggle("允许局域网访问", BoolField::Listen, config.listen),
-        pill_toggle("启用 IPv4", BoolField::ProtocolIpv4, config.protocol_ipv4),
-        pill_toggle("启用 IPv6", BoolField::ProtocolIpv6, config.protocol_ipv6),
+        pill_toggle("tavern.config.allow_lan", BoolField::Listen, config.listen),
+        pill_toggle("tavern.config.enable_ipv4", BoolField::ProtocolIpv4, config.protocol_ipv4),
+        pill_toggle("tavern.config.enable_ipv6", BoolField::ProtocolIpv6, config.protocol_ipv6),
         pill_toggle(
-            "DNS IPv6 优先",
+            "tavern.config.dns_ipv6_prefer",
             BoolField::DnsPreferIpv6,
             config.dns_prefer_ipv6,
         ),
@@ -1027,18 +1027,18 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
 
     let launch_options = row![
         container(stacked_field(
-            "心跳间隔（秒）",
+            "tavern.config.heartbeat_interval",
             wide_text_control(
                 "0",
                 &config.heartbeat_interval,
                 TextField::HeartbeatInterval,
                 false,
             ),
-            Some("服务器心跳检测间隔"),
+            Some("tavern.config.heartbeat_interval.hint"),
         ))
         .width(Length::FillPortion(1)),
         container(stacked_field(
-            "浏览器类型",
+            "tavern.config.browser_type",
             wide_select_control(
                 &BrowserType::ALL,
                 config.browser_type,
@@ -1059,7 +1059,7 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
         crate::theme::separator(),
         launch_options,
         pill_toggle(
-            "自动启动浏览器",
+            "tavern.config.browser_launch",
             BoolField::BrowserLaunchEnabled,
             config.browser_launch_enabled,
         ),
@@ -1073,8 +1073,8 @@ fn network_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
         expanded,
         Icon::Globe,
         BLUE_600,
-        "网络与访问",
-        "端口、监听地址与基础协议",
+        "tavern.section.network.title",
+        "tavern.section.network.description",
         content.into(),
     )
 }
@@ -1086,21 +1086,21 @@ fn security_section<'a>(
 ) -> Element<'a, TavernMessage> {
     let mut rows = vec![
         field_row(
-            "启用基础认证",
-            "访问酒馆前要求输入全局用户名和密码。",
+            "tavern.config.basic_auth_mode",
+            "tavern.config.basic_auth_mode.hint",
             toggle_control(BoolField::BasicAuthMode, config.basic_auth_mode),
         ),
         field_row(
-            "启用用户账户",
-            "允许使用独立的酒馆用户账户。",
+            "tavern.config.enable_user_accounts",
+            "tavern.config.enable_user_accounts.hint",
             toggle_control(BoolField::EnableUserAccounts, config.enable_user_accounts),
         ),
     ];
     if config.basic_auth_mode {
         rows.extend([
             field_row(
-                "全局用户名",
-                "Basic Auth 使用的用户名。",
+                "tavern.config.basic_auth_username",
+                "tavern.config.basic_auth_username.hint",
                 text_control(
                     "user",
                     &config.basic_auth_username,
@@ -1109,8 +1109,8 @@ fn security_section<'a>(
                 ),
             ),
             field_row(
-                "全局密码",
-                "Basic Auth 使用的密码。",
+                "tavern.config.basic_auth_password",
+                "tavern.config.basic_auth_password.hint",
                 text_control(
                     "password",
                     &config.basic_auth_password,
@@ -1122,61 +1122,61 @@ fn security_section<'a>(
     }
     rows.extend([
         field_row(
-            "低调登录模式",
-            "隐藏显式登录入口。",
+            "tavern.config.enable_discreet_login",
+            "tavern.config.enable_discreet_login.hint",
             toggle_control(BoolField::EnableDiscreetLogin, config.enable_discreet_login),
         ),
         field_row(
-            "按用户基础认证",
-            "每个用户使用独立的基础认证。",
+            "tavern.config.per_user_basic_auth",
+            "tavern.config.per_user_basic_auth.hint",
             toggle_control(BoolField::PerUserBasicAuth, config.per_user_basic_auth),
         ),
         field_row(
-            "启用 IP 白名单",
-            "仅允许白名单中的 IP 地址访问。",
+            "tavern.config.whitelist_mode",
+            "tavern.config.whitelist_mode.hint",
             toggle_control(BoolField::WhitelistMode, config.whitelist_mode),
         ),
     ]);
     if config.whitelist_mode {
         rows.push(field_row(
-            "白名单 IP 列表",
-            "支持 IPv4 与 IPv6 地址。",
+            "tavern.config.whitelist",
+            "tavern.config.whitelist.hint",
             whitelist_control(&config.whitelist, fixed_whitelist),
         ));
     }
     rows.extend([
         field_row(
-            "启用主机白名单",
-            "限制 Host 请求头中的主机名。",
+            "tavern.config.host_whitelist_enabled",
+            "tavern.config.host_whitelist_enabled.hint",
             toggle_control(
                 BoolField::HostWhitelistEnabled,
                 config.host_whitelist_enabled,
             ),
         ),
         field_row(
-            "扫描主机",
-            "自动扫描并识别可用主机名。",
+            "tavern.config.host_whitelist_scan",
+            "tavern.config.host_whitelist_scan.hint",
             toggle_control(BoolField::HostWhitelistScan, config.host_whitelist_scan),
         ),
     ]);
     if config.host_whitelist_enabled {
         rows.push(field_row(
-            "主机白名单",
-            "允许访问酒馆的主机名。",
+            "tavern.config.host_whitelist",
+            "tavern.config.host_whitelist.hint",
             list_control(
                 &config.host_whitelist,
                 ListField::HostWhitelist,
-                "例如：localhost",
+                "tavern.config.host_whitelist.placeholder",
             ),
         ));
     }
     rows.push(field_row(
-        "导入域名白名单",
-        "允许从指定域名导入内容。",
+        "tavern.config.import_domains",
+        "tavern.config.import_domains.hint",
         list_control(
             &config.import_domains,
             ListField::ImportDomains,
-            "例如：example.com",
+            "tavern.config.import_domains.placeholder",
         ),
     ));
 
@@ -1185,23 +1185,23 @@ fn security_section<'a>(
         expanded,
         Icon::ShieldCheck,
         Color::from_rgb8(124, 58, 237),
-        "安全与账户",
-        "账户系统、Basic Auth、IP 与主机白名单。",
+        "tavern.section.security.title",
+        "tavern.section.security.description",
         section_rows(rows),
     )
 }
 
 fn ssl_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
     let mut rows = vec![field_row(
-        "启用 HTTPS",
-        "使用 SSL/TLS 证书加密连接。",
+        "tavern.config.ssl_enabled",
+        "tavern.config.ssl_enabled.hint",
         toggle_control(BoolField::SslEnabled, config.ssl_enabled),
     )];
     if config.ssl_enabled {
         rows.extend([
             field_row(
-                "证书文件路径",
-                "支持 .pem、.crt 与 .cer 证书文件。",
+                "tavern.config.ssl_cert_path",
+                "tavern.config.ssl_cert_path.hint",
                 text_control(
                     "./certs/cert.pem",
                     &config.ssl_cert_path,
@@ -1210,8 +1210,8 @@ fn ssl_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessa
                 ),
             ),
             field_row(
-                "私钥文件路径",
-                "支持 .pem 与 .key 私钥文件。",
+                "tavern.config.ssl_key_path",
+                "tavern.config.ssl_key_path.hint",
                 text_control(
                     "./certs/privkey.pem",
                     &config.ssl_key_path,
@@ -1220,10 +1220,10 @@ fn ssl_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessa
                 ),
             ),
             field_row(
-                "私钥密码短语",
-                "仅在私钥有密码保护时填写。",
+                "tavern.config.ssl_key_passphrase",
+                "tavern.config.ssl_key_passphrase.hint",
                 text_control(
-                    "密码短语",
+                    "tavern.config.ssl_key_passphrase.placeholder",
                     &config.ssl_key_passphrase,
                     TextField::SslKeyPassphrase,
                     true,
@@ -1237,63 +1237,63 @@ fn ssl_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessa
         Icon::LockKeyhole,
         SUCCESS,
         "HTTPS / SSL",
-        "配置证书以支持加密访问。",
+        "tavern.section.ssl.description",
         section_rows(rows),
     )
 }
 
 fn cors_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
     let mut rows = vec![field_row(
-        "启用 CORS",
-        "控制 API 的跨域访问权限。",
+        "tavern.config.cors_enabled",
+        "tavern.config.cors_enabled.hint",
         toggle_control(BoolField::CorsEnabled, config.cors_enabled),
     )];
     if config.cors_enabled {
         rows.extend([
             field_row(
-                "允许来源 Origin",
-                "允许发起跨域请求的来源。",
+                "tavern.config.cors_origins",
+                "tavern.config.cors_origins.hint",
                 list_control(
                     &config.cors_origins,
                     ListField::CorsOrigins,
-                    "例如：https://example.com",
+                    "tavern.config.cors_origins.placeholder",
                 ),
             ),
             field_row(
-                "允许方法 Methods",
-                "允许的 HTTP 方法。",
+                "tavern.config.cors_methods",
+                "tavern.config.cors_methods.hint",
                 list_control(
                     &config.cors_methods,
                     ListField::CorsMethods,
-                    "例如：OPTIONS",
+                    "tavern.config.cors_methods.placeholder",
                 ),
             ),
             field_row(
-                "预检缓存时间",
-                "CORS 预检结果缓存时间，单位为秒。",
-                text_control("留空", &config.cors_max_age, TextField::CorsMaxAge, false),
+                "tavern.config.cors_max_age",
+                "tavern.config.cors_max_age.hint",
+                text_control("tavern.config.cors_max_age.placeholder", &config.cors_max_age, TextField::CorsMaxAge, false),
             ),
             field_row(
-                "允许请求头",
-                "跨域请求可携带的请求头。",
+                "tavern.config.cors_allowed_headers",
+                "tavern.config.cors_allowed_headers.hint",
                 list_control(
                     &config.cors_allowed_headers,
                     ListField::CorsAllowedHeaders,
-                    "例如：Content-Type",
+                    "tavern.config.cors_allowed_headers.placeholder",
                 ),
             ),
             field_row(
-                "暴露响应头",
-                "允许浏览器读取的响应头。",
+                "tavern.config.cors_exposed_headers",
+                "tavern.config.cors_exposed_headers.hint",
                 list_control(
                     &config.cors_exposed_headers,
                     ListField::CorsExposedHeaders,
-                    "例如：X-Trace-Id",
+                    "tavern.config.cors_exposed_headers.placeholder",
                 ),
             ),
             field_row(
-                "允许携带凭证",
-                "允许跨域请求携带 Cookie 等凭证。",
+                "tavern.config.cors_credentials",
+                "tavern.config.cors_credentials.hint",
                 toggle_control(BoolField::CorsCredentials, config.cors_credentials),
             ),
         ]);
@@ -1303,23 +1303,23 @@ fn cors_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMess
         expanded,
         Icon::PlugZap,
         CYAN_500,
-        "跨域资源共享（CORS）",
-        "控制 API 的跨域来源、方法、请求头与凭证。",
+        "tavern.section.cors.title",
+        "tavern.section.cors.description",
         section_rows(rows),
     )
 }
 
 fn proxy_backup_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
     let mut rows = vec![field_row(
-        "启用请求代理",
-        "为酒馆发出的外部请求配置代理。",
+        "tavern.config.request_proxy_enabled",
+        "tavern.config.request_proxy_enabled.hint",
         toggle_control(BoolField::RequestProxyEnabled, config.request_proxy_enabled),
     )];
     if config.request_proxy_enabled {
         rows.extend([
             field_row(
-                "代理地址",
-                "外部请求使用的 HTTP 代理。",
+                "tavern.config.request_proxy_url",
+                "tavern.config.request_proxy_url.hint",
                 text_control(
                     "http://proxy.example.com:8080",
                     &config.request_proxy_url,
@@ -1328,20 +1328,20 @@ fn proxy_backup_section(config: &TavernConfig, expanded: bool) -> Element<'_, Ta
                 ),
             ),
             field_row(
-                "代理绕过列表",
-                "不经过代理的主机或地址。",
+                "tavern.config.proxy_bypass",
+                "tavern.config.proxy_bypass.hint",
                 list_control(
                     &config.proxy_bypass,
                     ListField::ProxyBypass,
-                    "例如：localhost",
+                    "tavern.config.host_whitelist.placeholder",
                 ),
             ),
         ]);
     }
     rows.extend([
         field_row(
-            "通用备份数量",
-            "保留的通用配置备份数量。",
+            "tavern.config.common_backups",
+            "tavern.config.common_backups.hint",
             text_control(
                 "50",
                 &config.common_backups,
@@ -1350,24 +1350,24 @@ fn proxy_backup_section(config: &TavernConfig, expanded: bool) -> Element<'_, Ta
             ),
         ),
         field_row(
-            "启用聊天备份",
-            "自动为聊天记录建立备份。",
+            "tavern.config.chat_backups_enabled",
+            "tavern.config.chat_backups_enabled.hint",
             toggle_control(BoolField::ChatBackupsEnabled, config.chat_backups_enabled),
         ),
     ]);
     if config.chat_backups_enabled {
         rows.extend([
             field_row(
-                "检查聊天备份完整性",
-                "保存备份时检查聊天数据是否完整。",
+                "tavern.config.chat_backups_check_integrity",
+                "tavern.config.chat_backups_check_integrity.hint",
                 toggle_control(
                     BoolField::ChatBackupsCheckIntegrity,
                     config.chat_backups_check_integrity,
                 ),
             ),
             field_row(
-                "最大聊天备份数",
-                "-1 表示不限制总数。",
+                "tavern.config.chat_max_backups",
+                "tavern.config.chat_max_backups.hint",
                 text_control(
                     "-1",
                     &config.chat_max_backups,
@@ -1376,8 +1376,8 @@ fn proxy_backup_section(config: &TavernConfig, expanded: bool) -> Element<'_, Ta
                 ),
             ),
             field_row(
-                "备份节流间隔",
-                "两次聊天备份之间的最短间隔，单位为毫秒。",
+                "tavern.config.chat_throttle_interval",
+                "tavern.config.chat_throttle_interval.hint",
                 text_control(
                     "10000",
                     &config.chat_throttle_interval,
@@ -1392,23 +1392,23 @@ fn proxy_backup_section(config: &TavernConfig, expanded: bool) -> Element<'_, Ta
         expanded,
         Icon::DatabaseBackup,
         Color::from_rgb8(234, 88, 12),
-        "代理与备份",
-        "外部请求代理与自动备份策略。",
+        "tavern.section.proxy_backup.title",
+        "tavern.section.proxy_backup.description",
         section_rows(rows),
     )
 }
 
 fn thumbnail_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernMessage> {
     let mut rows = vec![field_row(
-        "启用自动缩略图",
-        "为角色卡、背景与人设图生成缩略图。",
+        "tavern.config.thumbnails_enabled",
+        "tavern.config.thumbnails_enabled.hint",
         toggle_control(BoolField::ThumbnailsEnabled, config.thumbnails_enabled),
     )];
     if config.thumbnails_enabled {
         rows.extend([
             field_row(
-                "图像格式",
-                "选择生成缩略图时使用的文件格式。",
+                "tavern.config.thumbnail_format",
+                "tavern.config.thumbnail_format.hint",
                 select_control(
                     &ThumbnailFormat::ALL,
                     config.thumbnail_format,
@@ -1416,8 +1416,8 @@ fn thumbnail_section(config: &TavernConfig, expanded: bool) -> Element<'_, Taver
                 ),
             ),
             field_row(
-                "压缩质量",
-                "取值范围为 1 到 100。",
+                "tavern.config.thumbnail_quality",
+                "tavern.config.thumbnail_quality.hint",
                 text_control(
                     "95",
                     &config.thumbnail_quality,
@@ -1426,21 +1426,21 @@ fn thumbnail_section(config: &TavernConfig, expanded: bool) -> Element<'_, Taver
                 ),
             ),
             dimension_row(
-                "背景尺寸",
+                "tavern.config.background_size",
                 &config.background_width,
                 &config.background_height,
                 TextField::BackgroundWidth,
                 TextField::BackgroundHeight,
             ),
             dimension_row(
-                "头像尺寸",
+                "tavern.config.avatar_size",
                 &config.avatar_width,
                 &config.avatar_height,
                 TextField::AvatarWidth,
                 TextField::AvatarHeight,
             ),
             dimension_row(
-                "人设尺寸",
+                "tavern.config.persona_size",
                 &config.persona_width,
                 &config.persona_height,
                 TextField::PersonaWidth,
@@ -1453,8 +1453,8 @@ fn thumbnail_section(config: &TavernConfig, expanded: bool) -> Element<'_, Taver
         expanded,
         Icon::Image,
         Color::from_rgb8(219, 39, 119),
-        "缩略图优化",
-        "角色卡与背景图的压缩格式、质量和尺寸。",
+        "tavern.section.thumbnail.title",
+        "tavern.section.thumbnail.description",
         section_rows(rows),
     )
 }
@@ -1465,22 +1465,22 @@ fn performance_section(config: &TavernConfig, expanded: bool) -> Element<'_, Tav
         expanded,
         Icon::Cpu,
         WARNING,
-        "性能优化",
-        "缓存管理与角色卡加载策略。",
+        "tavern.section.performance.title",
+        "tavern.section.performance.description",
         section_rows(vec![
             field_row(
-                "延迟加载角色卡",
-                "按需加载角色卡，加快首次打开速度。",
+                "tavern.config.lazy_load_characters",
+                "tavern.config.lazy_load_characters.hint",
                 toggle_control(BoolField::LazyLoadCharacters, config.lazy_load_characters),
             ),
             field_row(
-                "使用磁盘缓存",
-                "使用磁盘空间降低运行时内存占用。",
+                "tavern.config.use_disk_cache",
+                "tavern.config.use_disk_cache.hint",
                 toggle_control(BoolField::UseDiskCache, config.use_disk_cache),
             ),
             field_row(
-                "内存缓存容量",
-                "缓存容量上限，单位为 MB。",
+                "tavern.config.memory_cache_capacity",
+                "tavern.config.memory_cache_capacity.hint",
                 text_control(
                     "100",
                     &config.memory_cache_capacity,
@@ -1498,17 +1498,17 @@ fn logging_section(config: &TavernConfig, expanded: bool) -> Element<'_, TavernM
         expanded,
         Icon::Activity,
         INK_MUTED,
-        "日志与调试",
-        "运行日志与访问监控。",
+        "tavern.section.logging.title",
+        "tavern.section.logging.description",
         section_rows(vec![
             field_row(
-                "启用访问日志",
-                "记录对酒馆服务的访问请求。",
+                "tavern.config.enable_access_log",
+                "tavern.config.enable_access_log.hint",
                 toggle_control(BoolField::EnableAccessLog, config.enable_access_log),
             ),
             field_row(
-                "最低日志等级",
-                "只输出该等级及以上的日志。",
+                "tavern.config.min_log_level",
+                "tavern.config.min_log_level.hint",
                 select_control(
                     &LogLevel::ALL,
                     config.min_log_level,
@@ -1525,12 +1525,12 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
         expanded,
         Icon::ListChecks,
         DANGER,
-        "会话与安全",
-        "会话、安全选项、扩展、插件、SSO 与缓存清除。",
+        "tavern.section.session_security.title",
+        "tavern.section.session_security.description",
         section_rows(vec![
             field_row(
-                "提示词占位符",
-                "新对话输入框显示的默认文本。",
+                "tavern.config.prompt_placeholder",
+                "tavern.config.prompt_placeholder.hint",
                 text_control(
                     "[Start a new chat]",
                     &config.prompt_placeholder,
@@ -1539,8 +1539,8 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
                 ),
             ),
             field_row(
-                "会话超时时间",
-                "会话有效期，单位为秒；-1 表示永不过期。",
+                "tavern.config.session_timeout",
+                "tavern.config.session_timeout.hint",
                 text_control(
                     "-1",
                     &config.session_timeout,
@@ -1549,49 +1549,49 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
                 ),
             ),
             field_row(
-                "禁用 CSRF 保护",
-                "关闭跨站请求伪造保护，不推荐启用。",
+                "tavern.config.disable_csrf_protection",
+                "tavern.config.disable_csrf_protection.hint",
                 toggle_control(
                     BoolField::DisableCsrfProtection,
                     config.disable_csrf_protection,
                 ),
             ),
             field_row(
-                "安全覆盖",
-                "覆盖部分内置安全检查。",
+                "tavern.config.security_override",
+                "tavern.config.security_override.hint",
                 toggle_control(BoolField::SecurityOverride, config.security_override),
             ),
             field_row(
-                "允许密钥暴露",
-                "允许界面读取密钥，不推荐启用。",
+                "tavern.config.allow_keys_exposure",
+                "tavern.config.allow_keys_exposure.hint",
                 toggle_control(BoolField::AllowKeysExposure, config.allow_keys_exposure),
             ),
             field_row(
-                "跳过内容检查",
-                "跳过导入内容的安全检查。",
+                "tavern.config.skip_content_check",
+                "tavern.config.skip_content_check.hint",
                 toggle_control(BoolField::SkipContentCheck, config.skip_content_check),
             ),
             field_row(
-                "启用扩展",
-                "允许加载酒馆前端扩展。",
+                "tavern.config.extensions_enabled",
+                "tavern.config.extensions_enabled.hint",
                 toggle_control(BoolField::ExtensionsEnabled, config.extensions_enabled),
             ),
             field_row(
-                "扩展自动更新",
-                "自动更新已安装的酒馆扩展。",
+                "tavern.config.extensions_auto_update",
+                "tavern.config.extensions_auto_update.hint",
                 toggle_control(
                     BoolField::ExtensionsAutoUpdate,
                     config.extensions_auto_update,
                 ),
             ),
             field_row(
-                "启用服务器插件",
-                "允许加载酒馆服务端插件。",
+                "tavern.config.enable_server_plugins",
+                "tavern.config.enable_server_plugins.hint",
                 toggle_control(BoolField::EnableServerPlugins, config.enable_server_plugins),
             ),
             field_row(
-                "服务器插件自动更新",
-                "自动更新已安装的服务端插件。",
+                "tavern.config.enable_server_plugins_auto_update",
+                "tavern.config.enable_server_plugins_auto_update.hint",
                 toggle_control(
                     BoolField::EnableServerPluginsAutoUpdate,
                     config.enable_server_plugins_auto_update,
@@ -1599,37 +1599,37 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
             ),
             field_row(
                 "Authelia SSO",
-                "启用 Authelia 单点登录认证。",
+                "tavern.config.authelia_auth.hint",
                 toggle_control(BoolField::AutheliaAuth, config.authelia_auth),
             ),
             field_row(
                 "Authentik SSO",
-                "启用 Authentik 单点登录认证。",
+                "tavern.config.authentik_auth.hint",
                 toggle_control(BoolField::AuthentikAuth, config.authentik_auth),
             ),
             field_row(
-                "启用缓存清除",
-                "按 User-Agent 匹配并清除浏览器缓存。",
+                "tavern.config.cache_buster_enabled",
+                "tavern.config.cache_buster_enabled.hint",
                 toggle_control(BoolField::CacheBusterEnabled, config.cache_buster_enabled),
             ),
             field_row(
-                "User-Agent 匹配模式",
-                "匹配需要清除缓存的浏览器。",
+                "tavern.config.cache_buster_pattern",
+                "tavern.config.cache_buster_pattern.hint",
                 text_control(
-                    "例如：Chrome.*",
+                    "tavern.config.cache_buster_pattern.placeholder",
                     &config.cache_buster_pattern,
                     TextField::CacheBusterPattern,
                     false,
                 ),
             ),
             field_row(
-                "启用 CORS 代理",
-                "启用 SillyTavern 内置的 CORS 代理。",
+                "tavern.config.enable_cors_proxy",
+                "tavern.config.enable_cors_proxy.hint",
                 toggle_control(BoolField::EnableCorsProxy, config.enable_cors_proxy),
             ),
             field_row(
-                "可下载分词器",
-                "允许按需下载 AI 模型分词器。",
+                "tavern.config.enable_downloadable_tokenizers",
+                "tavern.config.enable_downloadable_tokenizers.hint",
                 toggle_control(
                     BoolField::EnableDownloadableTokenizers,
                     config.enable_downloadable_tokenizers,
@@ -1640,7 +1640,7 @@ fn session_security_section(config: &TavernConfig, expanded: bool) -> Element<'_
 }
 
 fn status_badge(sync: &sync::SyncView) -> Element<'static, TavernMessage> {
-    let (label, color) = (sync.status.label(), sync.status.color());
+    let (label, color) = (sync.status.label_key(), sync.status.color());
     let badge = container(
         row![
             icons::icon(
@@ -1672,7 +1672,7 @@ fn status_badge(sync: &sync::SyncView) -> Element<'static, TavernMessage> {
         iced::widget::tooltip(
             badge,
             container(
-                column![text(error.message).size(13), text(&error.detail).size(12)].spacing(5),
+                column![text(error.message).size(13), raw(&error.detail).size(12)].spacing(5),
             )
             .max_width(420)
             .padding(10)
@@ -1805,11 +1805,11 @@ fn dimension_row<'a>(
 ) -> Element<'a, TavernMessage> {
     field_row(
         title,
-        "宽度 × 高度，单位为像素。",
+        "tavern.config.dimension.hint",
         row![
-            compact_text_control("宽", width, width_field),
+            compact_text_control("tavern.config.dimension.width", width, width_field),
             text("×").size(14).style(crate::theme::muted_text_style),
-            compact_text_control("高", height, height_field),
+            compact_text_control("tavern.config.dimension.height", height, height_field),
         ]
         .spacing(7)
         .align_y(Alignment::Center)
@@ -1823,7 +1823,7 @@ fn compact_text_control<'a>(
     value: &'a str,
     field: TextField,
 ) -> Element<'a, TavernMessage> {
-    text_input(placeholder, value)
+    text_input(t(placeholder), value)
         .on_input(move |value| TavernMessage::Edit(field, value))
         .width(112)
         .padding([8, 11])
@@ -1903,7 +1903,7 @@ fn text_control<'a>(
     field: TextField,
     secure: bool,
 ) -> Element<'a, TavernMessage> {
-    let input = text_input(placeholder, value)
+    let input = text_input(t(placeholder), value)
         .on_input(move |value| TavernMessage::Edit(field, value))
         .secure(secure)
         .width(CONTROL_WIDTH)
@@ -1925,7 +1925,7 @@ fn wide_text_control<'a>(
     field: TextField,
     secure: bool,
 ) -> Element<'a, TavernMessage> {
-    let input = text_input(placeholder, value)
+    let input = text_input(t(placeholder), value)
         .on_input(move |value| TavernMessage::Edit(field, value))
         .secure(secure)
         .width(Fill)
@@ -2013,7 +2013,7 @@ fn whitelist_control<'a>(values: &'a [String], fixed: &'a [String]) -> Element<'
                 .style(text_input_style)
                 .into()
         } else {
-            text_input("例如：192.168.1.100", value)
+            text_input(t("tavern.field.ip_placeholder"), value)
                 .on_input(move |value| TavernMessage::EditList(ListField::Whitelist, index, value))
                 .width(Fill)
                 .padding([8, 11])
@@ -2030,7 +2030,7 @@ fn whitelist_control<'a>(values: &'a [String], fixed: &'a [String]) -> Element<'
                     .align_x(Alignment::Center)
                     .align_y(Alignment::Center)
                     .style(fixed_whitelist_style),
-                container(text("由服务模式自动管理").size(12))
+                container(text("tavern.field.managed_by_service_mode").size(12))
                     .padding([6, 9])
                     .style(config_card_style),
                 iced::widget::tooltip::Position::Bottom,
@@ -2050,7 +2050,7 @@ fn whitelist_control<'a>(values: &'a [String], fixed: &'a [String]) -> Element<'
         button(
             row![
                 icons::icon(Icon::Plus, 14, BLUE_600),
-                text("添加").size(13).font(crate::core::typography::medium()).color(BLUE_600)
+                text("tavern.action.add").size(13).font(crate::core::typography::medium()).color(BLUE_600)
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -2085,7 +2085,7 @@ fn list_control<'a>(
     for (index, value) in values.iter().enumerate() {
         items = items.push(
             row![
-                text_input(placeholder, value)
+                text_input(t(placeholder), value)
                     .on_input(move |value| TavernMessage::EditList(field, index, value))
                     .width(Fill)
                     .padding([8, 11])
@@ -2106,7 +2106,7 @@ fn list_control<'a>(
         button(
             row![
                 icons::icon(Icon::Plus, 14, BLUE_600),
-                text("添加").size(13).font(crate::core::typography::medium()).color(BLUE_600)
+                text("tavern.action.add").size(13).font(crate::core::typography::medium()).color(BLUE_600)
             ]
             .spacing(6)
             .align_y(Alignment::Center),

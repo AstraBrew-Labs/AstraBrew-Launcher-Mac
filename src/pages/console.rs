@@ -26,7 +26,7 @@ use crate::core::tavern_process::{
     PortConflict, ProcessCommand, ProcessEvent, RuntimeMode, TavernLaunchMode, TavernLaunchSpec,
     TavernRuntime,
 };
-use crate::lang::{lang::current_language, t, text};
+use crate::lang::{lang::current_language, raw, t_in, text, tf};
 use crate::pages::notice::TransientNotice;
 use crate::theme::button_style;
 
@@ -484,7 +484,7 @@ impl ConsoleState {
             ConsoleMessage::AccessUrlInteract(_value) => {}
             ConsoleMessage::OpenAccessUrl(url) => {
                 if let Err(error) = Command::new("open").arg(&url).spawn() {
-                    self.add_error_log(format!("无法打开访问地址 {url}：{error}"));
+                    self.add_error_log(tf("console.open_address_failed", &[("url", &url), ("error", &error.to_string())]));
                 }
             }
             ConsoleMessage::OpenServer => return ConsoleAction::OpenServer,
@@ -707,7 +707,8 @@ impl ConsoleState {
     }
 
     fn push_inner(&mut self, kind: LogKind, content: impl Into<String>, persist: bool) {
-        let text = sanitize_log_text(content.into());
+        // 日志正文可能是文案键（错误码上送）或外部工具输出，统一在这里解析一次。
+        let text = sanitize_log_text(crate::lang::resolve(&content.into()));
         // SillyTavern 会输出较多空行；普通空行没有诊断价值，直接忽略。
         if kind == LogKind::Output && text.trim().is_empty() {
             return;
@@ -866,7 +867,7 @@ pub fn console_view(state: &ConsoleState) -> Element<'_, Message> {
 fn header_view(state: &ConsoleState) -> Element<'_, Message> {
     let mut left = row![
         crate::theme::muted_icon(Icon::SquareTerminal, 20),
-        text(tr("console.title")).size(15).font(crate::core::typography::bold()),
+        raw(tr("console.title")).size(15).font(crate::core::typography::bold()),
         status_badge(state.status),
     ]
     .spacing(12)
@@ -874,7 +875,7 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
 
     if let Some(pid) = state.process_pid {
         left = left.push(separator()).push(
-            text(format!("PID: {pid}"))
+            raw(format!("PID: {pid}"))
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -891,7 +892,7 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
     if state.status == ConsoleStatus::Running {
         if let Some(mode) = state.network_mode.filter(|_| state.network_port.is_some()) {
             left = left.push(separator()).push(
-                button(text(tr(mode.key())).size(11).color(mode.color()))
+                button(raw(tr(mode.key())).size(11).color(mode.color()))
                     .padding([6, 10])
                     .style(soft_button(mode.color()))
                     .on_press(Message::Console(ConsoleMessage::OpenAccessDialog)),
@@ -917,7 +918,7 @@ fn header_view(state: &ConsoleState) -> Element<'_, Message> {
     .align_y(Alignment::Center);
     if !state.auto_scroll {
         actions = actions.push(
-            button(text(tr("console.follow")).size(11).color(BLUE_600))
+            button(raw(tr("console.follow")).size(11).color(BLUE_600))
                 .padding([7, 10])
                 .style(soft_button(BLUE_600))
                 .on_press(Message::Console(ConsoleMessage::FollowLogs)),
@@ -995,7 +996,7 @@ fn access_dialog(state: &AccessTavernState) -> Element<'static, Message> {
                         .animation_phase(phase)
                         .size(ProgressCircleSize::Large)
                         .color(ProgressCircleColor::Accent),
-                    text(tr("access.loading"))
+                    raw(tr("access.loading"))
                         .size(14)
                         .font(crate::core::typography::medium()),
                     text(mode_label)
@@ -1034,7 +1035,7 @@ fn access_dialog(state: &AccessTavernState) -> Element<'static, Message> {
         AccessLayout::Failed => container(
             column![
                 icons::icon(Icon::CircleAlert, 36, WARNING),
-                text(tr("access.no_address"))
+                raw(tr("access.no_address"))
                     .size(14)
                     .font(crate::core::typography::medium()),
             ]
@@ -1052,7 +1053,7 @@ fn access_dialog(state: &AccessTavernState) -> Element<'static, Message> {
         row![
             icons::icon(if mode == NetworkMode::Lan { Icon::Wifi } else { Icon::Globe }, 22, mode.color()),
             column![
-                text(tr("access.title")).size(18).font(crate::core::typography::medium()),
+                raw(tr("access.title")).size(18).font(crate::core::typography::medium()),
                 text(mode_label).size(11).style(crate::theme::muted_text_style),
             ]
             .spacing(3)
@@ -1075,7 +1076,7 @@ fn access_dialog(state: &AccessTavernState) -> Element<'static, Message> {
                 button(
                     row![
                         icons::icon(Icon::RefreshCw, 14, BLUE_600),
-                        text(tr("access.retry")).size(11).color(BLUE_600),
+                        raw(tr("access.retry")).size(11).color(BLUE_600),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -1100,7 +1101,7 @@ fn access_address_card(slot: &AccessSlot, version: IpVersion) -> Element<'static
         return container(
             column![
                 text(label).size(14).font(crate::core::typography::medium()),
-                text(tr("access.fetch_failed"))
+                raw(tr("access.fetch_failed"))
                     .size(12)
                     .color(WARNING),
             ]
@@ -1118,7 +1119,7 @@ fn access_address_card(slot: &AccessSlot, version: IpVersion) -> Element<'static
 
     let qr: Element<'static, Message> = slot.qr.clone().map_or_else(
         || {
-            container(text(tr("access.qr_failed")).size(11).style(crate::theme::muted_text_style))
+            container(raw(tr("access.qr_failed")).size(11).style(crate::theme::muted_text_style))
                 .width(160)
                 .height(160)
                 .align_x(Alignment::Center)
@@ -1153,7 +1154,7 @@ fn access_address_card(slot: &AccessSlot, version: IpVersion) -> Element<'static
             button(
                 row![
                     icons::icon(Icon::ExternalLink, 14, BLUE_600),
-                    text(tr("access.open_browser")).size(11).color(BLUE_600),
+                    raw(tr("access.open_browser")).size(11).color(BLUE_600),
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -1162,7 +1163,7 @@ fn access_address_card(slot: &AccessSlot, version: IpVersion) -> Element<'static
             .style(soft_button(BLUE_600))
             .on_press(Message::Console(ConsoleMessage::OpenAccessUrl(url))),
             qr,
-            text(tr("access.scan_hint"))
+            raw(tr("access.scan_hint"))
                 .size(10)
                 .style(crate::theme::muted_text_style),
         ]
@@ -1239,18 +1240,18 @@ fn generate_qr_pixels(url: &str) -> Option<QrPixels> {
 
 fn port_conflict_dialog(conflict: &PortConflict) -> Element<'_, Message> {
     let processes = conflict.processes.iter().fold(column!().spacing(6), |column, process| {
-        column.push(text(format!("PID {} · {}", process.pid, process.name)).size(12).font(crate::core::typography::regular()))
+        column.push(raw(format!("PID {} · {}", process.pid, process.name)).size(12).font(crate::core::typography::regular()))
     });
     let mut actions = row![
         space::horizontal(),
-        button(text(tr("console.port.cancel")).size(12))
+        button(raw(tr("console.port.cancel")).size(12))
             .padding([9, 14])
             .style(button_style(ButtonVariant::Secondary))
             .on_press(Message::Console(ConsoleMessage::CancelReleasePort)),
     ].spacing(10).align_y(Alignment::Center);
     if conflict.retry_available {
         actions = actions.push(
-            button(text(tr("console.port.confirm")).size(12).color(Color::WHITE))
+            button(raw(tr("console.port.confirm")).size(12).color(Color::WHITE))
                 .padding([9, 14])
                 .style(button_style(ButtonVariant::Destructive))
                 .on_press(Message::Console(ConsoleMessage::ConfirmReleasePort)),
@@ -1261,8 +1262,8 @@ fn port_conflict_dialog(conflict: &PortConflict) -> Element<'_, Message> {
             row![
                 icons::icon(Icon::TriangleAlert, 22, DANGER),
                 column![
-                    text(tr("console.port.title")).size(18).font(crate::core::typography::medium()),
-                    text(format!("{} {}", tr("console.port.description"), conflict.port)).size(12).style(crate::theme::muted_text_style),
+                    raw(tr("console.port.title")).size(18).font(crate::core::typography::medium()),
+                    raw(format!("{} {}", tr("console.port.description"), conflict.port)).size(12).style(crate::theme::muted_text_style),
                 ].spacing(4),
             ].spacing(12).align_y(Alignment::Center),
             container(processes).padding(12).width(Fill).style(dialog_code_surface),
@@ -1286,7 +1287,7 @@ fn modal(content: impl Into<Element<'static, Message>>, width: u32) -> Element<'
 fn status_badge(status: ConsoleStatus) -> Element<'static, Message> {
     container(row![
         icons::icon(status.icon(), 13, status.color()),
-        text(tr(status.key())).size(11).color(status.color()),
+        raw(tr(status.key())).size(11).color(status.color()),
     ].spacing(6).align_y(Alignment::Center))
         .padding([6, 10])
         .style(move |_theme| soft_surface(status.color()))
@@ -1299,14 +1300,14 @@ fn separator() -> Element<'static, Message> {
 
 fn render_log_line(log: &ConsoleLog) -> String {
     let text = match log.kind {
-        LogKind::System => log.text.strip_prefix("[系统] ").unwrap_or(&log.text),
-        LogKind::Warning => log.text.strip_prefix("[警告] ").unwrap_or(&log.text),
-        LogKind::Error => log.text.strip_prefix("[错误] ").unwrap_or(&log.text),
+        LogKind::System => log.text.strip_prefix(crate::core::tavern_process::LOG_MARK_SYSTEM).unwrap_or(&log.text),
+        LogKind::Warning => log.text.strip_prefix(crate::core::tavern_process::LOG_MARK_WARNING).unwrap_or(&log.text),
+        LogKind::Error => log.text.strip_prefix(crate::core::tavern_process::LOG_MARK_ERROR).unwrap_or(&log.text),
         LogKind::Info | LogKind::Success | LogKind::Output => &log.text,
     };
 
     if log.kind == LogKind::System
-        && let Some(command) = text.strip_prefix("[启动命令] ")
+        && let Some(command) = text.strip_prefix(crate::core::tavern_process::LOG_MARK_COMMAND)
     {
         let mut lines = vec![format!(
             "{}    {}",
@@ -1426,15 +1427,17 @@ fn classify_log(line: &str) -> LogKind {
         || lower.contains("npm err")
         || lower.contains("panic")
         || lower.contains("eaddrinuse")
-        || line.contains("[错误]")
+        || line.contains(crate::core::tavern_process::LOG_MARK_ERROR.trim_end())
     {
         LogKind::Error
     } else if lower.contains("warn")
         || lower.contains("deprecated")
-        || line.contains("[警告]")
+        || line.contains(crate::core::tavern_process::LOG_MARK_WARNING.trim_end())
     {
         LogKind::Warning
-    } else if line.contains("[系统]") || line.contains("[启动命令]") {
+    } else if line.contains(crate::core::tavern_process::LOG_MARK_SYSTEM.trim_end())
+        || line.contains(crate::core::tavern_process::LOG_MARK_COMMAND.trim_end())
+    {
         LogKind::System
     } else if lower.contains("listening")
         || lower.contains("go to:")
@@ -1466,7 +1469,7 @@ fn url_port(url: &str) -> Option<u16> {
 
 
 fn tr(key: &'static str) -> &'static str {
-    t(key, current_language())
+    t_in(key, current_language())
 }
 
 fn header_surface(theme: &Theme) -> iced::widget::container::Style {

@@ -1,5 +1,6 @@
 //! 酒馆配置的响应式协调器：草稿按目标隔离，所有磁盘任务串行，旧回执不覆盖新输入。
 
+use crate::lang::t;
 use super::{Launcher, Message};
 use crate::core::tavern_config::{
     self as service, ConfigError, Context, ErrorKind, ImportPreview, ImportResult, NetworkOptions,
@@ -293,17 +294,17 @@ impl Launcher {
     /// 完成后由 `poll_tavern_config` 自动继续启动。
     pub(super) fn prepare_config_for_launch(&mut self) -> Result<bool, String> {
         let Some(key) = self.config_runtime.active.clone() else {
-            return Err("尚未选择酒馆实例。".to_owned());
+            return Err(t("tavern.config.no_instance").to_owned());
         };
         if self.config_runtime.busy.is_some() {
             return Ok(false);
         }
         let Some(session) = self.config_runtime.sessions.get_mut(&key) else {
-            return Err("酒馆配置尚未加载完成。".to_owned());
+            return Err(t("tavern.config.not_loaded").to_owned());
         };
         if session.invalid_or_blocked() {
             return Err(session.error.as_ref().map_or_else(
-                || "酒馆配置存在无效输入或冲突，请先处理。".to_owned(),
+                || t("tavern.config.invalid_input").to_owned(),
                 |error| format!("{} {}", error.message, error.detail),
             ));
         }
@@ -311,7 +312,7 @@ impl Launcher {
             return Ok(false);
         }
         if session.state != Status::Ready || session.snapshot.is_none() {
-            return Err("酒馆配置尚未加载完成，请稍后重试。".to_owned());
+            return Err(t("tavern.config.not_loaded_retry").to_owned());
         }
         if !session.edits.is_empty() {
             session.flush();
@@ -324,17 +325,17 @@ impl Launcher {
     /// 检查待启动配置是否已经完成保存。
     fn config_ready_for_pending_launch(&self) -> Result<bool, String> {
         let Some(key) = self.config_runtime.active.as_ref() else {
-            return Err("尚未选择酒馆实例。".to_owned());
+            return Err(t("tavern.config.no_instance").to_owned());
         };
         if self.config_runtime.busy.is_some() {
             return Ok(false);
         }
         let Some(session) = self.config_runtime.sessions.get(key) else {
-            return Err("酒馆配置尚未加载完成。".to_owned());
+            return Err(t("tavern.config.not_loaded").to_owned());
         };
         if session.invalid_or_blocked() || session.write_failed {
             return Err(session.error.as_ref().map_or_else(
-                || "酒馆配置保存失败或存在冲突。".to_owned(),
+                || t("tavern.config.save_conflict").to_owned(),
                 |error| format!("{} {}", error.message, error.detail),
             ));
         }
@@ -571,7 +572,7 @@ impl Launcher {
             return Task::none();
         }
         let Some(key) = self.config_runtime.active.clone() else {
-            self.versions.local.notify("请先选择酒馆实例。", "", true);
+            self.versions.local.notify("tavern.config.select_instance", "", true);
             return Task::none();
         };
         match &message {
@@ -581,7 +582,7 @@ impl Launcher {
                 {
                     self.versions
                         .local
-                        .notify("此地址由酒馆服务模式自动管理。", value, true);
+                        .notify("tavern.config.managed_address", value, true);
                     return Task::none();
                 }
             }
@@ -594,7 +595,7 @@ impl Launcher {
                 {
                     self.versions
                         .local
-                        .notify("系统保留的白名单地址不能删除。", "", true);
+                        .notify("tavern.config.reserved_whitelist", "", true);
                     return Task::none();
                 }
             }
@@ -618,7 +619,7 @@ impl Launcher {
             {
                 self.versions
                     .local
-                    .notify("当前酒馆配置尚未就绪。", "", true);
+                    .notify("tavern.config.not_ready", "", true);
                 return Task::none();
             }
             self.tavern.update(message);
@@ -686,14 +687,11 @@ impl Launcher {
                 {
                     self.versions
                         .local
-                        .notify("当前酒馆配置尚未就绪。", "", true);
+                        .notify("tavern.config.not_ready", "", true);
                     return Task::none();
                 }
                 self.config_runtime.picker_key = Some(key.clone());
-                let title = crate::lang::t(
-                    "导入配置文件",
-                    crate::lang::effective_language(self.settings.language),
-                );
+                let title = crate::lang::t("tavern.action.import_config_file");
                 return Task::perform(
                     async move {
                         let file = rfd::AsyncFileDialog::new()
@@ -944,7 +942,7 @@ impl Launcher {
                 work(&defaults, &network, id, &tx)
             }))
             .unwrap_or_else(|_| {
-                let error = ConfigError::new(ErrorKind::Io, "配置后台任务失败，请重试。", "");
+                let error = ConfigError::new(ErrorKind::Io, "tavern.config.task_failed", "");
                 match kind {
                     JobKind::Load => ResultData::Load(Err(error)),
                     JobKind::Save => ResultData::Save(Err(error)),
@@ -1036,7 +1034,7 @@ impl Launcher {
                             session.accept(snapshot, &[]);
                             if self.config_runtime.active.as_ref() == Some(&key) {
                                 self.versions.local.notify(
-                                    "配置已生成，已保留模板默认值。",
+                                    "tavern.config.generated",
                                     "",
                                     false,
                                 );
@@ -1066,7 +1064,7 @@ impl Launcher {
                             self.config_runtime.preview_changed = false;
                             if self.config_runtime.active.as_ref() == Some(&key) {
                                 self.versions.local.notify(
-                                    "配置已导入，原文件已备份。",
+                                    "tavern.config.imported",
                                     backup.display(),
                                     false,
                                 );

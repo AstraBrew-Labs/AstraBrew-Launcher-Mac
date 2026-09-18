@@ -3,7 +3,7 @@
 use super::VersionMessage;
 use crate::core::local_instances::{LocalError, scan::ScanProgress};
 use crate::lang::lang::current_language;
-use crate::lang::{t, text};
+use crate::lang::{raw, t_in, text};
 use crate::theme::button_style;
 use astra_ui::{ButtonVariant, INK_MUTED, icons};
 use iced::widget::{button, column, container, mouse_area, row, scrollable, space, stack};
@@ -25,14 +25,14 @@ pub enum ScanPhase {
 }
 
 impl ScanPhase {
-    pub fn label(self) -> &'static str {
+    pub fn label_key(self) -> &'static str {
         match self {
-            Self::Idle => "尚未开始扫描。",
-            Self::Running => "扫描进度",
-            Self::Completed => "扫描完成",
-            Self::CompletedPartial => "扫描已完成，但结果不完整。",
-            Self::Failed => "扫描已终止，结果可能不完整。",
-            Self::Cancelled => "扫描已取消。",
+            Self::Idle => "local.scan.status.idle",
+            Self::Running => "local.scan.status.running",
+            Self::Completed => "local.scan.status.completed",
+            Self::CompletedPartial => "local.scan.status.completed_partial",
+            Self::Failed => "local.scan.status.failed",
+            Self::Cancelled => "local.scan.cancelled",
         }
     }
     pub fn active(self) -> bool {
@@ -58,8 +58,8 @@ pub struct ScanState {
 }
 
 impl ScanState {
-    pub fn status_label(&self) -> &'static str {
-        self.phase.label()
+    pub fn status_key(&self) -> &'static str {
+        self.phase.label_key()
     }
 
     pub fn observe_path(&mut self, path: String) {
@@ -133,7 +133,8 @@ pub struct LocalUiState {
 
 impl LocalUiState {
     pub fn notify(&mut self, message: &'static str, detail: impl ToString, danger: bool) {
-        let detail = detail.to_string();
+        // 正文可能是文案键（错误码上送）或运行时路径，入队前解析一次。
+        let detail = crate::lang::resolve(&detail.to_string());
         let mut summary: String = detail.chars().take(240).collect();
         if detail.chars().count() > 240 {
             summary.push('…');
@@ -218,7 +219,7 @@ fn sized_modal<'a>(
 
 fn log_view(logs: &VecDeque<String>, height: f32) -> Element<'_, VersionMessage> {
     scrollable(
-        column(logs.iter().map(|line| text(line).size(11).into()))
+        column(logs.iter().map(|line| raw(line).size(11).into()))
             .spacing(3)
             .width(Fill),
     )
@@ -230,7 +231,7 @@ fn error_view(error: Option<&LocalError>) -> Element<'_, VersionMessage> {
     match error {
         Some(error) => column![
             text(error.message).size(12).color(astra_ui::DANGER),
-            scrollable(text(&error.detail).size(11)).height(45)
+            scrollable(raw(&error.detail).size(11)).height(45)
         ]
         .spacing(4)
         .into(),
@@ -247,31 +248,31 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
                 && let Some(path) = &task.path
             {
                 footer = footer.push(
-                    button(text("重试安装"))
+                    button(text("local.install.retry"))
                         .on_press(VersionMessage::InstallLocalDependencies(path.clone()))
                         .style(button_style(ButtonVariant::Primary)),
                 );
             }
             footer = footer.push(
-                button(text("关闭"))
+                button(text("resources.import.close"))
                     .on_press(VersionMessage::CloseLocalInstall)
                     .style(button_style(ButtonVariant::Secondary)),
             );
         }
         let body = column![
-            text("安装本地实例依赖").size(19).font(crate::core::typography::medium()),
+            text("local.install.title").size(19).font(crate::core::typography::medium()),
             scrollable(
-                text(task.path.as_deref().unwrap_or(""))
+                raw(task.path.as_deref().unwrap_or(""))
                     .size(12)
                     .color(INK_MUTED)
             )
             .height(36),
             text(if task.running {
-                "正在安装并检查运行依赖…"
+                "local.install.installing"
             } else if task.error.is_some() {
-                "安装依赖失败，请查看日志后重试。"
+                "local.deps.install_failed"
             } else {
-                "运行依赖已安装完成，请手动切换版本。"
+                "local.install.completed"
             })
             .size(13),
             log_view(&task.logs, 190.0),
@@ -286,19 +287,19 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     if scan.cancel_confirm_visible && scan.phase.active() {
         let body = column![
             row![
-                text("警告").size(17).font(crate::core::typography::medium()),
+                text("versions.local.confirm_warning").size(17).font(crate::core::typography::medium()),
                 space::horizontal(),
                 button(icons::icon(Icon::X, 15, INK_MUTED))
                     .on_press(VersionMessage::KeepScanning)
                     .style(button_style(ButtonVariant::Ghost))
             ]
             .align_y(Alignment::Center),
-            text("确定要取消当前的扫描吗？已经扫描到的实例会保留。").size(13),
+            text("local.scan.cancel_confirm").size(13),
             row![
-                button(text("确定"))
+                button(text("versions.local.confirm_ok"))
                     .on_press(VersionMessage::CancelScan)
                     .style(button_style(ButtonVariant::Primary)),
-                button(text("取消"))
+                button(text("tavern.sync.import.cancel"))
                     .on_press(VersionMessage::KeepScanning)
                     .style(button_style(ButtonVariant::Secondary)),
             ]
@@ -331,17 +332,17 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     };
     let mut body = column![
         row![
-            text("扫描本地实例").size(18).font(crate::core::typography::medium()),
+            text("local.scan.title").size(18).font(crate::core::typography::medium()),
             space::horizontal(),
             button(icons::icon(Icon::X, 16, INK_MUTED))
                 .on_press(VersionMessage::CloseScanLog)
                 .style(button_style(ButtonVariant::Ghost))
         ]
         .align_y(Alignment::Center),
-        row![indicator, text(scan.status_label()).size(13)]
+        row![indicator, text(scan.status_key()).size(13)]
             .spacing(8)
             .align_y(Alignment::Center),
-        text("在用户主目录中查找酒馆实例。")
+        text("local.scan.hint")
             .size(11)
             .color(INK_MUTED),
     ]
@@ -349,8 +350,8 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     if !scan.recent_paths.is_empty() {
         let recent = column(scan.recent_paths.iter().map(|path| {
             iced::widget::tooltip(
-                text(truncate_path(path, 60)).size(11).color(INK_MUTED),
-                container(text(path).size(10))
+                raw(truncate_path(path, 60)).size(11).color(INK_MUTED),
+                container(raw(path).size(10))
                     .padding(8)
                     .max_width(420)
                     .style(super::install_modal_style),
@@ -363,12 +364,12 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     }
     body = body.push(
         row![
-            text("发现实例").size(11),
-            text(scan.added + scan.duplicates).size(11),
-            text("新增实例").size(11),
-            text(scan.added).size(11),
-            text("重复实例").size(11),
-            text(scan.duplicates).size(11),
+            text("local.scan.found").size(11),
+            raw((scan.added + scan.duplicates).to_string()).size(11),
+            text("local.scan.added").size(11),
+            raw(scan.added.to_string()).size(11),
+            text("local.scan.duplicates").size(11),
+            raw(scan.duplicates.to_string()).size(11),
         ]
         .spacing(8),
     );
@@ -379,26 +380,26 @@ pub fn modal_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
         body = body.push(log_view(&scan.logs, 160.0));
     }
     let action = if scan.phase.active() {
-        button(text("取消扫描"))
+        button(text("local.scan.cancel"))
             .on_press(VersionMessage::RequestCancelScan)
             .style(button_style(ButtonVariant::Secondary))
     } else {
-        button(text("重新扫描"))
+        button(text("resources.tooltip.rescan"))
             .on_press(VersionMessage::ScanLocal)
             .style(button_style(ButtonVariant::Primary))
     };
     body = body.push(
         row![
             button(text(if scan.show_details {
-                "收起详细日志"
+                "local.scan.hide_details"
             } else {
-                "查看详细日志"
+                "local.scan.show_details"
             }))
             .on_press(VersionMessage::ToggleScanDetails)
             .style(button_style(ButtonVariant::Ghost)),
             space::horizontal(),
             action,
-            button(text("关闭"))
+            button(text("resources.import.close"))
                 .on_press(VersionMessage::CloseScanLog)
                 .style(button_style(ButtonVariant::Ghost)),
         ]
@@ -416,7 +417,7 @@ pub fn toast_view(state: &LocalUiState) -> Option<Element<'_, VersionMessage>> {
     let toast = state.toast.as_ref()?;
     Some(
         container(astra_ui::toast(
-            t(toast.message, current_language()),
+            t_in(toast.message, current_language()),
             &toast.detail,
             if toast.danger {
                 astra_ui::ToastVariant::Danger

@@ -33,17 +33,23 @@ pub enum DisplayLanguage {
     System,
 }
 
+impl DisplayLanguage {
+    /// 设置页下拉项使用的文案键。
+    ///
+    /// 与持久化取值（serde 的 `Chinese` / `English` / `System`）无关，避免把
+    /// 展示文本写进存储层。
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::SimplifiedChinese => "settings.language.simplified_chinese",
+            Self::English => "settings.language.english",
+            Self::System => "settings.language.system",
+        }
+    }
+}
+
 impl fmt::Display for DisplayLanguage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::SimplifiedChinese => "简体中文",
-            Self::English => "English",
-            Self::System => "跟随系统",
-        };
-        match crate::lang::lang::current_language() {
-            crate::lang::Language::Chinese => f.write_str(label),
-            crate::lang::Language::English => f.write_str(&crate::lang::en::translate_owned(label)),
-        }
+        f.write_str(crate::lang::t(self.label_key()))
     }
 }
 
@@ -56,17 +62,20 @@ pub enum ThemeMode {
     System,
 }
 
+impl ThemeMode {
+    /// 设置页主题选项使用的文案键。
+    pub const fn label_key(self) -> &'static str {
+        match self {
+            Self::Light => "settings.theme_mode.light",
+            Self::Dark => "settings.theme_mode.dark",
+            Self::System => "settings.theme_mode.system",
+        }
+    }
+}
+
 impl fmt::Display for ThemeMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Light => "浅色",
-            Self::Dark => "深色",
-            Self::System => "跟随系统",
-        };
-        match crate::lang::lang::current_language() {
-            crate::lang::Language::Chinese => f.write_str(label),
-            crate::lang::Language::English => f.write_str(&crate::lang::en::translate_owned(label)),
-        }
+        f.write_str(crate::lang::t(self.label_key()))
     }
 }
 
@@ -499,8 +508,8 @@ fn parse_window_position(value: &Value) -> Option<[f32; 2]> {
 
 fn normalize_proxy_type(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "none" | "direct" | "off" | "关闭" | "直连" => "none".to_owned(),
-        "custom" | "自定义" | "自定义代理" => "custom".to_owned(),
+        "none" | "direct" | "off" | "resources.import.close" | "直连" => "none".to_owned(),
+        "custom" | "settings.proxy.custom" | "自定义代理" => "custom".to_owned(),
         _ => "system".to_owned(),
     }
 }
@@ -509,7 +518,7 @@ fn normalize_download_channel(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "mirror1" | "mirror_1" | "镜像1" | "镜像 1" => "mirror1".to_owned(),
         "mirror2" | "mirror_2" | "镜像2" | "镜像 2" => "mirror2".to_owned(),
-        "mirror3" | "mirror_3" | "镜像3" | "镜像 3" => "mirror3".to_owned(),
+        // 已下线的 mirror3 不再映射到具体渠道，回落到“自动”。
         "official" | "官方" => "official".to_owned(),
         _ => "auto".to_owned(),
     }

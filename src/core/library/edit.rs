@@ -3,6 +3,8 @@
 //! 编辑器始终保留原始 JSON 对象，只覆盖用户实际编辑的字段。角色卡则保留 PNG
 //! 中除目标角色元数据块以外的所有字节，避免编辑文本时破坏图片或扩展元数据。
 
+use crate::lang::t;
+use crate::lang::tf;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -211,7 +213,7 @@ impl LoadedEditor {
     /// 设置待写入的角色卡封面，真正落盘时仍由核心层合并并校验 PNG。
     pub(crate) fn set_character_cover(&mut self, bytes: Vec<u8>) -> Result<(), String> {
         if !matches!(self.data, EditorData::Character(_)) {
-            return Err("当前资源不是角色卡。".to_owned());
+            return Err(t("workbench.error.not_character").to_owned());
         }
         validate_cover_png(&bytes)?;
         self.document.character_cover = Some(bytes);
@@ -239,13 +241,13 @@ pub(crate) fn load_editor(path: &Path, kind: ResourceKind) -> Result<LoadedEdito
         ResourceData::WorldBook(_) => load_validated_json_editor(
             path,
             bytes,
-            editor_root.ok_or_else(|| "世界书缺少已校验的 JSON 数据。".to_owned())?,
+            editor_root.ok_or_else(|| t("workbench.error.world_book_no_json").to_owned())?,
             ResourceKind::WorldBook,
         ),
         ResourceData::Preset(_) => load_validated_json_editor(
             path,
             bytes,
-            editor_root.ok_or_else(|| "预设缺少已校验的 JSON 数据。".to_owned())?,
+            editor_root.ok_or_else(|| t("workbench.error.preset_no_json").to_owned())?,
             ResourceKind::Preset,
         ),
     }
@@ -256,19 +258,19 @@ pub(crate) fn load_world_book_for_binding(path: &Path) -> Result<EditableWorldBo
     let loaded = load_editor(path, ResourceKind::WorldBook)?;
     match loaded.data {
         EditorData::WorldBook(world) => Ok(world),
-        _ => Err("选择的文件不是世界书。".to_owned()),
+        _ => Err(t("workbench.error.not_world_book").to_owned()),
     }
 }
 
 /// 保存当前修订并返回以新文件为基线的编辑器数据。
 pub(crate) fn save_editor(loaded: LoadedEditor) -> Result<LoadedEditor, String> {
     if loaded.data.kind() != loaded.document.kind {
-        return Err("编辑内容与资源类型不匹配。".to_owned());
+        return Err(t("workbench.error.kind_mismatch").to_owned());
     }
     let current =
-        fs::read(loaded.document.path()).map_err(|error| format!("重新读取资源失败：{error}"))?;
+        fs::read(loaded.document.path()).map_err(|error| tf("workbench.error.reread_failed", &[("error", &error)]))?;
     if current != loaded.document.bytes {
-        return Err("资源文件已被其他程序修改，请重新打开工作台后再编辑。".to_owned());
+        return Err(t("workbench.error.external_modified").to_owned());
     }
 
     let mut root = loaded.document.root.clone();
@@ -279,7 +281,7 @@ pub(crate) fn save_editor(loaded: LoadedEditor) -> Result<LoadedEditor, String> 
                 .document
                 .character_metadata
                 .as_ref()
-                .ok_or_else(|| "角色卡缺少可写回的 PNG 元数据。".to_owned())?;
+                .ok_or_else(|| t("workbench.error.no_png_metadata").to_owned())?;
             if let Some(cover) = loaded.document.character_cover.as_deref() {
                 rebuild_character_png_with_cover(cover, &root, metadata)?
             } else {
@@ -289,12 +291,12 @@ pub(crate) fn save_editor(loaded: LoadedEditor) -> Result<LoadedEditor, String> 
         EditorData::WorldBook(world) => {
             root = apply_world_book(world)?;
             serde_json::to_vec_pretty(&Value::Object(root))
-                .map_err(|error| format!("序列化世界书失败：{error}"))?
+                .map_err(|error| tf("workbench.error.serialize_world", &[("error", &error)]))?
         }
         EditorData::Preset(preset) => {
             apply_preset(&mut root, preset)?;
             serde_json::to_vec_pretty(&Value::Object(root))
-                .map_err(|error| format!("序列化预设失败：{error}"))?
+                .map_err(|error| tf("workbench.error.serialize_preset", &[("error", &error)]))?
         }
     };
 
@@ -318,7 +320,7 @@ fn load_validated_json_editor(
     let data = match kind {
         ResourceKind::WorldBook => EditorData::WorldBook(world_book_from_raw(root.clone())?),
         ResourceKind::Preset => EditorData::Preset(preset_from_raw(&root)?),
-        ResourceKind::CharacterCard => return Err("资源类型不匹配。".to_owned()),
+        ResourceKind::CharacterCard => return Err(t("workbench.error.invalid_kind").to_owned()),
     };
     Ok(LoadedEditor {
         document: EditableDocument {
@@ -375,13 +377,13 @@ fn load_character_editor(path: &Path, bytes: Vec<u8>) -> Result<LoadedEditor, St
 
 fn apply_character(root: &mut Map<String, Value>, edit: &EditableCharacter) -> Result<(), String> {
     if edit.name.trim().is_empty() {
-        return Err("角色卡名称不能为空。".to_owned());
+        return Err(t("workbench.error.character_name_empty").to_owned());
     }
     let has_data = root.get("data").is_some_and(Value::is_object);
     let target = if has_data {
         root.get_mut("data")
             .and_then(Value::as_object_mut)
-            .ok_or_else(|| "角色卡 data 字段无效。".to_owned())?
+            .ok_or_else(|| t("workbench.error.character_data_invalid").to_owned())?
     } else {
         &mut *root
     };
@@ -436,7 +438,7 @@ fn world_book_from_raw(raw: Map<String, Value>) -> Result<EditableWorldBook, Str
             .iter()
             .map(|(key, value)| world_entry_from_raw(value, EntryLocator::Object(key.clone())))
             .collect::<Result<Vec<_>, _>>()?,
-        _ => return Err("世界书缺少有效的 entries。".to_owned()),
+        _ => return Err(t("workbench.error.world_no_entries").to_owned()),
     };
     Ok(EditableWorldBook {
         name,
@@ -452,7 +454,7 @@ fn world_entry_from_raw(
 ) -> Result<EditableWorldEntry, String> {
     let object = value
         .as_object()
-        .ok_or_else(|| "世界书条目必须是对象。".to_owned())?;
+        .ok_or_else(|| t("resources.validation.detail.entry_must_be_object").to_owned())?;
     Ok(EditableWorldEntry {
         comment: pick_string(object, &["comment", "name"]),
         keys: string_list(object, &["keys", "key"]),
@@ -526,17 +528,17 @@ fn entry_object_mut<'a>(
 ) -> Result<&'a mut Map<String, Value>, String> {
     let entries = root
         .get_mut("entries")
-        .ok_or_else(|| "世界书 entries 已不存在。".to_owned())?;
+        .ok_or_else(|| t("workbench.error.entries_missing").to_owned())?;
     let value = match locator {
         EntryLocator::Array(index) => entries
             .as_array_mut()
             .and_then(|items| items.get_mut(*index)),
         EntryLocator::Object(key) => entries.as_object_mut().and_then(|items| items.get_mut(key)),
     }
-    .ok_or_else(|| "世界书条目结构已改变。".to_owned())?;
+    .ok_or_else(|| t("workbench.error.entry_struct_changed").to_owned())?;
     value
         .as_object_mut()
-        .ok_or_else(|| "世界书条目必须是对象。".to_owned())
+        .ok_or_else(|| t("resources.validation.detail.entry_must_be_object").to_owned())
 }
 
 fn preset_from_raw(root: &Map<String, Value>) -> Result<EditablePreset, String> {
@@ -548,7 +550,7 @@ fn preset_from_raw(root: &Map<String, Value>) -> Result<EditablePreset, String> 
         for (index, value) in items.iter().enumerate() {
             let raw = value
                 .as_object()
-                .ok_or_else(|| format!("预设第 {} 个提示词不是对象。", index + 1))?
+                .ok_or_else(|| tf("workbench.error.prompt_not_object", &[("n", &(index + 1))]))?
                 .clone();
             let preferred = pick_string(&raw, &["identifier", "name"]);
             let identifier = unique_identifier(&preferred, index, &used_identifiers);
@@ -627,7 +629,7 @@ fn apply_preset(root: &mut Map<String, Value>, edit: &EditablePreset) -> Result<
         .map(|prompt| prompt.identifier.as_str())
         .collect::<HashSet<_>>();
     if identifiers.len() != edit.prompts.len() || identifiers.contains("") {
-        return Err("预设提示词 identifier 必须存在且不能重复。".to_owned());
+        return Err(t("workbench.error.prompt_identifier_dup").to_owned());
     }
 
     let original_identifiers = preset_from_raw(root)?
@@ -638,7 +640,7 @@ fn apply_preset(root: &mut Map<String, Value>, edit: &EditablePreset) -> Result<
     let mut prompts = Vec::with_capacity(edit.prompts.len());
     for prompt in &edit.prompts {
         if !prompt.marker && (prompt.name.trim().is_empty() || prompt.role.trim().is_empty()) {
-            return Err("普通预设条目的名称和角色不能为空。".to_owned());
+            return Err(t("workbench.error.prompt_needs_name_role").to_owned());
         }
         let mut raw = prompt.raw.clone();
         raw.insert(
@@ -717,7 +719,7 @@ fn extract_character_metadata(
     bytes: &[u8],
 ) -> Result<(Map<String, Value>, CharacterMetadata), String> {
     if !bytes.starts_with(PNG_SIGNATURE) {
-        return Err("角色卡不是有效的 PNG。".to_owned());
+        return Err(t("workbench.error.not_valid_png").to_owned());
     }
     let mut candidates = Vec::new();
     let mut offset = PNG_SIGNATURE.len();
@@ -725,9 +727,9 @@ fn extract_character_metadata(
         let length = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
         let end = offset
             .checked_add(12 + length)
-            .ok_or_else(|| "PNG 块长度溢出。".to_owned())?;
+            .ok_or_else(|| t("workbench.error.png_chunk_overflow").to_owned())?;
         if end > bytes.len() {
-            return Err("PNG 块超出文件边界。".to_owned());
+            return Err(t("workbench.error.png_chunk_out_of_bounds").to_owned());
         }
         let kind: [u8; 4] = bytes[offset + 4..offset + 8].try_into().unwrap();
         if let Some((keyword, text)) =
@@ -758,7 +760,7 @@ fn extract_character_metadata(
         .into_iter()
         .next()
         .map(|(_, root, metadata)| (root, metadata))
-        .ok_or_else(|| "没有找到可编辑的角色卡元数据。".to_owned())
+        .ok_or_else(|| t("library.edit.card_metadata_missing").to_owned())
 }
 
 fn detect_character_encoding(text: &str) -> Option<CharacterEncoding> {
@@ -824,17 +826,17 @@ fn rebuild_character_png_with_cover(
         let length = u32::from_be_bytes(
             cover[offset..offset + 4]
                 .try_into()
-                .map_err(|_| "PNG 块长度无效。".to_owned())?,
+                .map_err(|_| t("workbench.error.png_chunk_length_invalid").to_owned())?,
         ) as usize;
         let end = offset
             .checked_add(12 + length)
-            .ok_or_else(|| "PNG 块长度溢出。".to_owned())?;
+            .ok_or_else(|| t("workbench.error.png_chunk_overflow").to_owned())?;
         if end > cover.len() {
-            return Err("封面 PNG 块超出文件边界。".to_owned());
+            return Err(t("workbench.error.cover_png_out_of_bounds").to_owned());
         }
         let kind: [u8; 4] = cover[offset + 4..offset + 8]
             .try_into()
-            .map_err(|_| "PNG 块类型无效。".to_owned())?;
+            .map_err(|_| t("workbench.error.png_chunk_kind_invalid").to_owned())?;
         let data = &cover[offset + 8..offset + 8 + length];
         if kind == *b"IEND" {
             if !inserted {
@@ -850,7 +852,7 @@ fn rebuild_character_png_with_cover(
         offset = end;
     }
     if !inserted {
-        return Err("封面 PNG 缺少 IEND 块。".to_owned());
+        return Err(t("workbench.error.cover_png_no_iend").to_owned());
     }
     Ok(output)
 }
@@ -860,10 +862,10 @@ fn encode_character_metadata(
     metadata: &CharacterMetadata,
 ) -> Result<Vec<u8>, String> {
     let json = serde_json::to_vec(&Value::Object(root.clone()))
-        .map_err(|error| format!("序列化角色卡失败：{error}"))?;
+        .map_err(|error| tf("workbench.error.serialize_character", &[("error", &error)]))?;
     let payload = match metadata.encoding {
         CharacterEncoding::Plain => escape_json_non_ascii(
-            &String::from_utf8(json).map_err(|error| format!("角色卡 JSON 编码失败：{error}"))?,
+            &String::from_utf8(json).map_err(|error| tf("workbench.error.character_json_encode", &[("error", &error)]))?,
         ),
         CharacterEncoding::StandardBase64 => STANDARD.encode(json),
         CharacterEncoding::UrlSafeBase64 { padded } => {
@@ -886,7 +888,7 @@ fn is_character_metadata_chunk(kind: [u8; 4], data: &[u8]) -> bool {
 
 fn validate_cover_png(bytes: &[u8]) -> Result<(), String> {
     if !bytes.starts_with(PNG_SIGNATURE) {
-        return Err("封面必须是有效的 PNG 图片。".to_owned());
+        return Err(t("workbench.error.cover_not_png").to_owned());
     }
     let mut offset = PNG_SIGNATURE.len();
     let mut has_header = false;
@@ -894,17 +896,17 @@ fn validate_cover_png(bytes: &[u8]) -> Result<(), String> {
         let length = u32::from_be_bytes(
             bytes[offset..offset + 4]
                 .try_into()
-                .map_err(|_| "封面 PNG 块长度无效。".to_owned())?,
+                .map_err(|_| t("library.edit.cover_chunk_length").to_owned())?,
         ) as usize;
         let end = offset
             .checked_add(12 + length)
-            .ok_or_else(|| "封面 PNG 块长度溢出。".to_owned())?;
+            .ok_or_else(|| t("library.edit.cover_chunk_overflow").to_owned())?;
         if end > bytes.len() {
-            return Err("封面 PNG 块超出文件边界。".to_owned());
+            return Err(t("workbench.error.cover_png_out_of_bounds").to_owned());
         }
         let kind: [u8; 4] = bytes[offset + 4..offset + 8]
             .try_into()
-            .map_err(|_| "封面 PNG 块类型无效。".to_owned())?;
+            .map_err(|_| t("library.edit.cover_chunk_type").to_owned())?;
         if kind == *b"IHDR" {
             has_header = length >= 13;
         }
@@ -913,11 +915,11 @@ fn validate_cover_png(bytes: &[u8]) -> Result<(), String> {
             return if has_header {
                 Ok(())
             } else {
-                Err("封面 PNG 缺少有效的 IHDR 块。".to_owned())
+                Err(t("workbench.error.cover_png_no_ihdr").to_owned())
             };
         }
     }
-    Err("封面 PNG 缺少 IEND 块。".to_owned())
+    Err(t("workbench.error.cover_png_no_iend").to_owned())
 }
 
 /// PNG 的 tEXt/zTXt 使用 Latin-1；将 JSON 字符串转成纯 ASCII 可兼容任意语言输入。
@@ -995,16 +997,16 @@ fn encode_text_chunk(kind: [u8; 4], keyword: &str, text: &str) -> Result<Vec<u8>
             let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
             encoder
                 .write_all(text.as_bytes())
-                .map_err(|error| format!("压缩角色卡元数据失败：{error}"))?;
+                .map_err(|error| tf("workbench.error.compress_metadata", &[("error", &error)]))?;
             let compressed = encoder
                 .finish()
-                .map_err(|error| format!("压缩角色卡元数据失败：{error}"))?;
+                .map_err(|error| tf("workbench.error.compress_metadata", &[("error", &error)]))?;
             [keyword.as_bytes(), &[0, 0], compressed.as_slice()].concat()
         }
         b"iTXt" => [keyword.as_bytes(), &[0, 0, 0, 0, 0], text.as_bytes()].concat(),
-        _ => return Err("角色卡元数据块类型不受支持。".to_owned()),
+        _ => return Err(t("workbench.error.metadata_chunk_unsupported").to_owned()),
     };
-    let length = u32::try_from(data.len()).map_err(|_| "角色卡元数据过大。".to_owned())?;
+    let length = u32::try_from(data.len()).map_err(|_| t("workbench.error.metadata_too_large").to_owned())?;
     let mut output = Vec::with_capacity(data.len() + 12);
     output.extend_from_slice(&length.to_be_bytes());
     output.extend_from_slice(&kind);
@@ -1034,7 +1036,7 @@ fn png_crc32(bytes: &[u8]) -> u32 {
 fn ensure_backup(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut name = path
         .file_name()
-        .ok_or_else(|| "资源文件名无效。".to_owned())?
+        .ok_or_else(|| t("workbench.error.invalid_file_name").to_owned())?
         .to_os_string();
     name.push(".bak");
     let backup = path.with_file_name(name);
@@ -1045,11 +1047,11 @@ fn ensure_backup(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .write(true)
         .create_new(true)
         .open(&backup)
-        .map_err(|error| format!("创建资源备份失败：{error}"))?;
+        .map_err(|error| tf("workbench.error.backup_create_failed", &[("error", &error)]))?;
     if let Err(error) = file.write_all(bytes).and_then(|()| file.sync_all()) {
         drop(file);
         let _ = fs::remove_file(&backup);
-        return Err(format!("写入资源备份失败：{error}"));
+        return Err(tf("workbench.error.backup_write_failed", &[("error", &error)]));
     }
     Ok(())
 }
@@ -1075,7 +1077,7 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
     }
-    result.map_err(|error| format!("原子写入资源失败：{error}"))
+    result.map_err(|error| tf("workbench.error.atomic_write_failed", &[("error", &error)]))
 }
 
 fn format_issues(issues: Vec<super::ValidationIssue>) -> String {
@@ -1202,8 +1204,8 @@ fn set_optional_number(
     }
     let parsed = trimmed
         .parse::<f64>()
-        .map_err(|_| format!("{key} 必须是数值。"))?;
-    let number = Number::from_f64(parsed).ok_or_else(|| format!("{key} 必须是有限数值。"))?;
+        .map_err(|_| tf("library.edit.must_be_number", &[("key", &key)]))?;
+    let number = Number::from_f64(parsed).ok_or_else(|| tf("library.edit.must_be_finite", &[("key", &key)]))?;
     object.insert(key.to_owned(), Value::Number(number));
     Ok(())
 }
@@ -1313,13 +1315,13 @@ fn set_world_value(
         Some(WorldLocation::Data(key)) => {
             root.get_mut("data")
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| "角色卡 data 字段无效。".to_owned())?
+                .ok_or_else(|| t("workbench.error.character_data_invalid").to_owned())?
                 .insert(key, value);
         }
         Some(WorldLocation::RootExtension(key)) => {
             root.get_mut("extensions")
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| "角色卡 extensions 字段无效。".to_owned())?
+                .ok_or_else(|| t("library.edit.extensions_invalid").to_owned())?
                 .insert(key, value);
         }
         Some(WorldLocation::DataExtension(key)) => {
@@ -1327,13 +1329,13 @@ fn set_world_value(
                 .and_then(Value::as_object_mut)
                 .and_then(|data| data.get_mut("extensions"))
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| "角色卡 data.extensions 字段无效。".to_owned())?
+                .ok_or_else(|| t("library.edit.data_extensions_invalid").to_owned())?
                 .insert(key, value);
         }
         None if has_data => {
             root.get_mut("data")
                 .and_then(Value::as_object_mut)
-                .ok_or_else(|| "角色卡 data 字段无效。".to_owned())?
+                .ok_or_else(|| t("workbench.error.character_data_invalid").to_owned())?
                 .insert("character_book".to_owned(), value);
         }
         None => {

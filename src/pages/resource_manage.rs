@@ -24,7 +24,7 @@ use crate::core::library::{
     ResourceData, ResourceImportItem, ResourceImportReport, ResourceKind, ValidationIssue,
     WorldEntry, import_batch, validate_path,
 };
-use crate::lang::{current_language, t, text};
+use crate::lang::{current_language, raw, t, t_in, text, tf};
 use crate::theme::button_style;
 
 pub(crate) mod workbench;
@@ -58,12 +58,12 @@ impl ResourceTab {
         Self::Presets,
     ];
 
-    const fn label(self) -> &'static str {
+    const fn label_key(self) -> &'static str {
         match self {
-            Self::Characters => "角色卡",
-            Self::WorldBooks => "世界书",
-            Self::Chats => "历史对话",
-            Self::Presets => "预设",
+            Self::Characters => "resources.import.kind.character",
+            Self::WorldBooks => "resources.import.kind.world_book",
+            Self::Chats => "resources.tab.chats",
+            Self::Presets => "resources.import.kind.preset",
         }
     }
 
@@ -357,7 +357,7 @@ impl ResourceManageState {
                 self.refresh_all();
                 self.notice = Some(TransientNotice::info(
                     "notice.refresh_complete",
-                    "资源目录已重新扫描。",
+                    "resources.notice.refresh_done",
                 ));
                 Task::none()
             }
@@ -544,7 +544,7 @@ impl ResourceManageState {
             async move {
                 std::thread::spawn(move || scan_presets_from_directory(&directory))
                     .join()
-                    .unwrap_or_else(|_| Err("预设加载线程意外退出。".into()))
+                    .unwrap_or_else(|_| Err(t("resources.preset.load_thread_crashed").to_owned()))
             },
             move |result| ResourceManageMessage::PresetsLoaded(request_id, result),
         )
@@ -625,7 +625,7 @@ impl ResourceManageState {
             async move {
                 std::thread::spawn(move || load_preset_prompts(&path))
                     .join()
-                    .unwrap_or_else(|_| Err("预设详情加载线程意外退出。".into()))
+                    .unwrap_or_else(|_| Err(t("resources.preset.thread_exit").to_owned()))
             },
             move |result| ResourceManageMessage::PresetDetailLoaded(request_id, index, result),
         )
@@ -645,7 +645,7 @@ impl ResourceManageState {
                 self.presets.clear();
                 self.notice = Some(TransientNotice::danger(
                     "notice.load_failed",
-                    format!("预设加载失败：{error}"),
+                    tf("resources.notice.preset_load_failed", &[("error", &error)]),
                 ));
             }
         }
@@ -778,14 +778,14 @@ impl ResourceManageState {
         let Some(directory) = self.directory_for(self.tab) else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                "请先在版本管理中选择一个 SillyTavern 实例。",
+                "resources.notice.select_instance",
             ));
             return;
         };
         if let Err(error) = fs::create_dir_all(&directory) {
             self.notice = Some(TransientNotice::danger(
                 "notice.operation_failed",
-                format!("无法创建资源目录：{error}"),
+                tf("resources.notice.create_dir_failed", &[("error", &error)]),
             ));
             return;
         }
@@ -793,13 +793,13 @@ impl ResourceManageState {
             Ok(_) => {
                 self.notice = Some(TransientNotice::success(
                     "notice.directory_opened",
-                    format!("已打开 {} 目录。", self.tab.label()),
+                    tf("resources.directory_opened", &[("tab", &t(self.tab.label_key()))]),
                 ));
             }
             Err(error) => {
                 self.notice = Some(TransientNotice::danger(
                     "notice.operation_failed",
-                    format!("无法打开资源目录：{error}"),
+                    tf("resources.notice.open_dir_failed", &[("error", &error)]),
                 ));
             }
         }
@@ -819,21 +819,21 @@ impl ResourceManageState {
         let Some(kind) = self.tab.resource_kind() else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                "历史对话请通过资源迁移或直接放入角色对应目录。",
+                "resources.notice.chats_import",
             ));
             return Task::none();
         };
         let Some(directory) = self.directory_for(self.tab) else {
             self.notice = Some(TransientNotice::warning(
                 "notice.action_unavailable",
-                "请先在版本管理中选择一个 SillyTavern 实例。",
+                "resources.notice.select_instance",
             ));
             return Task::none();
         };
         let dialog = match self.tab {
-            ResourceTab::Characters => rfd::FileDialog::new().add_filter("角色卡 PNG", &["png"]),
+            ResourceTab::Characters => rfd::FileDialog::new().add_filter(t("resources.filter.character_png"), &["png"]),
             ResourceTab::WorldBooks | ResourceTab::Presets => {
-                rfd::FileDialog::new().add_filter("JSON 文件", &["json"])
+                rfd::FileDialog::new().add_filter(t("resources.filter.json"), &["json"])
             }
             ResourceTab::Chats => return Task::none(),
         };
@@ -850,7 +850,7 @@ impl ResourceManageState {
                     .unwrap_or_else(|_| {
                         ResourceImportReport::task_failed(
                             task_sources,
-                            "资源导入后台线程意外退出。",
+                            "resources.import.thread_exit",
                         )
                     })
             },
@@ -929,14 +929,14 @@ impl ResourceManageState {
             Ok(()) => {
                 self.notice = Some(TransientNotice::success(
                     "notice.delete_complete",
-                    format!("已删除“{}”。", pending.label),
+                    tf("resources.deleted", &[("name", &pending.label)]),
                 ));
                 self.refresh_all();
             }
             Err(error) => {
                 self.notice = Some(TransientNotice::danger(
                     "notice.delete_failed",
-                    format!("删除失败：{error}"),
+                    tf("resources.delete_failed", &[("error", &error)]),
                 ));
             }
         }
@@ -1117,7 +1117,7 @@ fn load_preset_prompts(path: &Path) -> Result<Vec<PresetPrompt>, String> {
     let validated = validate_path(ResourceKind::Preset, path)
         .map_err(|issues| validation_issue_summary(&issues))?;
     let ResourceData::Preset(preset) = validated.data else {
-        return Err("预设解析结果类型不正确。".into());
+        return Err(t("resources.preset.result_type_invalid").to_owned());
     };
     Ok(preset.prompts)
 }
@@ -1133,7 +1133,7 @@ fn validation_issue_summary(issues: &[ValidationIssue]) -> String {
                 format!("{}：{}", issue.field_path, issue.detail)
             }
         })
-        .unwrap_or_else(|| "资源校验失败。".into())
+        .unwrap_or_else(|| t("resources.validation.summary_fallback").to_owned())
 }
 
 fn load_chat_messages(path: &Path) -> Vec<ChatMessage> {
@@ -1287,11 +1287,11 @@ pub fn resource_manage_view<'a>(
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
             column![
-                text("资源管理")
+                text("resources.title")
                     .size(22)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
-                text("统一查看与整理 SillyTavern 本地资源")
+                text("resources.subtitle")
                     .size(13)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -1321,7 +1321,7 @@ pub fn resource_manage_view<'a>(
                 14,
                 WHITE,
             ),
-            text(if state.import_pending {
+            raw(if state.import_pending {
                 tr("resources.import.validating").to_owned()
             } else {
                 format!(
@@ -1357,7 +1357,7 @@ pub fn resource_manage_view<'a>(
         button(
             row![
                 icons::icon(Icon::TriangleAlert, 14, DANGER),
-                text(format!(
+                raw(format!(
                     "{} ({})",
                     tr("resources.import.show_failures"),
                     state.import_failures.len()
@@ -1383,7 +1383,7 @@ pub fn resource_manage_view<'a>(
         button(
             row![
                 icons::icon(Icon::SquarePen, 14, BLUE_600),
-                text(t("workbench.open", current_language())).size(12),
+                raw(t_in("workbench.open", current_language())).size(12),
             ]
             .spacing(6)
             .align_y(Alignment::Center),
@@ -1401,7 +1401,7 @@ pub fn resource_manage_view<'a>(
         container(
             row![
                 crate::theme::subtle_icon(Icon::Search, 14),
-                text_input("搜索名称、文件名或标签", &state.search)
+                text_input(t("resources.search.placeholder"), &state.search)
                     .on_input(ResourceManageMessage::SearchChanged)
                     // 输入框保留足够的水平留白，避免文字贴着焦点边框显示。
                     .padding([7, 9])
@@ -1420,7 +1420,7 @@ pub fn resource_manage_view<'a>(
         container(
             row![
                 icons::icon(state.tab.icon(), 13, BLUE_600),
-                text(format!("{} 项", state.current_count()))
+                raw(tf("resources.count.items", &[("count", &state.current_count())]))
                     .size(12)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
@@ -1439,7 +1439,7 @@ pub fn resource_manage_view<'a>(
                 .width(34)
                 .height(34)
                 .style(button_style(ButtonVariant::Outline)),
-            container(text("打开目录").size(12))
+            container(text("resources.tooltip.open_directory").size(12))
                 .padding([5, 8])
                 .style(tooltip_surface),
             tooltip::Position::Bottom,
@@ -1450,7 +1450,7 @@ pub fn resource_manage_view<'a>(
                 .width(34)
                 .height(34)
                 .style(button_style(ButtonVariant::Outline)),
-            container(text("重新扫描").size(12))
+            container(text("resources.tooltip.rescan").size(12))
                 .padding([5, 8])
                 .style(tooltip_surface),
             tooltip::Position::Bottom,
@@ -1463,8 +1463,8 @@ pub fn resource_manage_view<'a>(
     let body = if state.data_root.is_none() {
         empty_page(
             Icon::FolderCog,
-            "尚未连接资源目录",
-            "请先在版本管理中切换到一个本地 SillyTavern 实例，或在设置中启用全局数据。",
+            "resources.empty.no_directory.title",
+            "resources.empty.hint",
         )
     } else {
         row![resource_list(state), resource_detail(state, theme)]
@@ -1519,11 +1519,11 @@ fn import_failure_modal(state: &ResourceManageState) -> Element<'_, ResourceMana
             .align_y(Alignment::Center)
             .style(delete_modal_icon_surface),
         column![
-            text(tr("resources.import.failure_title"))
+            raw(tr("resources.import.failure_title"))
                 .size(18)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            text(format!(
+            raw(format!(
                 "{} · {} {}",
                 resource_label,
                 state.import_failures.len(),
@@ -1553,13 +1553,13 @@ fn import_failure_modal(state: &ResourceManageState) -> Element<'_, ResourceMana
         .height(Length::Fill)
         .width(Fill);
     let footer = row![
-        text(tr("resources.import.failure_hint"))
+        raw(tr("resources.import.failure_hint"))
             .size(11)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
         space::horizontal(),
         button(
-            text(tr("resources.import.clear_failures"))
+            raw(tr("resources.import.clear_failures"))
                 .size(12)
                 .font(crate::core::typography::medium()),
         )
@@ -1568,7 +1568,7 @@ fn import_failure_modal(state: &ResourceManageState) -> Element<'_, ResourceMana
         .padding([8, 14])
         .style(button_style(ButtonVariant::Secondary)),
         button(
-            text(tr("resources.import.close"))
+            raw(tr("resources.import.close"))
                 .size(12)
                 .font(crate::core::typography::medium())
                 .color(WHITE),
@@ -1630,7 +1630,7 @@ fn import_failure_item(item: &ResourceImportItem) -> Element<'_, ResourceManageM
     );
     let format = item
         .format
-        .map(|format| format.label())
+        .map(|format| format.label_key())
         .unwrap_or_else(|| tr("resources.import.format_unrecognized"));
     let issues = item
         .result
@@ -1648,12 +1648,12 @@ fn import_failure_item(item: &ResourceImportItem) -> Element<'_, ResourceManageM
             };
             row![
                 icons::icon(Icon::CircleX, 13, DANGER),
-                text(path)
+                raw(path)
                     .size(11)
                     .width(150)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                text(t(issue.message_key, current_language()))
+                raw(t_in(issue.message_key, current_language()))
                     .size(12)
                     .width(Fill)
                     .font(crate::core::typography::regular())
@@ -1668,7 +1668,7 @@ fn import_failure_item(item: &ResourceImportItem) -> Element<'_, ResourceManageM
         column![
             row![
                 icons::icon(Icon::FileWarning, 15, DANGER),
-                text(file_name)
+                raw(file_name)
                     .size(13)
                     .width(Fill)
                     .font(crate::core::typography::medium())
@@ -1707,13 +1707,13 @@ fn import_result_detail(tab: ResourceTab, imported: usize, failed: usize) -> Str
         .unwrap_or_else(|| tr("resources.import.resource_unknown"));
     match current_language() {
         crate::lang::Language::Chinese if failed == 0 => {
-            format!("已导入 {imported} 个{resource}。")
+            tf("resources.import.result", &[("count", &imported), ("resource", &resource)])
         }
         crate::lang::Language::Chinese if imported == 0 => {
-            format!("没有导入任何{resource}，{failed} 个文件未通过校验。")
+            tf("resources.import.summary_none", &[("resource", &resource), ("failed", &failed)])
         }
         crate::lang::Language::Chinese => {
-            format!("已导入 {imported} 个文件，{failed} 个文件未通过校验。")
+            tf("resources.import.summary_partial", &[("imported", &imported), ("failed", &failed)])
         }
         crate::lang::Language::English if failed == 0 => {
             format!("Imported {imported} {resource}.")
@@ -1737,11 +1737,11 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
             .align_y(Alignment::Center)
             .style(delete_modal_icon_surface),
         column![
-            text(tr("resources.confirm.delete.title"))
+            raw(tr("resources.confirm.delete.title"))
                 .size(18)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
-            text(tr("resources.confirm.delete.description"))
+            raw(tr("resources.confirm.delete.description"))
                 .size(12)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -1760,7 +1760,7 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
     let target = container(
         row![
             icons::icon(Icon::File, 15, DANGER),
-            text(&pending.label)
+            raw(&pending.label)
                 .size(13)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
@@ -1775,7 +1775,7 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
     let footer = row![
         space::horizontal(),
         button(
-            text(tr("resources.confirm.delete.cancel"))
+            raw(tr("resources.confirm.delete.cancel"))
                 .size(12)
                 .font(crate::core::typography::medium()),
         )
@@ -1784,7 +1784,7 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
         .padding([8, 16])
         .style(button_style(ButtonVariant::Secondary)),
         button(
-            text(tr("resources.confirm.delete.confirm"))
+            raw(tr("resources.confirm.delete.confirm"))
                 .size(12)
                 .font(crate::core::typography::medium())
                 .color(WHITE),
@@ -1803,7 +1803,7 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
                 header,
                 modal_separator(),
                 target,
-                text(tr("resources.confirm.delete.warning"))
+                raw(tr("resources.confirm.delete.warning"))
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -1839,7 +1839,7 @@ fn delete_confirmation_modal(pending: &PendingDelete) -> Element<'_, ResourceMan
 
 /// 返回当前语言下的稳定键值文案。
 fn tr(key: &'static str) -> &'static str {
-    t(key, current_language())
+    t_in(key, current_language())
 }
 
 /// 删除确认弹窗中的横向分隔线。
@@ -1866,7 +1866,7 @@ fn resource_tab(
             container(
                 row![
                     tab_icon,
-                    text(tab.label())
+                    text(tab.label_key())
                         .size(14)
                         .font(crate::core::typography::medium())
                         .style(move |theme| iced::widget::text::Style {
@@ -1877,7 +1877,7 @@ fn resource_tab(
                             }),
                         }),
                     container(
-                        text(state.resource_count(tab).to_string())
+                        raw(state.resource_count(tab).to_string())
                             .size(12)
                             .font(crate::core::typography::medium())
                             .style(move |theme| iced::widget::text::Style {
@@ -1920,12 +1920,12 @@ fn resource_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessa
         column![
             container(
                 row![
-                    text(format!("{}列表", state.tab.label()))
+                    raw(tf("resources.list.heading", &[("tab", &t(state.tab.label_key()))]))
                         .size(14)
                         .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     space::horizontal(),
-                    text("按修改时间排序")
+                    text("resources.list.sort_modified")
                         .size(12)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -1974,25 +1974,19 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
                     .height(CHARACTER_THUMB_HEIGHT)
                     .style(thumbnail_surface),
                     column![
-                        text(&item.name)
+                        raw(&item.name)
                             .size(14)
                             .font(crate::core::typography::medium())
                             .style(crate::theme::text_style),
-                        text(if item.creator.is_empty() {
-                            "未知作者".to_owned()
+                        raw(if item.creator.is_empty() {
+                            t("resources.unknown_author").to_owned()
                         } else {
-                            format!("作者：{}", item.creator)
+                            tf("resources.author.label", &[("name", &item.creator)])
                         })
                         .size(12)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
-                        text(format!(
-                            "{} · {}×{} · {} 个标签",
-                            format_size(item.file_size),
-                            item.image_width,
-                            item.image_height,
-                            item.tags.len()
-                        ))
+                        raw(tf("resources.character.card_meta", &[("size", &format_size(item.file_size)), ("width", &item.image_width), ("height", &item.image_height), ("count", &item.tags.len())]))
                         .size(12)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -2015,7 +2009,7 @@ fn character_list(state: &ResourceManageState) -> Element<'_, ResourceManageMess
             .into()
         })
         .collect::<Vec<Element<'_, ResourceManageMessage>>>();
-    list_scroll(rows, "没有找到角色卡", "导入 PNG 角色卡后会显示在这里。")
+    list_scroll(rows, "resources.list.empty.characters.title", "resources.list.empty.characters.hint")
 }
 
 fn world_book_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
@@ -2035,21 +2029,17 @@ fn world_book_list(state: &ResourceManageState) -> Element<'_, ResourceManageMes
                 Icon::BookMarked,
                 &item.name,
                 if item.author.is_empty() {
-                    "未知作者"
+                    t("resources.unknown_author")
                 } else {
                     &item.author
                 },
-                format!(
-                    "{} 条目 · {}",
-                    item.entries.len(),
-                    format_size(item.file_size)
-                ),
+                tf("resources.world_book.list_meta", &[("count", &item.entries.len()), ("size", &format_size(item.file_size))]),
                 state.selected_world_book == Some(index),
                 ResourceManageMessage::SelectWorldBook(index),
             )
         })
         .collect::<Vec<_>>();
-    list_scroll(rows, "没有找到世界书", "导入 JSON 世界书后会显示在这里。")
+    list_scroll(rows, "resources.list.empty.world_books.title", "resources.list.empty.world_books.hint")
 }
 
 fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> {
@@ -2073,12 +2063,12 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
             container(
                 row![
                     icons::icon(Icon::UserRound, 13, BLUE_600),
-                    text(&group.name)
+                    raw(&group.name)
                         .size(12)
                         .font(crate::core::typography::medium())
                         .style(crate::theme::text_style),
                     space::horizontal(),
-                    text(format!("{} 个会话", matching.len()))
+                    raw(tf("resources.chat.session_count", &[("count", &matching.len())]))
                         .size(12)
                         .font(crate::core::typography::regular())
                         .style(crate::theme::muted_text_style),
@@ -2103,8 +2093,8 @@ fn chat_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage> 
     }
     list_scroll(
         rows,
-        "没有找到历史对话",
-        "开始聊天后，JSONL 对话记录会按角色分组显示。",
+        "resources.list.empty.chats.title",
+        "resources.list.empty.chats.hint",
     )
 }
 
@@ -2126,24 +2116,15 @@ fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage
         })
         .map(|(index, item)| {
             let prompt_meta = if item.requires_tavern_helper {
-                format!(
-                    "{} 段提示词 · {} · {}",
-                    item.prompt_count,
-                    format_size(item.file_size),
-                    crate::lang::display_label("依赖酒馆助手"),
-                )
+                tf("resources.preset.prompt_meta_tavern", &[("count", &item.prompt_count), ("size", &format_size(item.file_size)), ("helper", &crate::lang::t("resources.preset.tavern_helper"))])
             } else {
-                format!(
-                    "{} 段提示词 · {}",
-                    item.prompt_count,
-                    format_size(item.file_size)
-                )
+                tf("resources.preset.prompt_meta", &[("count", &item.prompt_count), ("size", &format_size(item.file_size))])
             };
             simple_list_item(
                 Icon::ListChecks,
                 &item.name,
                 if item.model.is_empty() {
-                    "未指定模型"
+                    t("resources.preset.unknown_model")
                 } else {
                     &item.model
                 },
@@ -2153,7 +2134,7 @@ fn preset_list(state: &ResourceManageState) -> Element<'_, ResourceManageMessage
             )
         })
         .collect::<Vec<_>>();
-    list_scroll(rows, "没有找到预设", "导入 JSON 预设后会显示在这里。")
+    list_scroll(rows, "resources.list.empty.presets.title", "resources.list.empty.presets.hint")
 }
 
 /// 预设列表正在读取时的占位界面，避免用户误以为没有预设。
@@ -2161,11 +2142,11 @@ fn preset_loading_panel() -> Element<'static, ResourceManageMessage> {
     container(
         column![
             crate::theme::subtle_icon(Icon::LoaderCircle, 28),
-            text("正在加载预设…")
+            text("resources.preset.loading")
                 .size(13)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
-            text("正在读取预设元数据，完成后即可查看详情。")
+            text("resources.preset.loading_hint")
                 .size(11)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
@@ -2208,15 +2189,15 @@ fn simple_list_item<'a>(
                 .align_y(Alignment::Center)
                 .style(move |theme| item_icon_surface(theme, selected)),
             column![
-                text(title)
+                raw(title)
                     .size(13)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
-                text(truncate(subtitle, 35))
+                raw(truncate(subtitle, 35))
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
-                text(meta)
+                raw(meta)
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -2309,12 +2290,12 @@ fn resource_detail<'a>(
     container(content.unwrap_or_else(|| {
         empty_page(
             state.tab.icon(),
-            "选择一项查看详情",
+            "resources.detail.empty.title",
             match state.tab {
-                ResourceTab::Characters => "可查看角色设定、首条消息和内嵌世界书。",
-                ResourceTab::WorldBooks => "可检查触发关键词、条目状态和正文内容。",
-                ResourceTab::Chats => "可预览最近 300 条用户与角色消息。",
-                ResourceTab::Presets => "可检查模型参数、提示词顺序和启用状态。",
+                ResourceTab::Characters => "resources.detail.empty.characters",
+                ResourceTab::WorldBooks => "resources.detail.empty.world_books",
+                ResourceTab::Chats => "resources.detail.empty.chats",
+                ResourceTab::Presets => "resources.detail.empty.presets",
             },
         )
     }))
@@ -2338,11 +2319,11 @@ fn detail_header<'a>(
                 .align_y(Alignment::Center)
                 .style(page_icon_surface),
             column![
-                text(title)
+                raw(title)
                     .size(17)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
-                text(subtitle)
+                raw(subtitle)
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -2355,7 +2336,7 @@ fn detail_header<'a>(
                     .width(34)
                     .height(34)
                     .style(danger_outline_button_style),
-                container(text("删除文件").size(12))
+                container(text("resources.detail.delete").size(12))
                     .padding([5, 8])
                     .style(tooltip_surface),
                 tooltip::Position::Bottom,
@@ -2372,7 +2353,7 @@ fn detail_header<'a>(
 
 fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessage> {
     let tags: Element<'_, ResourceManageMessage> = if item.tags.is_empty() {
-        text("无标签")
+        text("resources.character.no_tags")
             .size(12)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style)
@@ -2395,28 +2376,28 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
             .style(detail_image_surface),
             column![
                 info_grid_row(
-                    "创建者",
-                    value_or(&item.creator, "未知"),
-                    "版本",
-                    value_or(&item.version, "未标注")
+                    "resources.character.creator",
+                    value_or(&item.creator, "resources.unknown"),
+                    "workbench.field.version",
+                    value_or(&item.version, "resources.unlabeled")
                 ),
                 info_grid_row(
-                    "卡片规范",
+                    "resources.character.spec",
                     spec_label(item),
-                    "图片尺寸",
+                    "resources.character.image_size",
                     format!("{} × {}", item.image_width, item.image_height)
                 ),
                 info_grid_row(
-                    "文件大小",
+                    "resources.file_size",
                     format_size(item.file_size),
-                    "内嵌世界书",
+                    "resources.character.embedded_world",
                     if item.world_entries.is_empty() {
-                        "无".into()
+                        t("resources.none").to_owned()
                     } else {
-                        format!("{} 条", item.world_entries.len())
+                        tf("resources.world.entries_count", &[("count", &item.world_entries.len())])
                     }
                 ),
-                text("标签")
+                text("resources.character.tags")
                     .size(12)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
@@ -2425,21 +2406,21 @@ fn character_detail(item: &CharacterCardInfo) -> Element<'_, ResourceManageMessa
             .spacing(9),
         ]
         .spacing(15),
-        detail_section("角色描述", &item.description),
-        detail_section("性格", &item.personality),
-        detail_section("场景", &item.scenario),
-        detail_section("首条消息", &item.first_message),
+        detail_section("workbench.character.description", &item.description),
+        detail_section("workbench.character.personality", &item.personality),
+        detail_section("workbench.character.scenario", &item.scenario),
+        detail_section("workbench.character.first_message", &item.first_message),
     ]
     .spacing(14);
     if !item.world_entries.is_empty() {
         content = content.push(section_heading(
             Icon::BookOpenText,
             if item.world_name.is_empty() {
-                "内嵌世界书"
+                t("resources.character.embedded_world")
             } else {
-                &item.world_name
+                item.world_name.as_str()
             },
-            format!("{} 个条目", item.world_entries.len()),
+            tf("resources.entries_count", &[("count", &item.world_entries.len())]),
         ));
         for entry in item.world_entries.iter().take(30) {
             content = content.push(world_entry_card(entry));
@@ -2463,13 +2444,13 @@ fn world_book_detail(item: &WorldBookInfo) -> Element<'_, ResourceManageMessage>
         row![
             metric_card(
                 Icon::ListTree,
-                "条目",
+                "resources.world_book.entries",
                 item.entries.len().to_string(),
                 BLUE_600
             ),
             metric_card(
                 Icon::CircleCheck,
-                "已启用",
+                "workbench.field.enabled",
                 item.entries
                     .iter()
                     .filter(|entry| entry.enabled)
@@ -2479,7 +2460,7 @@ fn world_book_detail(item: &WorldBookInfo) -> Element<'_, ResourceManageMessage>
             ),
             metric_card(
                 Icon::HardDrive,
-                "大小",
+                "resources.size",
                 format_size(item.file_size),
                 Color::from_rgb8(142, 68, 220)
             ),
@@ -2487,11 +2468,11 @@ fn world_book_detail(item: &WorldBookInfo) -> Element<'_, ResourceManageMessage>
         .spacing(9),
         section_heading(
             Icon::ListTree,
-            "世界书条目",
+            t("resources.world_book.entries_heading"),
             if item.author.is_empty() {
-                "未知作者".into()
+                t("resources.unknown_author").to_owned()
             } else {
-                format!("作者：{}", item.author)
+                tf("resources.author.label", &[("name", &item.author)])
             },
         ),
     ]
@@ -2500,7 +2481,7 @@ fn world_book_detail(item: &WorldBookInfo) -> Element<'_, ResourceManageMessage>
         content = content.push(world_entry_card(entry));
     }
     if item.entries.is_empty() {
-        content = content.push(inline_empty("这个世界书中没有可识别的条目。"));
+        content = content.push(inline_empty("resources.world_book.no_entries"));
     }
     column![
         detail_header(
@@ -2524,13 +2505,13 @@ fn chat_detail<'a>(
         row![
             metric_card(
                 Icon::MessagesSquare,
-                "消息",
+                "resources.chat.messages",
                 state.chat_messages.len().to_string(),
                 BLUE_600
             ),
             metric_card(
                 Icon::UserRound,
-                "用户消息",
+                "resources.chat.user_messages",
                 state
                     .chat_messages
                     .iter()
@@ -2541,7 +2522,7 @@ fn chat_detail<'a>(
             ),
             metric_card(
                 Icon::HardDrive,
-                "大小",
+                "resources.size",
                 format_size(file.file_size),
                 Color::from_rgb8(142, 68, 220)
             ),
@@ -2549,13 +2530,13 @@ fn chat_detail<'a>(
         .spacing(9),
         section_heading(
             Icon::MessageCircle,
-            "对话预览",
-            "显示最近 300 条消息".into()
+            t("resources.chat.preview"),
+            t("resources.chat.preview_hint").to_owned()
         ),
     ]
     .spacing(11);
     if state.chat_messages.is_empty() {
-        messages = messages.push(inline_empty("此文件没有可识别的聊天消息。"));
+        messages = messages.push(inline_empty("resources.chat.no_messages"));
     } else {
         for message in &state.chat_messages {
             messages = messages.push(chat_bubble(message, theme));
@@ -2583,11 +2564,11 @@ fn preset_detail_loading(item: &PresetInfo) -> Element<'_, ResourceManageMessage
         container(
             column![
                 crate::theme::subtle_icon(Icon::LoaderCircle, 32),
-                text("正在加载预设详情…")
+                text("resources.preset.detail_loading")
                     .size(14)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                text("正在读取提示词内容，请稍候。")
+                text("resources.preset.detail_loading_hint")
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -2617,11 +2598,11 @@ fn preset_detail_error<'a>(
         container(
             column![
                 crate::theme::subtle_icon(Icon::CircleAlert, 28),
-                text("预设详情加载失败")
+                text("resources.preset.detail_load_failed")
                     .size(14)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
-                text(error)
+                raw(error)
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -2649,26 +2630,26 @@ fn preset_detail(
         row![
             metric_card(
                 Icon::ListChecks,
-                "提示词",
+                "resources.preset.prompts",
                 item.prompt_count.to_string(),
                 BLUE_600
             ),
             metric_card(
                 Icon::CircleCheck,
-                "已启用",
+                "workbench.field.enabled",
                 item.enabled_prompt_count.to_string(),
                 SUCCESS,
             ),
             // 将预设格式与运行依赖分开显示，避免用户把 SPreset 误认为依赖状态。
             metric_card(
                 Icon::PlugZap,
-                "扩展格式",
+                "resources.preset.format",
+                // SPreset 是格式专名（不翻译），标准格式走文案键。
                 if item.has_spreset {
-                    "SPreset"
+                    "SPreset".to_owned()
                 } else {
-                    "标准"
-                }
-                .into(),
+                    t("resources.preset.standard").to_owned()
+                },
                 if item.has_spreset {
                     TAVERN_HELPER_ACCENT
                 } else {
@@ -2677,13 +2658,13 @@ fn preset_detail(
             ),
             metric_card(
                 Icon::Puzzle,
-                "依赖酒馆助手",
-                if item.requires_tavern_helper {
-                    "是"
+                "resources.preset.tavern_helper",
+                t(if item.requires_tavern_helper {
+                    "common.yes"
                 } else {
-                    "否"
-                }
-                .into(),
+                    "common.no"
+                })
+                .to_owned(),
                 if item.requires_tavern_helper {
                     TAVERN_HELPER_ACCENT
                 } else {
@@ -2695,21 +2676,21 @@ fn preset_detail(
         container(
             column![
                 info_grid_row(
-                    "接口来源",
-                    value_or(&item.source, "未指定"),
-                    "模型",
-                    value_or(&item.model, "未指定")
+                    "resources.preset.source",
+                    value_or(&item.source, "resources.unspecified"),
+                    "resources.preset.model",
+                    value_or(&item.model, "resources.unspecified")
                 ),
                 info_grid_row(
-                    "上下文",
+                    "resources.preset.context",
                     number_or(item.max_context),
-                    "最大输出",
+                    "resources.preset.max_tokens",
                     number_or(item.max_tokens)
                 ),
                 info_grid_row(
-                    "流式输出",
+                    "resources.preset.stream",
                     bool_label(item.stream).into(),
-                    "文件大小",
+                    "resources.file_size",
                     format_size(item.file_size)
                 ),
             ]
@@ -2719,13 +2700,13 @@ fn preset_detail(
         .style(info_surface),
         section_heading(
             Icon::ListChecks,
-            "提示词结构",
-            format!("{} 个条目", item.prompt_count)
+            t("resources.preset.prompt_structure"),
+            tf("resources.entries_count", &[("count", &item.prompt_count)])
         ),
     ]
     .spacing(12);
     if item.prompt_count == 0 {
-        content = content.push(inline_empty("这个预设中没有可识别的 prompts 数组。"));
+        content = content.push(inline_empty("resources.preset.no_prompts"));
     } else {
         let start = current_page * PRESET_PROMPTS_PER_PAGE;
         let end = (start + PRESET_PROMPTS_PER_PAGE).min(item.prompts.len());
@@ -2765,8 +2746,8 @@ fn detail_section<'a>(title: &'static str, value: &'a str) -> Element<'a, Resour
                 .size(12)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
-            text(if value.trim().is_empty() {
-                "未填写"
+            raw(if value.trim().is_empty() {
+                t("resources.empty_value")
             } else {
                 value
             })
@@ -2809,7 +2790,7 @@ fn info_pair<'a>(label: &'static str, value: String) -> Element<'a, ResourceMana
                 .size(12)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::muted_text_style),
-            text(value)
+            raw(value)
                 .size(12)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
@@ -2841,7 +2822,7 @@ fn metric_card(
                     .size(12)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::muted_text_style),
-                text(value)
+                raw(value)
                     .size(14)
                     .font(crate::core::typography::medium())
                     .style(crate::theme::text_style),
@@ -2864,12 +2845,12 @@ fn section_heading<'a>(
 ) -> Element<'a, ResourceManageMessage> {
     row![
         icons::icon(icon, 14, BLUE_600),
-        text(title)
+        raw(title)
             .size(13)
             .font(crate::core::typography::medium())
             .style(crate::theme::text_style),
         space::horizontal(),
-        text(meta)
+        raw(meta)
             .size(12)
             .font(crate::core::typography::regular())
             .style(crate::theme::muted_text_style),
@@ -2881,7 +2862,7 @@ fn section_heading<'a>(
 
 fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
     let keywords = if entry.keys.is_empty() {
-        "无关键词".into()
+        t("resources.world_book.no_keywords").to_owned()
     } else {
         entry.keys.join("、")
     };
@@ -2894,19 +2875,19 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
         column![
             row![
                 container(status_icon).width(26),
-                text(if entry.comment.is_empty() {
-                    "未命名条目"
+                raw(if entry.comment.is_empty() {
+                    t("resources.world_book.unnamed_entry")
                 } else {
-                    &entry.comment
+                    entry.comment.as_str()
                 })
                 .size(12)
                 .font(crate::core::typography::medium())
                 .style(crate::theme::text_style),
                 space::horizontal(),
                 text(if entry.enabled {
-                    "已启用"
+                    "workbench.field.enabled"
                 } else {
-                    "已禁用"
+                    "workbench.field.disabled"
                 })
                 .size(12)
                 .font(crate::core::typography::medium())
@@ -2919,12 +2900,12 @@ fn world_entry_card(entry: &WorldEntry) -> Element<'_, ResourceManageMessage> {
                 }),
             ]
             .align_y(Alignment::Center),
-            text(format!("关键词：{}", truncate(&keywords, 80)))
+            raw(tf("resources.world_book.keywords", &[("keywords", &truncate(&keywords, 80))]))
                 .size(12)
                 .font(crate::core::typography::regular())
                 .style(crate::theme::muted_text_style),
-            text(if entry.content.trim().is_empty() {
-                "无正文".into()
+            raw(if entry.content.trim().is_empty() {
+                t("resources.world_book.no_content").to_owned()
             } else {
                 truncate(&entry.content, 220)
             })
@@ -2948,7 +2929,7 @@ fn chat_bubble<'a>(message: &'a ChatMessage, theme: &Theme) -> Element<'a, Resou
     };
     // 解析结果为空（例如整条消息只有被忽略的 HTML 标签）时退回原文，避免气泡完全空白。
     let body: Element<'a, ResourceManageMessage> = if message.markdown.is_empty() {
-        text(&message.content)
+        raw(&message.content)
             .size(12)
             .font(crate::core::typography::regular())
             .style(crate::theme::text_style)
@@ -2974,16 +2955,20 @@ fn chat_bubble<'a>(message: &'a ChatMessage, theme: &Theme) -> Element<'a, Resou
                     13,
                     accent
                 ),
-                text(if message.name.is_empty() {
-                    if message.is_user { "用户" } else { "角色" }
+                raw(if message.name.is_empty() {
+                    if message.is_user {
+                        t("resources.chat.user")
+                    } else {
+                        t("resources.chat.role")
+                    }
                 } else {
-                    &message.name
+                    message.name.as_str()
                 })
                 .size(12)
                 .font(crate::core::typography::medium())
                 .color(accent),
                 space::horizontal(),
-                text(&message.send_date)
+                raw(&message.send_date)
                     .size(12)
                     .font(crate::core::typography::regular())
                     .style(crate::theme::muted_text_style),
@@ -3007,7 +2992,7 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
         &prompt.role
     };
     let role_chip = if prompt.partial {
-        tag_chip(t("workbench.preset.partial", current_language()), BLUE_600)
+        tag_chip(t_in("workbench.preset.partial", current_language()), BLUE_600)
     } else if prompt.enabled {
         tag_chip(role, SUCCESS)
     } else {
@@ -3019,7 +3004,7 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
         column![
             row![
                 container(
-                    text((index + 1).to_string())
+                    raw((index + 1).to_string())
                         .size(12)
                         .font(crate::core::typography::medium())
                         .color(BLUE_600),
@@ -3029,10 +3014,10 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
                 .align_x(Alignment::Center)
                 .align_y(Alignment::Center)
                 .style(count_surface),
-                text(if prompt.name.is_empty() {
-                    "未命名提示词"
+                raw(if prompt.name.is_empty() {
+                    t("resources.preset.unnamed_prompt")
                 } else {
-                    &prompt.name
+                    prompt.name.as_str()
                 })
                 .size(12)
                 .font(crate::core::typography::medium())
@@ -3042,10 +3027,10 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
             ]
             .spacing(8)
             .align_y(Alignment::Center),
-            text(if prompt.marker {
-                "结构标记，不包含正文".into()
+            raw(if prompt.marker {
+                t("resources.preset.marker_note").to_owned()
             } else if content_is_empty {
-                "无正文".into()
+                t("resources.world_book.no_content").to_owned()
             } else {
                 truncate(&prompt.content, 260)
             })
@@ -3069,7 +3054,7 @@ fn prompt_card(index: usize, prompt: &PresetPrompt) -> Element<'_, ResourceManag
 
 fn tag_chip<'a>(label: &'a str, color: Color) -> Element<'a, ResourceManageMessage> {
     container(
-        text(label)
+        raw(label)
             .size(12)
             .font(crate::core::typography::medium())
             .color(color),
@@ -3081,7 +3066,7 @@ fn tag_chip<'a>(label: &'a str, color: Color) -> Element<'a, ResourceManageMessa
 
 fn muted_tag_chip(label: &str) -> Element<'_, ResourceManageMessage> {
     container(
-        text(label)
+        raw(label)
             .size(12)
             .font(crate::core::typography::medium())
             .style(crate::theme::muted_text_style),
@@ -3091,7 +3076,7 @@ fn muted_tag_chip(label: &str) -> Element<'_, ResourceManageMessage> {
     .into()
 }
 
-fn inline_empty(message: &str) -> Element<'_, ResourceManageMessage> {
+fn inline_empty(message: &'static str) -> Element<'static, ResourceManageMessage> {
     container(
         row![
             crate::theme::subtle_icon(Icon::Inbox, 15),
@@ -3143,27 +3128,33 @@ fn empty_page(
 
 fn value_or(value: &str, fallback: &str) -> String {
     if value.trim().is_empty() {
-        fallback.into()
+        // fallback 是文案键；resolve 命中键表就翻译，未命中（纯数据）原样返回。
+        crate::lang::resolve(fallback)
     } else {
         value.into()
     }
 }
 
-fn bool_label(value: bool) -> &'static str {
-    if value { "开启" } else { "关闭" }
+fn bool_label(value: bool) -> String {
+    // 流式输出开关：开启 / 关闭。
+    if value {
+        t("extensions.on").to_owned()
+    } else {
+        t("extensions.off").to_owned()
+    }
 }
 
 fn number_or(value: i64) -> String {
     if value > 0 {
         value.to_string()
     } else {
-        "未设置".into()
+        t("resources.not_set").to_owned()
     }
 }
 
 fn spec_label(item: &CharacterCardInfo) -> String {
     match (item.spec.trim(), item.spec_version.trim()) {
-        ("", "") => "未标注".into(),
+        ("", "") => t("resources.unlabeled").to_owned(),
         (spec, "") => spec.into(),
         ("", version) => version.into(),
         (spec, version) => format!("{spec} {version}"),
