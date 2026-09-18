@@ -1291,6 +1291,9 @@ impl Launcher {
                     // 首开时通过原生 API 禁用绿色缩放按钮并移除独占全屏能力
                     #[cfg(target_os = "macos")]
                     crate::platform::disable_zoom_button_and_fullscreen();
+                    // 同时写入 Dock 应用图标（macOS 的图标属于应用而非窗口）
+                    #[cfg(target_os = "macos")]
+                    crate::platform::apply_application_icon();
                 }
                 return Task::batch(tasks);
             }

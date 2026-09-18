@@ -34,11 +34,11 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # 枚举并读取 macOS 已安装字体，供界面动态切换。
 fontdb = { version = "0.23", default-features = false, features = ["std", "fs", "memmap"] }
 
-# macOS 原生窗口定制（禁用绿色缩放按钮、移除独占全屏），版本与 winit 保持一致以去重
+# macOS 原生窗口定制（禁用绿色缩放按钮、移除独占全屏、设置 Dock 应用图标），版本与 winit 保持一致以去重
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5.2"
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSEnumerator", "NSThread", "dispatch"] }
-objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSWindow", "NSButton", "NSControl", "NSScreen"] }
+objc2-app-kit = { version = "0.2.2", features = ["NSApplication", "NSWindow", "NSButton", "NSControl", "NSScreen", "NSImage"] }
 # 桌面模式 WebView 使用与 WebKit 绑定一致的 objc2 0.6 依赖，别名避免影响现有窗口代码。
 objc2_06 = { package = "objc2", version = "0.6.4" }
 objc2_foundation_06 = { package = "objc2-foundation", version = "0.3.2", features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSGeometry", "NSObject", "NSString", "NSURL", "NSURLRequest", "NSValue"] }

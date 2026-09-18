@@ -1,14 +1,13 @@
 //! 主界面左侧导航栏。
 //!
-//! 结构（自上而下）：Logo 占位区 → 分割线 → 主功能导航组 →
+//! 结构（自上而下）：Logo 品牌区 → 分割线 → 主功能导航组 →
 //! 弹性留白 → 分割线 → 底部导航组。
 //! 导航按钮采用「顶部图标 + 底部文字」布局，选中态使用蓝色强调高亮。
 
-use iced::widget::{button, column, container, space};
-use iced::{Alignment, Background, Border, Color, Element, Fill, Theme};
-use lucide_icons::Icon;
-
-use astra_ui::{Avatar, AvatarColor, AvatarShape, AvatarSize, WHITE, icons};
+use iced::widget::{button, column, container, image, space};
+use iced::{
+    Alignment, Background, Border, Color, ContentFit, Element, Fill, Length, Theme,
+};
 
 use crate::app::Message;
 use crate::lang::{raw, text};
@@ -87,6 +86,31 @@ pub fn sidebar<'a>(page: Page, versions: &'a VersionState) -> Element<'a, Messag
         .into()
 }
 
+/// 品牌 Logo（`icon_eframe.png`，512×512）。
+///
+/// 图案自带一块居中的白色圆角底板（约占画布 80%，角半径约 23%），四周是透明边距，
+/// 因此品牌位不必再垫底色。编译期内嵌而非按路径加载：打包成 `.app` 后工作目录
+/// 不再是项目根目录，相对路径 `assets/...` 会失效。
+const LOGO_BYTES: &[u8] = include_bytes!("../assets/icon/icon_eframe.png");
+
+/// 品牌 Logo 的图像句柄，进程级只构造一次。
+///
+/// `image::Handle::from_bytes` 每次调用都会分配**新的唯一 id**，
+/// 若在 `view()` 里现建句柄，渲染器会把每一帧都当成新图并重新上传纹理。
+/// 因此这里缓存句柄，之后每帧仅做一次廉价克隆，纹理得以复用。
+fn logo_handle() -> iced::widget::image::Handle {
+    static LOGO: std::sync::OnceLock<iced::widget::image::Handle> = std::sync::OnceLock::new();
+    LOGO.get_or_init(|| iced::widget::image::Handle::from_bytes(LOGO_BYTES))
+        .clone()
+}
+
+/// 品牌 Logo 的显示边长（像素）。
+///
+/// 沿用原先头像位的 40 / 32，保证侧栏首屏高度与分割线位置完全不变。
+fn logo_size(scale: f32) -> f32 {
+    if scale >= 1.25 { 32.0 } else { 40.0 }
+}
+
 /// Logo 区会同步展示当前酒馆版本及实例来源。
 /// 本地实例使用绿色，在线实例使用蓝色，未选择时仅保留中性占位信息。
 fn logo_section<'a>(versions: &'a VersionState, scale: f32) -> Element<'a, Message> {
@@ -110,15 +134,13 @@ fn logo_section<'a>(versions: &'a VersionState, scale: f32) -> Element<'a, Messa
         };
 
     column![
-        Avatar::new("AstraBrew")
-            .fallback(icons::icon(Icon::Beer, 22, WHITE))
-            .size(if scale >= 1.25 {
-                AvatarSize::Small
-            } else {
-                AvatarSize::Medium
-            })
-            .shape(AvatarShape::Rounded)
-            .color(AvatarColor::Accent),
+        // 品牌位展示 logo 图片（原为 lucide 图标占位）。
+        // 图片自带白色圆角底板，因此不再叠加 Avatar 的强调色底：
+        // 否则会变成「蓝色圆角块外套白色圆角块」的双层轮廓。
+        image(logo_handle())
+            .width(Length::Fixed(logo_size(scale)))
+            .height(Length::Fixed(logo_size(scale)))
+            .content_fit(ContentFit::Contain),
         version_info,
     ]
     .spacing(6)
