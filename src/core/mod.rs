@@ -10,6 +10,7 @@ pub(crate) mod local_instances;
 
 pub(crate) mod tavern_config;
 pub(crate) mod typography;
+pub(crate) mod updater;
 
 #[cfg(target_os = "macos")]
 pub(crate) mod desktop_webview;

@@ -30,6 +30,7 @@ use crate::core::network::{
     SillyTavernInstallEvent, SillyTavernInstallTarget,
 };
 use crate::core::settings::{PersistentPreferences, SettingsStore};
+use crate::core::updater::{UpdateSource, UpdateStatus};
 use crate::core::typography::{FontChoice, SystemFontCatalog};
 use crate::core::tavern_process::{
     TavernDataMode as ProcessDataMode, TavernLaunchMode, TavernLaunchSpec,
@@ -297,6 +298,14 @@ pub(crate) enum Message {
     ExtensionTick,
     /// 驱动全局轻提示按各自时长自动消失。
     GlobalNoticeTick,
+    /// 驱动启动器更新检查与下载的后台事件。
+    UpdateTick,
+    /// 用户在更新确认弹窗中选择「立即更新」。
+    UpdateInstallConfirmed,
+    /// 关闭更新确认弹窗（「稍后再说」或遮罩关闭）。
+    UpdateDismissed,
+    /// 消费更新确认弹窗内部及遮罩点击。
+    UpdateDialogInteract,
     /// 独立于弹窗可见性的本地任务轮询。
     LocalInstancesTick,
     /// 配置文本去抖、外部文件轮询及保存回执。
@@ -361,6 +370,8 @@ pub struct Launcher {
     version_install_receiver: Option<Receiver<SillyTavernInstallEvent>>,
     /// 在线酒馆安装取消信号。
     version_install_cancel: Option<Arc<AtomicBool>>,
+    /// 启动器更新检查与下载的后台事件通道。
+    update_receiver: Option<Receiver<UpdateStatus>>,
     /// 扩展管理后台事件通道。
     extension_task_receiver: Option<Receiver<ExtensionEvent>>,
     /// 扩展安装任务取消标记。
@@ -540,6 +551,7 @@ impl Launcher {
             version_catalog_notify: false,
             version_install_receiver: None,
             version_install_cancel: None,
+            update_receiver: None,
             extension_task_receiver: None,
             extension_task_cancel: None,
             tavern: TavernState::default(),
@@ -693,6 +705,13 @@ impl Launcher {
             time::every(Duration::from_millis(100)).map(|_| Message::GlobalNoticeTick)
         };
 
+        // 更新检查与下载都在后台线程推进，这里只负责按帧收取结果。
+        let update_timer = if self.update_receiver.is_some() {
+            time::every(Duration::from_millis(100)).map(|_| Message::UpdateTick)
+        } else {
+            Subscription::none()
+        };
+
         let system_theme = iced::system::theme_changes().map(Message::SystemThemeChanged);
 
         let local_timer = if self.local_needs_tick() {
@@ -732,6 +751,7 @@ impl Launcher {
             version_install_timer,
             extension_timer,
             global_notice_timer,
+            update_timer,
             resource_pager_timer,
             window_events,
             system_theme,
@@ -765,9 +785,7 @@ impl Launcher {
         }
         if let Some(action) = self.settings.last_action.take() {
             let notice = match action {
-                SettingsAction::TestGithub
-                | SettingsAction::CheckUpdate
-                | SettingsAction::RefreshDownloadChannel => {
+                SettingsAction::TestGithub | SettingsAction::RefreshDownloadChannel => {
                     TransientNotice::info("notice.operation_complete", action.feedback())
                 }
                 SettingsAction::OpenLoginItemSettings
@@ -775,6 +793,8 @@ impl Launcher {
                 | SettingsAction::ChooseGlobalDataPath => {
                     TransientNotice::success("notice.settings_updated", action.feedback())
                 }
+                // 更新检查由应用层直接推送结果提示，不经过通用 feedback 通道。
+                SettingsAction::CheckUpdate => return,
             };
             self.push_global_notice(notice);
         }
@@ -1106,7 +1126,8 @@ impl Launcher {
                     self.persist_preferences();
                     self.start_download_channel_test();
                 }
-                _ => self.settings.last_action = Some(action),
+                // 更新检查要跑网络与验签，交给后台任务并把结果汇总成全局提示。
+                SettingsAction::CheckUpdate => self.start_update_check(),
             },
             Message::GithubTestTick(now) => {
                 self.poll_github_test(now);
@@ -1129,6 +1150,18 @@ impl Launcher {
                 self.settings.download_channel_test = DownloadChannelTestState::default();
             }
             Message::DownloadChannelTestInteract => {}
+            Message::UpdateTick => {
+                self.poll_update();
+            }
+            Message::UpdateInstallConfirmed => {
+                if let Some(pending) = self.settings.update.pending.take() {
+                    self.start_update_install(pending.source);
+                }
+            }
+            Message::UpdateDismissed => {
+                self.settings.update.pending = None;
+            }
+            Message::UpdateDialogInteract => {}
             Message::EnvironmentInstall(dependency) => {
                 self.start_environment_install(dependency);
             }
@@ -2588,6 +2621,115 @@ impl Launcher {
         }
     }
 
+    /// 启动一次手动更新检查。
+    ///
+    /// 检查结果只通过全局提示与确认弹窗呈现，不写入 `last_action`，
+    /// 避免与其他设置项的反馈通道混用。
+    fn start_update_check(&mut self) {
+        if self.settings.update.busy() {
+            return;
+        }
+        self.settings.update.checking = true;
+        self.settings.update.pending = None;
+        self.update_receiver = Some(crate::core::updater::check_update_manual());
+    }
+
+    /// 用户在确认弹窗中选择「立即更新」后执行下载安装。
+    fn start_update_install(&mut self, source: UpdateSource) {
+        if self.settings.update.downloading {
+            return;
+        }
+        self.settings.update.checking = false;
+        self.settings.update.downloading = true;
+        self.update_receiver = Some(crate::core::updater::do_install(source));
+    }
+
+    /// 收取更新后台线程的状态推进。
+    ///
+    /// `Checking` / `Downloading` 只是任务启动回执，忙碌态在发起时已经置位；
+    /// 收到任一终态后关闭通道，等下一次检查或安装再重新建立。
+    fn poll_update(&mut self) {
+        let Some(receiver) = self.update_receiver.take() else {
+            return;
+        };
+        let mut keep_receiver = true;
+        loop {
+            match receiver.try_recv() {
+                Ok(UpdateStatus::Checking) | Ok(UpdateStatus::Downloading) => {}
+                Ok(UpdateStatus::UpToDate) => {
+                    self.settings.update.checking = false;
+                    self.settings.update.downloading = false;
+                    self.push_global_notice(TransientNotice::info(
+                        "settings.check_update",
+                        t("settings.update.up_to_date"),
+                    ));
+                    keep_receiver = false;
+                    break;
+                }
+                Ok(UpdateStatus::UpdateAvailable {
+                    version,
+                    notes,
+                    source,
+                }) => {
+                    self.settings.update.checking = false;
+                    self.settings.update.downloading = false;
+                    self.settings.update.pending = Some(crate::pages::settings::PendingUpdate {
+                        version,
+                        notes,
+                        source,
+                    });
+                    keep_receiver = false;
+                    break;
+                }
+                Ok(UpdateStatus::Installed) => {
+                    self.settings.update.checking = false;
+                    self.settings.update.downloading = false;
+                    self.push_global_notice(TransientNotice::success(
+                        "settings.check_update",
+                        t("settings.update.installed"),
+                    ));
+                    keep_receiver = false;
+                    break;
+                }
+                Ok(UpdateStatus::Error(failure)) => {
+                    let failed_install = self.settings.update.downloading;
+                    self.settings.update.checking = false;
+                    self.settings.update.downloading = false;
+                    // 自定义原因按文案键取整句；外部库的详情套用对应阶段的模板。
+                    let detail = match failure.message_key() {
+                        Some(key) => t(key).to_owned(),
+                        None => {
+                            let error = failure.detail().unwrap_or_default();
+                            let template = if failed_install {
+                                "settings.update.install_failed"
+                            } else {
+                                "settings.update.check_failed"
+                            };
+                            tf(template, &[("error", &error)])
+                        }
+                    };
+                    self.push_global_notice(TransientNotice::danger(
+                        "settings.check_update",
+                        detail,
+                    ));
+                    keep_receiver = false;
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    // 线程异常退出：复位忙碌态，让用户能重新发起检查。
+                    self.settings.update.checking = false;
+                    self.settings.update.downloading = false;
+                    keep_receiver = false;
+                    break;
+                }
+            }
+        }
+        if keep_receiver {
+            self.update_receiver = Some(receiver);
+        }
+    }
+
     fn start_environment_install(&mut self, dependency: EnvironmentDependency) {
         // 旧版 Homebrew 安装按钮本身就是占位入口，保持其原有行为。
         if dependency == EnvironmentDependency::Homebrew {
@@ -3225,6 +3367,14 @@ impl Launcher {
                     .map(|message| Message::Resources(ResourceManageMessage::Workbench(message)))
             }),
         );
+        page = overlay_layer(
+            page,
+            self.settings
+                .update
+                .pending
+                .as_ref()
+                .map(crate::pages::settings::update_confirm_modal),
+        );
         page = overlay_layer(page, self.global_notice_layer());
         page
     }
@@ -3548,10 +3698,11 @@ fn expand_home_path(path: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::{InitStage, Launcher, Message, TransientNotice};
+    use super::{InitStage, Launcher, Message, TransientNotice, UpdateSource, UpdateStatus};
     use crate::core::network::{
         DownloadChannel, DownloadChannelTestEvent, DownloadChannelTestResult, GithubTestEvent,
     };
+    use crate::core::updater::UpdateFailure;
     use crate::core::settings::{PersistentPreferences, SettingsStore};
     use crate::core::typography::{FontChoice, SystemFontCatalog};
     use crate::pages::console::ConsoleStatus;
@@ -3559,6 +3710,7 @@ mod tests {
         DisplayLanguage, DownloadChannelTestState, EnvironmentDependency, EnvironmentTaskState,
         GithubTestState, ProxyMode, QuickStartMode, StartMode, ThemeMode,
     };
+    use std::sync::mpsc;
 
     fn test_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -4073,11 +4225,76 @@ mod tests {
     #[test]
     fn settings_feedback_is_consumed_into_global_toast() {
         let mut launcher = launcher();
+        // 更新检查已接入真实后台任务，这里改用仍走通用反馈通道的设置动作。
+        launcher.settings.last_action = Some(crate::pages::settings::SettingsAction::TestGithub);
+        let _ = launcher.update(Message::GlobalNoticeTick);
+
+        assert!(launcher.settings.last_action.is_none());
+        assert_eq!(launcher.global_notices.len(), 1);
+    }
+
+    #[test]
+    fn update_check_ignores_repeat_requests_while_busy() {
+        let mut launcher = launcher();
+        // 预置忙碌态：再次点击应被守卫拦下，既不会重新发起任务也不改动已有弹窗。
+        launcher.settings.update.checking = true;
+        launcher.settings.update.pending = Some(crate::pages::settings::PendingUpdate {
+            version: "9.9.9".to_owned(),
+            notes: None,
+            source: UpdateSource::Mirror,
+        });
+
         let _ = launcher.update(Message::SettingsAction(
             crate::pages::settings::SettingsAction::CheckUpdate,
         ));
 
+        assert!(launcher.update_receiver.is_none());
+        assert!(launcher.settings.update.pending.is_some());
         assert!(launcher.settings.last_action.is_none());
+    }
+
+    #[test]
+    fn available_update_opens_confirmation_dialog() {
+        let mut launcher = launcher();
+        let (sender, receiver) = mpsc::channel();
+        launcher.update_receiver = Some(receiver);
+        launcher.settings.update.checking = true;
+        sender
+            .send(UpdateStatus::UpdateAvailable {
+                version: "9.9.9".to_owned(),
+                notes: Some("修复若干问题".to_owned()),
+                source: UpdateSource::Mirror,
+            })
+            .expect("通道仍可用");
+        drop(sender);
+
+        let _ = launcher.update(Message::UpdateTick);
+
+        assert!(!launcher.settings.update.checking);
+        assert!(launcher.update_receiver.is_none());
+        let pending = launcher.settings.update.pending.as_ref().expect("应弹出确认框");
+        assert_eq!(pending.version, "9.9.9");
+        assert_eq!(pending.source, UpdateSource::Mirror);
+
+        // 「稍后再说」关闭弹窗但不改动其他状态。
+        let _ = launcher.update(Message::UpdateDismissed);
+        assert!(launcher.settings.update.pending.is_none());
+    }
+
+    #[test]
+    fn failed_update_check_reports_danger_notice() {
+        let mut launcher = launcher();
+        let (sender, receiver) = mpsc::channel();
+        launcher.update_receiver = Some(receiver);
+        launcher.settings.update.checking = true;
+        sender
+            .send(UpdateStatus::Error(UpdateFailure::SourcesUnreachable))
+            .expect("通道仍可用");
+        drop(sender);
+
+        let _ = launcher.update(Message::UpdateTick);
+
+        assert!(!launcher.settings.update.checking);
         assert_eq!(launcher.global_notices.len(), 1);
     }
 }

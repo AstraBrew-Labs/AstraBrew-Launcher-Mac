@@ -2,6 +2,7 @@
 
 use astra_ui::AlertKind;
 use astra_ui::ButtonVariant;
+use astra_ui::WARNING;
 use iced::theme;
 use iced::widget::overlay::menu;
 use iced::widget::{button, column, container, pick_list, row, slider, space, stack, text_input};
@@ -302,8 +303,21 @@ fn switch_thumb_style(theme: &Theme) -> container::Style {
 /// 使用当前动态字体渲染的扁平状态标签。
 /// 小尺寸标签胶囊。`label` 是文案键，渲染时按当前语言取值。
 pub fn flat_chip<'a, Message: 'a>(label: &'static str, color: Color) -> Element<'a, Message> {
+    chip(crate::lang::text(label), color)
+}
+
+/// 与 [`flat_chip`] 同款样式的胶囊，用于版本号、路径等运行时数据（不参与翻译）。
+pub fn flat_chip_raw<'a, Message: 'a>(
+    label: impl Into<String>,
+    color: Color,
+) -> Element<'a, Message> {
+    chip(crate::lang::raw(label), color)
+}
+
+/// 胶囊外观；两入口只在文本来源（键 / 运行时数据）上不同。
+fn chip<'a, Message: 'a>(content: iced::widget::Text<'a>, color: Color) -> Element<'a, Message> {
     container(
-        crate::lang::text(label)
+        content
             .size(11)
             .font(crate::core::typography::medium())
             .color(color),
@@ -321,6 +335,45 @@ pub fn flat_chip<'a, Message: 'a>(label: &'static str, color: Color) -> Element<
         ))),
         border: Border {
             color: Color::from_rgba(color.r, color.g, color.b, 0.22),
+            width: 1.0,
+            radius: 999.0.into(),
+        },
+        ..container::Style::default()
+    })
+    .into()
+}
+
+/// 左上角（侧边栏 logo 上方）的「测试版」标记胶囊。
+pub fn beta_badge<'a, Message: 'a>() -> Element<'a, Message> {
+    chip_sized(crate::lang::text("app.build.beta"), WARNING, 18.0, 10.0)
+}
+
+/// 按指定高度 / 字号构造胶囊；[`flat_chip`] 与 [`beta_badge`] 共用同一套外观。
+fn chip_sized<'a, Message: 'a>(
+    content: iced::widget::Text<'a>,
+    color: Color,
+    height: f32,
+    size: f32,
+) -> Element<'a, Message> {
+    container(
+        content
+            .size(size)
+            .font(crate::core::typography::medium())
+            .color(color),
+    )
+    .height(height)
+    .padding([0, 7])
+    .align_x(iced::Alignment::Center)
+    .align_y(iced::Alignment::Center)
+    .style(move |theme| container::Style {
+        background: Some(Background::Color(Color::from_rgba(
+            color.r,
+            color.g,
+            color.b,
+            if is_dark(theme) { 0.20 } else { 0.14 },
+        ))),
+        border: Border {
+            color: Color::from_rgba(color.r, color.g, color.b, 0.30),
             width: 1.0,
             radius: 999.0.into(),
         },

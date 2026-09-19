@@ -18,6 +18,7 @@ use astra_ui::{
 use super::{themed_segmented_group, themed_segmented_group_enabled};
 use crate::app::Message;
 use crate::core::network::{DownloadChannel, DownloadChannelTestResult};
+use crate::core::updater::UpdateSource;
 use crate::core::typography::{
     DEFAULT_UI_SCALE, FontChoice, MAX_UI_SCALE, MIN_UI_SCALE, normalize_ui_scale,
 };
@@ -185,7 +186,48 @@ impl SettingsAction {
             Self::ChooseGlobalDataPath => "settings.action.global_data_path_updated",
             Self::RefreshDownloadChannel => "settings.action.download_channel_refreshed",
             Self::TestGithub => "settings.action.github_pending",
-            Self::CheckUpdate => "settings.action.update_pending",
+            // 更新检查由应用层直接驱动后台任务并自行提示，不再走通用 feedback 通道。
+            Self::CheckUpdate => "settings.check_update.hint",
+        }
+    }
+}
+
+/// 待用户确认的更新信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpdate {
+    /// 新版本号。
+    pub version: String,
+    /// 发行说明，发布方未填写时为 `None`。
+    pub notes: Option<String>,
+    /// 检测阶段命中的更新源，确认安装时在该源上重新解析地址。
+    pub source: UpdateSource,
+}
+
+/// 启动器更新模块的界面状态。
+#[derive(Debug, Clone, Default)]
+pub struct UpdateState {
+    /// 正在检查更新：按钮显示「正在检查更新…」并禁用。
+    pub checking: bool,
+    /// 正在下载安装：按钮显示「正在下载安装…」并禁用。
+    pub downloading: bool,
+    /// 已发现且等待确认的更新；为 `Some` 时展示确认弹窗。
+    pub pending: Option<PendingUpdate>,
+}
+
+impl UpdateState {
+    /// 是否处于「检查或下载中」，用于禁用重复触发。
+    pub fn busy(&self) -> bool {
+        self.checking || self.downloading
+    }
+
+    /// 当前应展示在按钮上的文案键。
+    pub fn button_label(&self) -> &'static str {
+        if self.downloading {
+            "settings.update.downloading"
+        } else if self.checking {
+            "settings.update.checking"
+        } else {
+            "settings.check_update"
         }
     }
 }
@@ -363,6 +405,8 @@ pub struct SettingsState {
     pub environment: EnvironmentVersions,
     pub environment_task: EnvironmentTaskState,
     pub github_test: GithubTestState,
+    /// 启动器更新模块的界面状态。
+    pub update: UpdateState,
     pub last_action: Option<SettingsAction>,
     /// 最近一次偏好设置保存失败的错误信息。
     pub save_error: Option<String>,
@@ -407,6 +451,7 @@ impl Default for SettingsState {
             environment: EnvironmentVersions::default(),
             environment_task: EnvironmentTaskState::default(),
             github_test: GithubTestState::default(),
+            update: UpdateState::default(),
             last_action: None,
             save_error: None,
         }
@@ -534,7 +579,7 @@ pub fn settings_view(state: &SettingsState, mode_controls_locked: bool) -> Eleme
         environment_settings(state),
         download_settings(state),
         network_settings(state),
-        software_settings(),
+        software_settings(state),
     ]
     .spacing(22)
     .width(Fill);
@@ -2190,7 +2235,8 @@ fn github_result_row(
     .into()
 }
 
-fn software_settings() -> Element<'static, Message> {
+/// 「软件与更新」区块：展示当前版本并提供更新检查入口。
+fn software_settings(state: &SettingsState) -> Element<'_, Message> {
     section(
         Icon::Info,
         "settings.section.updates",
@@ -2200,16 +2246,159 @@ fn software_settings() -> Element<'static, Message> {
                 Icon::AppWindow,
                 "AstraBrew Launcher",
                 "settings.current_version",
-                crate::theme::flat_chip("extensions.version", BLUE_600),
+                // 版本号来自编译期常量，属于运行时数据，用不翻译的胶囊展示。
+                crate::theme::flat_chip_raw(format!("v{}", env!("CARGO_PKG_VERSION")), BLUE_600),
             ),
             setting_row(
                 Icon::Download,
                 "settings.check_update",
                 "settings.check_update.hint",
-                action_button("settings.check_update", Icon::RefreshCw, SettingsAction::CheckUpdate),
+                update_button(state),
             ),
         ]),
     )
+}
+
+/// 「检查更新」按钮：检查或下载期间改写文案并禁用，避免重复触发。
+fn update_button(state: &SettingsState) -> Element<'_, Message> {
+    let control = button(
+        row![
+            crate::theme::muted_icon(Icon::RefreshCw, 14),
+            text(state.update.button_label())
+                .size(11)
+                .font(crate::core::typography::medium())
+        ]
+        .spacing(6)
+        .align_y(Alignment::Center),
+    )
+    .height(34)
+    .padding([7, 11])
+    .style(button_style(ButtonVariant::Secondary));
+
+    if state.update.busy() {
+        control.into()
+    } else {
+        control
+            .on_press(Message::SettingsAction(SettingsAction::CheckUpdate))
+            .into()
+    }
+}
+
+/// 发现新版本后的确认弹窗。
+///
+/// 由应用根层通过 `overlay_layer` 常驻占位承载，弹窗开关不改变顶层控件结构，
+/// 因此不会重置设置页的滚动位置。
+pub(crate) fn update_confirm_modal(pending: &PendingUpdate) -> Element<'static, Message> {
+    let language = current_language();
+
+    let mut details = column![
+        raw(tf(
+            "settings.update.available_desc",
+            &[("version", &pending.version)],
+        ))
+        .size(12)
+        .font(crate::core::typography::regular())
+        .style(crate::theme::muted_text_style),
+    ]
+    .spacing(12)
+    .width(Fill);
+
+    // 发行说明由发布方自由书写且可能很长，固定高度内滚动展示。
+    if let Some(notes) = pending
+        .notes
+        .as_deref()
+        .map(str::trim)
+        .filter(|notes| !notes.is_empty())
+    {
+        details = details.push(
+            container(
+                scrollable(
+                    raw(notes.to_owned())
+                        .size(11)
+                        .font(crate::core::typography::regular()),
+                )
+                .height(Length::Fixed(120.0)),
+            )
+            .width(Fill)
+            .padding([10, 12])
+            .style(environment_log_style),
+        );
+    }
+
+    let panel = mouse_area(
+        container(
+            column![
+                row![
+                    container(icons::icon(Icon::Download, 22, BLUE_600))
+                        .width(42)
+                        .height(42)
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center)
+                        .style(environment_task_icon_style),
+                    raw(t_in("settings.update.available", language))
+                        .size(18)
+                        .font(crate::core::typography::medium()),
+                ]
+                .spacing(14)
+                .align_y(Alignment::Center),
+                details,
+                row![
+                    space::horizontal(),
+                    button(
+                        raw(t_in("settings.update.later", language))
+                            .size(12)
+                            .font(crate::core::typography::medium())
+                    )
+                    .on_press(Message::UpdateDismissed)
+                    .height(36)
+                    .padding([8, 14])
+                    .style(button_style(ButtonVariant::Secondary)),
+                    button(
+                        row![
+                            icons::icon(Icon::Download, 15, Color::WHITE),
+                            raw(t_in("settings.update.install_now", language))
+                                .size(12)
+                                .font(crate::core::typography::medium())
+                                .color(Color::WHITE),
+                        ]
+                        .spacing(7)
+                        .align_y(Alignment::Center)
+                    )
+                    .on_press(Message::UpdateInstallConfirmed)
+                    .height(36)
+                    .padding([8, 15])
+                    .style(button_style(ButtonVariant::Primary)),
+                ]
+                .spacing(10)
+                .align_y(Alignment::Center)
+                .width(Fill),
+            ]
+            .spacing(18),
+        )
+        .width(Fill)
+        .max_width(500)
+        .padding(22)
+        .style(environment_modal_style),
+    )
+    .on_press(Message::UpdateDialogInteract);
+
+    stack![
+        button(space::Space::new())
+            .on_press(Message::UpdateDismissed)
+            .width(Fill)
+            .height(Fill)
+            .padding(0)
+            .style(environment_backdrop_style),
+        container(panel)
+            .width(Fill)
+            .height(Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .padding(24),
+    ]
+    .width(Fill)
+    .height(Fill)
+    .into()
 }
 
 fn section<'a>(

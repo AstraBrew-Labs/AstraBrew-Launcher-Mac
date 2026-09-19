@@ -4,6 +4,7 @@
 //! UI 组件统一来自 astra_ui（Astra UI）组件库。
 
 mod app;
+mod build_info;
 mod core;
 mod lang;
 mod pages;

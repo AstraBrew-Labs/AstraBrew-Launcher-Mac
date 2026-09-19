@@ -816,6 +816,7 @@ mod tests {
             version_catalog_notify: false,
             version_install_receiver: None,
             version_install_cancel: None,
+            update_receiver: None,
             extension_task_receiver: None,
             extension_task_cancel: None,
             tavern: Default::default(),

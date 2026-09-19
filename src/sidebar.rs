@@ -55,23 +55,33 @@ pub fn sidebar<'a>(page: Page, versions: &'a VersionState) -> Element<'a, Messag
         .iter()
         .map(|&item| nav_button(item, page, scale, nav_item_size));
 
-    let content = column![
-        logo_section(versions, scale),
-        crate::theme::separator(),
+    // 测试版标记位于左上角：侧边栏最顶端、logo 之上。
+    let mut content = column![];
+    if crate::build_info::build_channel().is_beta() {
+        content = content.push(
+            container(crate::theme::beta_badge())
+                .width(Fill)
+                .align_x(Alignment::Start),
+        );
+    }
+    content = content.push(logo_section(versions, scale));
+    content = content.push(crate::theme::separator());
+    content = content.push(
         column(primary)
             .spacing(nav_spacing)
             .align_x(Alignment::Center)
             .width(Fill),
-        space::vertical(),
-        crate::theme::separator(),
+    );
+    content = content.push(space::vertical());
+    content = content.push(crate::theme::separator());
+    content = content.push(
         column(secondary)
             .spacing(nav_spacing)
             .align_x(Alignment::Center)
             .width(Fill),
-    ]
-    .spacing(section_spacing)
-    .height(Fill)
-    .width(Fill);
+    );
+
+    let content = content.spacing(section_spacing).height(Fill).width(Fill);
 
     container(content)
         .width(sidebar_width)
