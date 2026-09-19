@@ -9,12 +9,12 @@
 
 当前仓库单独管理 MacOS版本 的启动器。MacOS 用户可以通过星酿启动器轻松配置和管理酒馆实例，享受一键启动、版本管理、环境配置等功能。我们专注于提供流畅的用户界面和稳定的性能，让每位用户都能轻松上手并愉快使用。
 
-[![Releases](https://img.shields.io/github/v/release/AstraBrew-Labs/AstraBrew-Launcher-Mac?label=版本)](./releases)
+[![Releases](https://img.shields.io/github/v/release/AstraBrew-Labs/AstraBrew-Launcher-Mac?label=版本)](../../releases)
 [![Rust](https://img.shields.io/badge/Rust-latest-CE422B?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![iced](https://img.shields.io/github/v/release/iced-rs/iced?label=iced)](https://github.com/iced-rs/iced)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-[官网](https://launcher.astrabrew.cn) | [Windows版](../../AstraBrew-Launcher-Win/)
+[官网](https://launcher.astrabrew.cn) | [Windows版](../../../AstraBrew-Launcher-Win/)
 
 </div>
 
@@ -39,7 +39,7 @@
 
 ### 普通用户
 
-普通用户请可以直接到[发布页(Releases)](/releases)下载最新版本的DMG安装包，在安装界面把 AstraBrew Launcher.app 拖到 Applications 文件夹中，即可在App里找到星酿启动器 (AstraBrew Launcher) 点击启动。
+普通用户请可以直接到[发布页(Releases)](../../releases)下载最新版本的DMG安装包，在安装界面把 AstraBrew Launcher.app 拖到 Applications 文件夹中，即可在App里找到星酿启动器 (AstraBrew Launcher) 点击启动。
 
 ### 开发者
 
