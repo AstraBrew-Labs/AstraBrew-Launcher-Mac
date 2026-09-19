@@ -9,12 +9,12 @@
 
 当前仓库单独管理 MacOS版本 的启动器。MacOS 用户可以通过星酿启动器轻松配置和管理酒馆实例，享受一键启动、版本管理、环境配置等功能。我们专注于提供流畅的用户界面和稳定的性能，让每位用户都能轻松上手并愉快使用。
 
-[![Releases](https://img.shields.io/github/v/release/AstraBrew-Labs/AstraBrew-Launcher-Mac?label=版本)](https://github.com/AstraBrew-Labs/AstraBrew-Launcher-Mac/releases)
+[![Releases](https://img.shields.io/github/v/release/AstraBrew-Labs/AstraBrew-Launcher-Mac?label=版本)](./AstraBrew-Launcher-Mac/releases)
 [![Rust](https://img.shields.io/badge/Rust-latest-CE422B?style=flat-square&logo=rust)](https://www.rust-lang.org/)
 [![iced](https://img.shields.io/github/v/release/iced-rs/iced?label=iced)](https://github.com/iced-rs/iced)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-[官网](https://launcher.astrabrew.cn) | [Windows版](https://github.com/AstraBrew-Labs/AstraBrew-Launcher-Win/)
+[官网](https://launcher.astrabrew.cn) | [Windows版](./AstraBrew-Launcher-Win/)
 
 </div>
 
@@ -114,7 +114,7 @@ astrabrew-launcher-mac/
 ## 📝 代码规范与注释规范
 
 ### AI编程
-- 可使用仓库里的`MEMORY.md`喂给AI，辅助开发。
+- 可使用仓库里的`AGENTS.md`喂给AI，辅助开发。
 
 ### 代码规范
 - **命名规范**：
