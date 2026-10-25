@@ -1,13 +1,14 @@
 import Foundation
 
 enum TavernBrowser: String, Codable, CaseIterable, Identifiable {
-    case system, chrome, firefox, edge
+    case system, safari, chrome, firefox, edge
 
     var id: Self { self }
 
     var title: String {
         switch self {
         case .system: "系统默认"
+        case .safari: "Safari"
         case .chrome: "Chrome"
         case .firefox: "Firefox"
         case .edge: "Edge"
@@ -17,9 +18,30 @@ enum TavernBrowser: String, Codable, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .system: "globe"
+        case .safari: "safari"
         case .chrome: "display"
-        case .firefox: "safari"
+        case .firefox: "flame"
         case .edge: "rectangle.grid.2x2"
+        }
+    }
+}
+
+enum TavernServerMode: String, Codable, CaseIterable, Identifiable {
+    case localNetwork, internet
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .localNetwork: "局域网"
+        case .internet: "互联网"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .localNetwork: "wifi"
+        case .internet: "globe"
         }
     }
 }

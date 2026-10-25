@@ -1,5 +1,20 @@
 import SwiftUI
 
+private enum DashboardLayout {
+    static let pagePadding: CGFloat = 28
+    static let maximumWidth: CGFloat = 1180
+    static let launchPanelWidth: CGFloat = 236
+    static let columnSpacing: CGFloat = 20
+    static let cardSpacing: CGFloat = 16
+
+    static func controlHeight(compact: Bool) -> CGFloat { compact ? 40 : 44 }
+    static func widgetHeight(compact: Bool) -> CGFloat { compact ? 114 : 140 }
+    static func directoryHeight(compact: Bool) -> CGFloat { compact ? 86 : 104 }
+    static func panelHeight(compact: Bool) -> CGFloat {
+        widgetHeight(compact: compact) * 2 + directoryHeight(compact: compact) + cardSpacing * 2
+    }
+}
+
 struct DashboardView: View {
     @EnvironmentObject private var appState: AppState
 
@@ -10,10 +25,13 @@ struct DashboardView: View {
     var body: some View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 640
-            let iconOnlyToolbar = geometry.size.width < 1260
+            let contentWidth = min(geometry.size.width, DashboardLayout.maximumWidth)
+                - DashboardLayout.pagePadding * 2
+            let optionWidth = (contentWidth - DashboardLayout.launchPanelWidth
+                - DashboardLayout.columnSpacing - DashboardLayout.cardSpacing) / 2
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 20) {
                     HStack(alignment: .center) {
                         PageHeading(title: "仪表盘", subtitle: "星酿酒馆 · 本地工作空间")
                         Label("未运行", systemImage: "circle.dotted")
@@ -22,28 +40,33 @@ struct DashboardView: View {
                             .fixedSize()
                     }
 
-                    launchToolbar(compact: compact, iconOnly: iconOnlyToolbar)
+                    launchToolbar(compact: compact, optionWidth: optionWidth)
+                        .zIndex(1)
 
-                    HStack(alignment: .top, spacing: 20) {
-                        launchPanel(compact: compact)
-                            .frame(width: 236)
-                        workspace(compact: compact)
-                            .frame(maxWidth: .infinity)
+                    VStack(spacing: 12) {
+                        sectionHeadings
+
+                        HStack(alignment: .top, spacing: DashboardLayout.columnSpacing) {
+                            launchPanel(compact: compact)
+                                .frame(width: DashboardLayout.launchPanelWidth)
+                            workspace(compact: compact)
+                                .frame(maxWidth: .infinity)
+                        }
                     }
+
+                    serviceNotice
                 }
-                .padding(28)
-                .frame(maxWidth: 1180, alignment: .leading)
+                .padding(DashboardLayout.pagePadding)
+                .frame(maxWidth: DashboardLayout.maximumWidth, alignment: .leading)
                 .frame(maxWidth: .infinity)
             }
         }
     }
 
-    private func launchPanel(compact: Bool) -> some View {
-        VStack(spacing: 0) {
+    private var sectionHeadings: some View {
+        HStack(spacing: DashboardLayout.columnSpacing) {
             HStack {
                 Label("当前酒馆", systemImage: "desktopcomputer")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     appState.selection = .configuration
@@ -54,7 +77,20 @@ struct DashboardView: View {
                 .help("编辑酒馆配置")
                 .accessibilityLabel("编辑酒馆配置")
             }
+            .frame(width: DashboardLayout.launchPanelWidth)
 
+            HStack {
+                Text("工作空间")
+                Spacer()
+                Text("本地").font(.caption).foregroundStyle(.tertiary)
+            }
+        }
+        .font(.system(size: 13, weight: .semibold))
+        .frame(height: 22)
+    }
+
+    private func launchPanel(compact: Bool) -> some View {
+        VStack(spacing: 0) {
             Spacer(minLength: compact ? 8 : 18)
 
             VStack(spacing: 8) {
@@ -115,7 +151,7 @@ struct DashboardView: View {
             }
         }
         .padding(20)
-        .frame(height: compact ? 416 : 478)
+        .frame(height: DashboardLayout.panelHeight(compact: compact))
         .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
         .overlay {
             RoundedRectangle(cornerRadius: 8)
@@ -124,15 +160,11 @@ struct DashboardView: View {
     }
 
     private func workspace(compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("工作空间").font(.headline)
-                Spacer()
-                Text("本地").font(.caption).foregroundStyle(.tertiary)
-            }
-            .frame(height: 22)
-
-            LazyVGrid(columns: [.init(.flexible()), .init(.flexible())], spacing: 14) {
+        VStack(alignment: .leading, spacing: DashboardLayout.cardSpacing) {
+            LazyVGrid(columns: [
+                .init(.flexible(), spacing: DashboardLayout.cardSpacing),
+                .init(.flexible(), spacing: DashboardLayout.cardSpacing)
+            ], spacing: DashboardLayout.cardSpacing) {
                 DashboardWidget(
                     title: "运行版本", value: appState.versionTitle,
                     detail: appState.selectedVersion?.directoryName ?? "选择本地版本",
@@ -161,41 +193,43 @@ struct DashboardView: View {
             }
 
             directoryWidget(compact: compact)
-
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: "info.circle")
-                    .foregroundStyle(.secondary)
-                Text("启动服务尚未接入")
-                    .foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                Button {
-                    appState.selection = .console
-                } label: {
-                    Image(systemName: "arrow.up.right")
-                }
-                .buttonStyle(.borderless)
-                .help("查看控制台")
-                .accessibilityLabel("查看控制台")
-            }
-            .font(.caption)
-            .padding(.horizontal, 2)
         }
     }
 
-    private func launchToolbar(compact: Bool, iconOnly: Bool) -> some View {
-        HStack(alignment: .bottom, spacing: compact ? 12 : 18) {
+    private var serviceNotice: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "info.circle")
+                .foregroundStyle(.secondary)
+            Text("启动服务尚未接入")
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 0)
+            Button {
+                appState.selection = .console
+            } label: {
+                Image(systemName: "arrow.up.right")
+            }
+            .buttonStyle(.borderless)
+            .help("查看控制台")
+            .accessibilityLabel("查看控制台")
+        }
+        .font(.caption)
+        .padding(.horizontal, 2)
+    }
+
+    private func launchToolbar(compact: Bool, optionWidth: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: DashboardLayout.columnSpacing) {
             DashboardToolbarField(title: "酒馆版本") {
                 TavernVersionPicker {
                     DashboardToolbarValueLabel(
                         value: appState.versionTitle,
                         symbol: "shippingbox",
                         showsChevron: true,
-                        iconOnly: iconOnly
+                        iconOnly: false
                     )
                 }
                 .padding(.horizontal, 12)
                 .frame(maxWidth: .infinity)
-                .frame(height: compact ? 38 : 42)
+                .frame(height: DashboardLayout.controlHeight(compact: compact))
                 .background(Color(nsColor: .controlBackgroundColor),
                             in: RoundedRectangle(cornerRadius: 9))
                 .overlay {
@@ -203,14 +237,33 @@ struct DashboardView: View {
                         .strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 1)
                 }
             }
+            .frame(width: DashboardLayout.launchPanelWidth)
 
-            DashboardToolbarField(title: "启动模式") {
-                DashboardModePicker(compact: compact, iconOnly: iconOnly)
-            }
+            HStack(alignment: .top, spacing: DashboardLayout.cardSpacing) {
+                DashboardToolbarField(title: "启动模式") {
+                    DashboardModePicker(compact: compact, iconOnly: optionWidth < 300)
+                }
 
-            DashboardToolbarField(title: "浏览器") {
-                DashboardBrowserPicker(compact: compact, iconOnly: iconOnly)
+                switch appState.configuration.launchMode {
+                case .normal:
+                    DashboardToolbarField(title: "浏览器") {
+                        DashboardBrowserPicker(
+                            compact: compact,
+                            iconOnly: optionWidth < CGFloat(TavernBrowser.allCases.count) * 84
+                        )
+                    }
+                case .desktop:
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: DashboardLayout.controlHeight(compact: compact))
+                        .accessibilityHidden(true)
+                case .server:
+                    DashboardToolbarField(title: "服务模式") {
+                        DashboardServerModePicker(compact: compact, iconOnly: optionWidth < 190)
+                    }
+                }
             }
+            .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -245,7 +298,7 @@ struct DashboardView: View {
             }
             .padding(compact ? 14 : 18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: compact ? 86 : 104)
+            .frame(height: DashboardLayout.directoryHeight(compact: compact))
             .contentShape(Rectangle())
         }
         .buttonStyle(DashboardCardStyle())
@@ -271,6 +324,7 @@ private struct DashboardToolbarField<Content: View>: View {
             Text(title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .frame(height: 16, alignment: .leading)
             content
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -335,19 +389,19 @@ private struct DashboardSegmentedControl<Option: Identifiable>: View {
                     }
                     .font(.system(size: compact ? 11 : 12, weight: .medium))
                     .frame(maxWidth: .infinity)
-                    .frame(minHeight: compact ? 38 : 42)
+                    .frame(height: DashboardLayout.controlHeight(compact: compact) - 6)
                     .padding(.horizontal, iconOnly ? 8 : 5)
                     .foregroundStyle(isSelected(option) ? .white : .primary)
                     .background {
                         if isSelected(option) {
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(Color.accentColor)
-                            }
+                        }
                     }
                     .contentShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
-                .frame(maxWidth: .infinity, minHeight: compact ? 38 : 42)
+                .frame(maxWidth: .infinity)
                 .contentShape(RoundedRectangle(cornerRadius: 8))
                 .onHover { isHovering in
                     guard iconOnly else { return }
@@ -365,7 +419,7 @@ private struct DashboardSegmentedControl<Option: Identifiable>: View {
             }
         }
         .padding(3)
-        .frame(minHeight: compact ? 46 : 50)
+        .frame(height: DashboardLayout.controlHeight(compact: compact))
         .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
         .overlay {
             RoundedRectangle(cornerRadius: 10)
@@ -475,6 +529,44 @@ private struct DashboardModePicker: View {
     }
 }
 
+private struct DashboardServerModePicker: View {
+    @EnvironmentObject private var appState: AppState
+    let compact: Bool
+    let iconOnly: Bool
+    @State private var errorMessage: String?
+
+    var body: some View {
+        DashboardSegmentedControl(
+            options: TavernServerMode.allCases,
+            selection: appState.configuration.serverMode,
+            title: \.title,
+            symbol: \.symbol,
+            action: select,
+            compact: compact,
+            iconOnly: iconOnly
+        )
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("服务模式")
+        .accessibilityValue(appState.configuration.serverMode.title)
+        .alert("无法保存服务模式", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("好", role: .cancel) { errorMessage = nil }
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private func select(_ serverMode: TavernServerMode) {
+        do {
+            try appState.setServerMode(serverMode)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}
+
 private struct DashboardWidget: View {
     let title: String
     let value: String
@@ -510,6 +602,7 @@ private struct DashboardWidget: View {
                                       design: monospacedValue ? .monospaced : .default))
                         .lineLimit(1)
                         .minimumScaleFactor(0.85)
+                        .frame(height: 28, alignment: .bottomLeading)
                     Text(detail)
                         .font(.caption)
                         .foregroundStyle(.tertiary)
@@ -518,7 +611,7 @@ private struct DashboardWidget: View {
             }
             .padding(compact ? 14 : 16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: compact ? 114 : 140, alignment: .topLeading)
+            .frame(height: DashboardLayout.widgetHeight(compact: compact), alignment: .topLeading)
             .contentShape(Rectangle())
         }
         .buttonStyle(DashboardCardStyle())

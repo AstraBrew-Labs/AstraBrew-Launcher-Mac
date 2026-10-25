@@ -8,20 +8,23 @@ struct TavernConfiguration: Codable, Equatable {
     var port = 8000
     var launchMode: TavernLaunchMode = .normal
     var browser: TavernBrowser = .system
+    var serverMode: TavernServerMode = .localNetwork
     var selectedVersionID: UUID?
 
     enum CodingKeys: String, CodingKey {
-        case name, directory, port, launchMode, browser, selectedVersionID
+        case name, directory, port, launchMode, browser, serverMode, selectedVersionID
     }
 
     init(name: String = "默认酒馆", directory: String = "", port: Int = 8000,
          launchMode: TavernLaunchMode = .normal, browser: TavernBrowser = .system,
+         serverMode: TavernServerMode = .localNetwork,
          selectedVersionID: UUID? = nil) {
         self.name = name
         self.directory = directory
         self.port = port
         self.launchMode = launchMode
         self.browser = browser
+        self.serverMode = serverMode
         self.selectedVersionID = selectedVersionID
     }
 
@@ -33,6 +36,7 @@ struct TavernConfiguration: Codable, Equatable {
         // Older configurations predate the home-page quick switches.
         launchMode = (try? values.decode(TavernLaunchMode.self, forKey: .launchMode)) ?? .normal
         browser = (try? values.decode(TavernBrowser.self, forKey: .browser)) ?? .system
+        serverMode = (try? values.decode(TavernServerMode.self, forKey: .serverMode)) ?? .localNetwork
         selectedVersionID = try values.decodeIfPresent(UUID.self, forKey: .selectedVersionID)
     }
 }
@@ -132,6 +136,13 @@ final class AppState: ObservableObject {
         try saveConfiguration(next)
     }
 
+    func setServerMode(_ serverMode: TavernServerMode) throws {
+        guard serverMode != configuration.serverMode else { return }
+        var next = configuration
+        next.serverMode = serverMode
+        try saveConfiguration(next)
+    }
+
     func launchTavern() {
         guard !configuration.directory.isEmpty else {
             addLog("启动酒馆前需要先选择酒馆目录。", level: .warning)
@@ -139,7 +150,14 @@ final class AppState: ObservableObject {
             return
         }
 
-        addLog("已准备启动酒馆：\(versionTitle)，\(configuration.launchMode.title)，\(configuration.browser.title)。")
+        let launchTarget: String
+        switch configuration.launchMode {
+        case .server:
+            launchTarget = "服务模式：\(configuration.serverMode.title)"
+        default:
+            launchTarget = "浏览器：\(configuration.browser.title)"
+        }
+        addLog("已准备启动酒馆：\(versionTitle)，\(configuration.launchMode.title)，\(launchTarget)。")
         selection = .console
     }
 

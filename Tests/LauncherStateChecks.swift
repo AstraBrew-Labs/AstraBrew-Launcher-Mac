@@ -48,9 +48,13 @@ struct LauncherStateChecks {
             try restored.setLaunchMode(mode)
             precondition(AppState(defaults: defaults).configuration.launchMode == mode)
         }
-        try restored.setBrowser(.firefox)
-        precondition(AppState(defaults: defaults).configuration.browser == .firefox)
-        print("PASS: version list, selection, launch modes, and browser survive restart")
+        for browser in TavernBrowser.allCases {
+            try restored.setBrowser(browser)
+            precondition(AppState(defaults: defaults).configuration.browser == browser)
+        }
+        try restored.setServerMode(.internet)
+        precondition(AppState(defaults: defaults).configuration.serverMode == .internet)
+        print("PASS: version list, selection, launch modes, browser, and server mode survive restart")
 
         _ = try fixture(in: temporary, name: "Tavern A", version: "1.0.1")
         try state.importVersion(from: first)

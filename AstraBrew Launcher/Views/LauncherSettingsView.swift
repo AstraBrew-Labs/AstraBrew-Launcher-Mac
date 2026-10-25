@@ -3,31 +3,57 @@ import SwiftUI
 struct LauncherSettingsView: View {
     @AppStorage("appearance") private var appearance = AppAppearance.system.rawValue
     @EnvironmentObject private var appState: AppState
+    @State private var category = SettingsCategory.general
 
     var body: some View {
         VStack(spacing: 0) {
             PageHeading(title: "设置", subtitle: "AstraBrew Launcher")
                 .padding(32)
-            Form {
-                Section("外观") {
-                    Picker("主题", selection: $appearance) {
-                        ForEach(AppAppearance.allCases) { value in
-                            Text(value.title).tag(value.rawValue)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                Section("控制台") {
-                    Toggle("显示时间戳", isOn: $appState.showsTimestamps)
-                    LabeledContent("日志保留", value: "当前会话，最多 1,000 条")
-                }
-                Section("应用") {
-                    LabeledContent("版本", value: AppMetadata.version)
-                    LabeledContent("平台", value: "macOS")
-                }
+
+            Picker("设置分类", selection: $category) {
+                Label("常规", systemImage: "gearshape").tag(SettingsCategory.general)
+                Label("运行环境", systemImage: "shippingbox").tag(SettingsCategory.runtime)
             }
-            .formStyle(.grouped)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 260)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.bottom, 16)
+
+            switch category {
+            case .general:
+                generalSettings
+            case .runtime:
+                RuntimeEnvironmentSettingsView()
+            }
         }
+    }
+
+    private var generalSettings: some View {
+        Form {
+            Section("外观") {
+                Picker("主题", selection: $appearance) {
+                    ForEach(AppAppearance.allCases) { value in
+                        Text(value.title).tag(value.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            Section("控制台") {
+                Toggle("显示时间戳", isOn: $appState.showsTimestamps)
+                LabeledContent("日志保留", value: "当前会话，最多 1,000 条")
+            }
+            Section("应用") {
+                LabeledContent("版本", value: AppMetadata.version)
+                LabeledContent("平台", value: "macOS")
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private enum SettingsCategory {
+        case general, runtime
     }
 }
 
